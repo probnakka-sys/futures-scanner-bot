@@ -20,6 +20,10 @@ import random
 import ssl
 import certifi
 import time
+import json
+import websockets
+import aiohttp
+import requests
 
 # Импорт конфигурации
 from config import (
@@ -48,14 +52,7 @@ FALLBACK_PAIRS = [
     'AAVE/USDT', 'COMP/USDT', 'MKR/USDT', 'SNX/USDT', 'YFI/USDT',
     'CRV/USDT', 'BAL/USDT', '1INCH/USDT', 'OP/USDT', 'IMX/USDT',
     'AXS/USDT', 'SAND/USDT', 'MANA/USDT', 'GALA/USDT', 'ENJ/USDT',
-    'FET/USDT', 'AGIX/USDT', 'OCEAN/USDT', 'GRT/USDT', 'BAND/USDT',
-    'ATOM/USDT', 'OSMO/USDT', 'DOT/USDT', 'KSM/USDT', 'NEAR/USDT',
-    'SOL/USDT', 'RAY/USDT', 'AVAX/USDT', 'JOE/USDT', 'BNB/USDT',
-    'CAKE/USDT', 'BAKE/USDT', 'XVS/USDT', 'ALPACA/USDT', 'TWT/USDT',
-    'ICP/USDT', 'RNDR/USDT', 'STX/USDT', 'FLOW/USDT', 'MINA/USDT',
-    'EGLD/USDT', 'KDA/USDT', 'HNT/USDT', 'ANKR/USDT', 'ZIL/USDT',
-    'IOST/USDT', 'IOTX/USDT', 'VET/USDT', 'THETA/USDT', 'TFUEL/USDT',
-    'ROSE/USDT', 'CELR/USDT', 'CKB/USDT', 'ONE/USDT', 'HARMONY/USDT'
+    'FET/USDT', 'AGIX/USDT', 'OCEAN/USDT', 'GRT/USDT', 'BAND/USDT'
 ]
 
 # Ручной расчет индикаторов
@@ -103,6 +100,51 @@ def calculate_sma(series, period):
     """Расчет SMA"""
     return series.rolling(window=period).mean()
 
+def calculate_vwap(df: pd.DataFrame) -> pd.Series:
+    """Расчет VWAP (Volume Weighted Average Price)"""
+    typical_price = (df['high'] + df['low'] + df['close']) / 3
+    vwap = (typical_price * df['volume']).cumsum() / df['volume'].cumsum()
+    return vwap
+
+def detect_candle_patterns(df: pd.DataFrame) -> Dict:
+    """Обнаружение свечных паттернов"""
+    patterns = {
+        'pin_bar': False,
+        'engulfing': False,
+        'doji': False,
+        'hammer': False,
+        'shooting_star': False
+    }
+    
+    if len(df) < 2:
+        return patterns
+    
+    last = df.iloc[-1]
+    prev = df.iloc[-2]
+    
+    # Пинбар (длинная тень)
+    body = abs(last['close'] - last['open'])
+    upper_wick = last['high'] - max(last['close'], last['open'])
+    lower_wick = min(last['close'], last['open']) - last['low']
+    
+    if body > 0:
+        if upper_wick > body * 2 and lower_wick < body * 0.3:
+            patterns['shooting_star'] = True
+        elif lower_wick > body * 2 and upper_wick < body * 0.3:
+            patterns['hammer'] = True
+            patterns['pin_bar'] = True
+    
+    # Поглощение
+    if prev['close'] < prev['open'] and last['close'] > last['open']:
+        if last['close'] > prev['open'] and last['open'] < prev['close']:
+            patterns['engulfing'] = True
+    
+    # Дожи
+    if body < (last['high'] - last['low']) * 0.1:
+        patterns['doji'] = True
+    
+    return patterns
+
 # Загрузка конфигурации
 load_dotenv()
 
@@ -112,6 +154,246 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+
+# ============== WEBSOCKET МОНИТОР ==============
+
+class WebSocketMonitor:
+    """Мониторинг цен в реальном времени через WebSocket"""
+    
+    def __init__(self, callback_function=None):
+        self.callback = callback_function
+        self.ws_connection = None
+        self.running = False
+        self.subscribed_symbols = set()
+        self.latest_prices = {}
+        self.reconnect_attempts = 0
+        self.max_reconnect_attempts = 5
+        self.lock = asyncio.Lock()
+        
+    async def connect(self):
+        """Подключение к WebSocket MEXC"""
+        uri = "wss://wbs.mexc.com/ws"
+        
+        try:
+            logger.info("🔌 Подключаюсь к WebSocket MEXC...")
+            self.ws_connection = await websockets.connect(
+                uri, 
+                ping_interval=20, 
+                ping_timeout=20,
+                max_size=2**20
+            )
+            self.running = True
+            self.reconnect_attempts = 0
+            logger.info("✅ WebSocket подключен")
+            
+            asyncio.create_task(self._listen())
+            
+            if self.subscribed_symbols:
+                await self._resubscribe_all()
+                
+        except Exception as e:
+            logger.error(f"❌ Ошибка подключения WebSocket: {e}")
+            self.running = False
+            await self._handle_disconnect()
+    
+    async def _listen(self):
+        """Прослушивание входящих сообщений"""
+        while self.running:
+            try:
+                message = await asyncio.wait_for(self.ws_connection.recv(), timeout=30)
+                await self._process_message(message)
+            except asyncio.TimeoutError:
+                try:
+                    await self.ws_connection.ping()
+                except:
+                    await self._handle_disconnect()
+                    break
+            except websockets.exceptions.ConnectionClosed:
+                logger.warning("⚠️ WebSocket соединение закрыто")
+                await self._handle_disconnect()
+                break
+            except Exception as e:
+                logger.error(f"❌ Ошибка при получении сообщения: {e}")
+                await asyncio.sleep(1)
+    
+    async def _process_message(self, message: str):
+        """Обработка входящего сообщения"""
+        try:
+            data = json.loads(message)
+            
+            if 'ping' in data:
+                await self.ws_connection.send(json.dumps({"pong": data['ping']}))
+                return
+            
+            if 'd' in data and 'deals' in data['d']:
+                channel = data.get('c', '')
+                if '@' in channel:
+                    parts = channel.split('@')
+                    if len(parts) >= 3:
+                        symbol_raw = parts[-1]
+                        if symbol_raw.endswith('USDT'):
+                            base = symbol_raw.replace('USDT', '')
+                            symbol = f"{base}/USDT"
+                            
+                            deals = data['d']['deals']
+                            if deals:
+                                latest_deal = deals[-1]
+                                price = float(latest_deal.get('p', 0))
+                                timestamp = latest_deal.get('t', int(time.time() * 1000))
+                                
+                                async with self.lock:
+                                    self.latest_prices[symbol] = {
+                                        'price': price,
+                                        'timestamp': timestamp,
+                                        'time': datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                                    }
+                                
+                                if self.callback:
+                                    await self.callback(symbol, price, timestamp)
+            
+            elif 'msg' in data and data['msg'] == 'SUBSCRIPTION':
+                logger.info(f"✅ Подписка подтверждена: {data.get('c', '')}")
+                
+        except Exception as e:
+            logger.error(f"❌ Ошибка обработки сообщения: {e}")
+    
+    async def subscribe(self, symbol: str) -> bool:
+        """Подписка на обновления цены"""
+        try:
+            if not self.ws_connection or not self.running:
+                return False
+            
+            symbol_raw = symbol.replace('/', '').upper()
+            subscribe_msg = {
+                "method": "SUBSCRIPTION",
+                "params": [f"spot@public.deals.v3.api@{symbol_raw}"]
+            }
+            
+            async with self.lock:
+                await self.ws_connection.send(json.dumps(subscribe_msg))
+                self.subscribed_symbols.add(symbol)
+                logger.info(f"✅ WebSocket подписка на {symbol}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка подписки на {symbol}: {e}")
+            return False
+    
+    async def _resubscribe_all(self):
+        """Переподписка на все символы"""
+        logger.info(f"🔄 Переподписываюсь на {len(self.subscribed_symbols)} символов...")
+        for symbol in self.subscribed_symbols.copy():
+            await self.subscribe(symbol)
+            await asyncio.sleep(0.1)
+    
+    async def _handle_disconnect(self):
+        """Обработка отключения"""
+        self.running = False
+        if self.ws_connection:
+            await self.ws_connection.close()
+        
+        if self.reconnect_attempts < self.max_reconnect_attempts:
+            self.reconnect_attempts += 1
+            wait_time = 2 ** self.reconnect_attempts
+            logger.info(f"🔄 Попытка переподключения {self.reconnect_attempts}/{self.max_reconnect_attempts} через {wait_time}с...")
+            await asyncio.sleep(wait_time)
+            await self.connect()
+        else:
+            logger.error("❌ Превышено количество попыток переподключения")
+    
+    async def get_latest_price(self, symbol: str) -> Optional[float]:
+        """Получение последней цены"""
+        async with self.lock:
+            data = self.latest_prices.get(symbol)
+            if data:
+                return data['price']
+        return None
+    
+    async def stop(self):
+        """Остановка WebSocket"""
+        self.running = False
+        if self.ws_connection:
+            await self.ws_connection.close()
+        logger.info("🛑 WebSocket монитор остановлен")
+
+
+# ============== АНАЛИЗАТОР КОРРЕЛЯЦИИ ==============
+
+class CorrelationAnalyzer:
+    """Анализ корреляции с BTC"""
+    
+    def __init__(self):
+        self.btc_prices = []
+        self.coin_prices = {}
+        self.correlation_threshold = 0.7
+        self.lookback = 100
+        
+    async def update_btc_price(self, price: float):
+        """Обновление цены BTC"""
+        self.btc_prices.append(price)
+        if len(self.btc_prices) > self.lookback:
+            self.btc_prices.pop(0)
+    
+    async def update_coin_price(self, symbol: str, price: float):
+        """Обновление цены монеты"""
+        if symbol not in self.coin_prices:
+            self.coin_prices[symbol] = []
+        
+        self.coin_prices[symbol].append(price)
+        if len(self.coin_prices[symbol]) > self.lookback:
+            self.coin_prices[symbol].pop(0)
+    
+    def calculate_correlation(self, symbol: str) -> Dict:
+        """Расчет корреляции с BTC"""
+        result = {
+            'correlation': 0,
+            'strength': 'weak',
+            'description': ''
+        }
+        
+        if symbol == 'BTC/USDT':
+            result['description'] = 'BTC сам с собой'
+            return result
+        
+        if symbol not in self.coin_prices or len(self.coin_prices[symbol]) < 30:
+            return result
+        
+        if len(self.btc_prices) < 30:
+            return result
+        
+        # Берем одинаковое количество точек
+        min_len = min(len(self.btc_prices), len(self.coin_prices[symbol]))
+        btc = self.btc_prices[-min_len:]
+        coin = self.coin_prices[symbol][-min_len:]
+        
+        # Расчет корреляции Пирсона
+        btc_mean = np.mean(btc)
+        coin_mean = np.mean(coin)
+        
+        numerator = sum((btc[i] - btc_mean) * (coin[i] - coin_mean) for i in range(min_len))
+        denominator = np.sqrt(sum((btc[i] - btc_mean)**2 for i in range(min_len)) * 
+                              sum((coin[i] - coin_mean)**2 for i in range(min_len)))
+        
+        if denominator != 0:
+            corr = numerator / denominator
+            result['correlation'] = round(corr, 2)
+            
+            if abs(corr) > 0.8:
+                result['strength'] = 'very_strong'
+                result['description'] = f"Очень сильная корреляция с BTC ({corr:.2f})"
+            elif abs(corr) > 0.6:
+                result['strength'] = 'strong'
+                result['description'] = f"Сильная корреляция с BTC ({corr:.2f})"
+            elif abs(corr) > 0.4:
+                result['strength'] = 'medium'
+                result['description'] = f"Средняя корреляция с BTC ({corr:.2f})"
+            else:
+                result['strength'] = 'weak'
+                result['description'] = f"Слабая корреляция с BTC ({corr:.2f})"
+        
+        return result
+
 
 # ============== ПАМП-ДАМП АНАЛИЗАТОР ==============
 
@@ -274,43 +556,38 @@ class DivergenceAnalyzer:
         Возвращает словарь с информацией о дивергенциях.
         """
         result = {
-            'bullish': False,  # бычья дивергенция (цена делает更低 лой, RSI выше)
-            'bearish': False,  # медвежья дивергенция (цена делает выше хай, RSI ниже)
-            'strength': 0,     # сила дивергенции (0-100)
+            'bullish': False,
+            'bearish': False,
+            'strength': 0,
             'description': ''
         }
         
-        # Ищем свинги по цене и RSI
         price_highs, price_lows = self.find_swings(df, 'close')
         rsi_highs, rsi_lows = self.find_swings(df, 'rsi')
         
         if len(price_lows) >= 2 and len(rsi_lows) >= 2:
-            # Последние два лоя
             last_price_low = price_lows[-1]
             prev_price_low = price_lows[-2]
             last_rsi_low = rsi_lows[-1]
             prev_rsi_low = rsi_lows[-2]
             
-            # Бычья дивергенция: цена делает更低 лой, а RSI выше
             if (last_price_low[1] < prev_price_low[1] and 
                 last_rsi_low[1] > prev_rsi_low[1]):
                 result['bullish'] = True
                 result['strength'] = min(100, abs(last_price_low[1] - prev_price_low[1]) / prev_price_low[1] * 500)
-                result['description'] = f"Бычья дивергенция RSI: цена {last_price_low[1]:.2f} < {prev_price_low[1]:.2f}, RSI {last_rsi_low[1]:.1f} > {prev_rsi_low[1]:.1f}"
+                result['description'] = f"Бычья дивергенция RSI"
         
         if len(price_highs) >= 2 and len(rsi_highs) >= 2:
-            # Последние два хая
             last_price_high = price_highs[-1]
             prev_price_high = price_highs[-2]
             last_rsi_high = rsi_highs[-1]
             prev_rsi_high = rsi_highs[-2]
             
-            # Медвежья дивергенция: цена делает выше хай, а RSI ниже
             if (last_price_high[1] > prev_price_high[1] and 
                 last_rsi_high[1] < prev_rsi_high[1]):
                 result['bearish'] = True
                 result['strength'] = min(100, abs(last_price_high[1] - prev_price_high[1]) / prev_price_high[1] * 500)
-                result['description'] = f"Медвежья дивергенция RSI: цена {last_price_high[1]:.2f} > {prev_price_high[1]:.2f}, RSI {last_rsi_high[1]:.1f} < {prev_rsi_high[1]:.1f}"
+                result['description'] = f"Медвежья дивергенция RSI"
         
         return result
     
@@ -326,11 +603,9 @@ class DivergenceAnalyzer:
             'description': ''
         }
         
-        # Используем MACD линию для поиска дивергенций
         if 'MACD_12_26_9' not in df.columns:
             return result
         
-        # Ищем свинги по цене и MACD
         price_highs, price_lows = self.find_swings(df, 'close')
         macd_highs, macd_lows = self.find_swings(df, 'MACD_12_26_9')
         
@@ -340,7 +615,6 @@ class DivergenceAnalyzer:
             last_macd_low = macd_lows[-1]
             prev_macd_low = macd_lows[-2]
             
-            # Бычья дивергенция MACD
             if (last_price_low[1] < prev_price_low[1] and 
                 last_macd_low[1] > prev_macd_low[1]):
                 result['bullish'] = True
@@ -353,7 +627,6 @@ class DivergenceAnalyzer:
             last_macd_high = macd_highs[-1]
             prev_macd_high = macd_highs[-2]
             
-            # Медвежья дивергенция MACD
             if (last_price_high[1] > prev_price_high[1] and 
                 last_macd_high[1] < prev_macd_high[1]):
                 result['bearish'] = True
@@ -363,10 +636,7 @@ class DivergenceAnalyzer:
         return result
     
     def analyze(self, df: pd.DataFrame) -> Dict:
-        """
-        Полный анализ дивергенций.
-        Возвращает словарь с результатами.
-        """
+        """Полный анализ дивергенций"""
         rsi_div = self.detect_rsi_divergence(df)
         macd_div = self.detect_macd_divergence(df)
         
@@ -397,7 +667,12 @@ class FuturesDataFetcher:
         self.exchanges = {}
         self.available_pairs = {}
         self.session = None
+        self.websocket = None
         logger.info("✅ MEXC будет работать через прямое API (синхронные запросы)")
+        
+        # Инициализация WebSocket если включено
+        if FEATURES['data_sources']['websocket']:
+            asyncio.create_task(self._init_websocket())
         
         # Используем настройки из FEATURES
         if FEATURES['exchanges']['bybit']:
@@ -410,17 +685,20 @@ class FuturesDataFetcher:
         else:
             logger.warning("⚠️ BingX временно отключен")
     
+    async def _init_websocket(self):
+        """Инициализация WebSocket"""
+        self.websocket = WebSocketMonitor()
+        await self.websocket.connect()
+    
     async def fetch_all_pairs(self, exchange_name: str) -> List[str]:
         """Получение всех доступных пар. Работает только для MEXC."""
         if exchange_name != 'MEXC':
             return []
         
         try:
-            import requests
             url = "https://api.mexc.com/api/v3/exchangeInfo"
             logger.info(f"🔍 Загружаю список всех пар с MEXC...")
             
-            # Используем синхронный requests в отдельном потоке
             response = await asyncio.to_thread(requests.get, url, timeout=10)
             
             if response.status_code != 200:
@@ -429,14 +707,18 @@ class FuturesDataFetcher:
             
             data = response.json()
             
-            # Парсим ответ и собираем все USDT пары
             all_pairs = []
             for symbol_info in data.get('symbols', []):
                 if symbol_info.get('quoteAsset') == 'USDT' and symbol_info.get('status') == '1':
                     base = symbol_info.get('baseAsset')
                     quote = symbol_info.get('quoteAsset')
                     if base and quote:
-                        all_pairs.append(f"{base}/{quote}")
+                        pair = f"{base}/{quote}"
+                        all_pairs.append(pair)
+                        
+                        # Подписываемся на WebSocket
+                        if self.websocket and FEATURES['data_sources']['websocket']:
+                            await self.websocket.subscribe(pair)
             
             logger.info(f"📊 MEXC: загружено {len(all_pairs)} USDT пар")
             return all_pairs
@@ -451,11 +733,8 @@ class FuturesDataFetcher:
             return None
         
         try:
-            import requests
-            # Конвертируем символ
             symbol_raw = symbol.replace('/', '')
             
-            # Маппинг таймфреймов
             interval_map = {
                 '1m': '1m', '5m': '5m', '15m': '15m', '30m': '30m',
                 '1h': '1h', '4h': '4h', '1d': '1d', '1w': '1w'
@@ -464,7 +743,6 @@ class FuturesDataFetcher:
             
             url = f"https://api.mexc.com/api/v3/klines?symbol={symbol_raw}&interval={interval}&limit={limit}"
             
-            # Выполняем запрос в отдельном потоке
             response = await asyncio.to_thread(requests.get, url, timeout=10)
             
             if response.status_code != 200:
@@ -477,7 +755,6 @@ class FuturesDataFetcher:
                 logger.warning(f"⚠️ MEXC: недостаточно данных для {symbol} {timeframe}")
                 return None
             
-            # Преобразуем ответ в DataFrame
             rows = []
             for item in data:
                 rows.append([item[0], float(item[1]), float(item[2]), float(item[3]), float(item[4]), float(item[5])])
@@ -503,7 +780,6 @@ class FuturesDataFetcher:
             return {}
         
         try:
-            import requests
             symbol_raw = symbol.replace('/', '')
             url = f"https://api.mexc.com/api/v3/ticker/24hr?symbol={symbol_raw}"
             
@@ -522,9 +798,16 @@ class FuturesDataFetcher:
         except:
             return {}
     
+    async def get_websocket_price(self, symbol: str) -> Optional[float]:
+        """Получение последней цены из WebSocket"""
+        if self.websocket:
+            return await self.websocket.get_latest_price(symbol)
+        return None
+    
     async def close_all(self):
         """Закрытие соединений."""
-        pass
+        if self.websocket:
+            await self.websocket.stop()
 
 
 class MultiTimeframeAnalyzer:
@@ -532,7 +815,6 @@ class MultiTimeframeAnalyzer:
     
     def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         """Расчет индикаторов"""
-        # Используем настройки из INDICATOR_SETTINGS
         df['rsi'] = calculate_rsi(df['close'], INDICATOR_SETTINGS['rsi_period'])
         
         macd_line, signal_line, hist = calculate_macd(
@@ -545,7 +827,6 @@ class MultiTimeframeAnalyzer:
         df['MACDs_12_26_9'] = signal_line
         df['MACDh_12_26_9'] = hist
         
-        # EMA для разных периодов
         for period in INDICATOR_SETTINGS['ema_periods']:
             df[f'ema_{period}'] = calculate_ema(df['close'], period)
         
@@ -562,9 +843,12 @@ class MultiTimeframeAnalyzer:
         df['BBU_20_2.0'] = upper
         
         df['atr'] = calculate_atr(df['high'], df['low'], df['close'], INDICATOR_SETTINGS['atr_period'])
-        
         df['volume_sma'] = calculate_sma(df['volume'], INDICATOR_SETTINGS['volume_sma_period'])
         df['volume_ratio'] = df['volume'] / df['volume_sma']
+        
+        # VWAP
+        if FEATURES['advanced']['vwap']:
+            df['vwap'] = calculate_vwap(df)
         
         return df
     
@@ -656,6 +940,15 @@ class MultiTimeframeAnalyzer:
             reasons.append(f"Объем x{last['volume_ratio']:.1f} от нормы")
             confidence += INDICATOR_WEIGHTS['volume']
         
+        # VWAP
+        if FEATURES['advanced']['vwap'] and 'vwap' in df.columns:
+            if last['close'] > last['vwap']:
+                reasons.append(f"Цена выше VWAP ({last['vwap']:.2f})")
+                confidence += 10
+            else:
+                reasons.append(f"Цена ниже VWAP ({last['vwap']:.2f})")
+                confidence += 10
+        
         # Сигналы от старших таймфреймов
         for signal in alignment['signals']:
             reasons.append(f"📊 {signal}")
@@ -691,8 +984,8 @@ class MultiTimeframeAnalyzer:
                 reasons.append(f"📉 Падение за 24ч: {price_change:.1f}%")
         
         # Определение направления
-        bullish_keywords = ['перепродан', 'Бычье', 'восходящий', 'негативный фандинг']
-        bearish_keywords = ['перекуплен', 'Медвежье', 'нисходящий', 'позитивный фандинг']
+        bullish_keywords = ['перепродан', 'Бычье', 'восходящий', 'негативный фандинг', 'выше VWAP']
+        bearish_keywords = ['перекуплен', 'Медвежье', 'нисходящий', 'позитивный фандинг', 'ниже VWAP']
         
         bullish = sum(1 for r in reasons if any(k in r for k in bullish_keywords))
         bearish = sum(1 for r in reasons if any(k in r for k in bearish_keywords))
@@ -778,6 +1071,13 @@ class FuturesScannerBot:
             logger.info("✅ Анализатор дивергенций инициализирован")
         else:
             self.divergence = None
+        
+        # Анализатор корреляции
+        if FEATURES['advanced']['btc_correlation']:
+            self.correlation = CorrelationAnalyzer()
+            logger.info("✅ Анализатор корреляции инициализирован")
+        else:
+            self.correlation = None
     
     def format_funding(self, rate: float) -> str:
         if rate is None:
@@ -823,6 +1123,24 @@ class FuturesScannerBot:
                     f"(до {event['end_price']:.8f})"
                 )
             lines.append("")
+        
+        # Отображение дивергенций
+        if signal.get('divergence') and signal['divergence']['has_divergence']:
+            lines.append(f"📊 **Дивергенции:**")
+            for div_signal in signal['divergence']['signals']:
+                lines.append(f"└ {div_signal}")
+            lines.append("")
+        
+        # Отображение свечных паттернов
+        if FEATURES['advanced']['patterns'] and signal.get('patterns'):
+            patterns = signal['patterns']
+            active_patterns = [k for k, v in patterns.items() if v]
+            if active_patterns:
+                lines.append(f"🕯 **Свечные паттерны:**")
+                for pattern in active_patterns:
+                    emoji_pattern = "🟢" if pattern in ['hammer', 'engulfing'] else "🔴"
+                    lines.append(f"└ {emoji_pattern} {pattern.replace('_', ' ').title()}")
+                lines.append("")
         
         if 'target_1' in signal:
             lines.extend([
@@ -974,6 +1292,12 @@ class FuturesScannerBot:
                             if signal_divergence and signal_divergence['has_divergence']:
                                 logger.info(f"📊 Обнаружена дивергенция для {pair}: {signal_divergence['signals']}")
                         
+                        # Анализ свечных паттернов
+                        patterns = None
+                        if FEATURES['advanced']['patterns'] and 'current' in dataframes:
+                            df_current = dataframes['current']
+                            patterns = detect_candle_patterns(df_current)
+                        
                         # Получаем метаданные
                         funding = await self.fetcher.fetch_funding_rate('MEXC', pair)
                         ticker = await self.fetcher.fetch_ticker('MEXC', pair)
@@ -987,11 +1311,10 @@ class FuturesScannerBot:
                         # Генерируем сигнал
                         signal = self.analyzer.generate_signal(dataframes, metadata, pair, 'MEXC')
                         
-                        # Добавляем информацию о памп-дампе в сигнал
+                        # Добавляем информацию в сигнал
                         if signal:
                             if pump_events:
                                 signal['pump_dump'] = pump_events
-                                # Увеличиваем уверенность при сильном импульсе
                                 if len(pump_events) > 0:
                                     strongest = max(pump_events, key=lambda x: abs(x['change_percent']))
                                     if abs(strongest['change_percent']) >= 10:
@@ -999,15 +1322,22 @@ class FuturesScannerBot:
                                     elif abs(strongest['change_percent']) >= 7:
                                         signal['confidence'] = min(signal['confidence'] + 10, 100)
                             
-                            # Добавляем информацию о дивергенции в сигнал
                             if signal_divergence and signal_divergence['has_divergence']:
                                 signal['divergence'] = signal_divergence
-                                # Увеличиваем уверенность при дивергенции
                                 signal['confidence'] = min(signal['confidence'] + signal_divergence['strength'] / 2, 100)
                                 if signal_divergence['bullish']:
                                     signal['reasons'].append(f"📊 Бычья дивергенция (сила {signal_divergence['strength']:.0f}%)")
                                 elif signal_divergence['bearish']:
                                     signal['reasons'].append(f"📊 Медвежья дивергенция (сила {signal_divergence['strength']:.0f}%)")
+                            
+                            if patterns:
+                                signal['patterns'] = patterns
+                                if patterns.get('engulfing'):
+                                    signal['reasons'].append("📊 Паттерн поглощения")
+                                    signal['confidence'] = min(signal['confidence'] + 15, 100)
+                                if patterns.get('pin_bar'):
+                                    signal['reasons'].append("📊 Пинбар")
+                                    signal['confidence'] = min(signal['confidence'] + 10, 100)
                         
                         if signal and signal['confidence'] >= MIN_CONFIDENCE:
                             all_signals.append(signal)
@@ -1017,7 +1347,7 @@ class FuturesScannerBot:
                         if (i + 1) % 10 == 0:
                             logger.info(f"📊 Прогресс MEXC: {i + 1}/{min(PAIRS_TO_SCAN, len(pairs))}")
                         
-                        await asyncio.sleep(0.3)  # Задержка между запросами
+                        await asyncio.sleep(0.3)
                         
                     except Exception as e:
                         logger.error(f"Ошибка анализа {pair}: {e}")
@@ -1054,7 +1384,7 @@ class FuturesScannerBot:
             for i, signal in enumerate(signals[:5]):  # Отправляем только 5 лучших
                 await self.send_signal(signal)
                 if i < len(signals[:5]) - 1:  # Если это не последний сигнал
-                    await asyncio.sleep(3)  # Увеличиваем паузу до 3 секунд
+                    await asyncio.sleep(3)
         else:
             logger.info("❌ Сигналов не найдено")
     
@@ -1093,10 +1423,14 @@ class TelegramHandler:
     
     async def start(self, update, context):
         await update.message.reply_text(
-            "🤖 *Фьючерсный сканер*\n\n"
-            "📊 Анализирую MEXC, Bybit, BingX\n"
+            "🤖 *Фьючерсный сканер PRO*\n\n"
+            "📊 Анализирую MEXC\n"
             "📈 Мультитаймфрейм (15m/1h/1d/1w)\n"
-            "🎯 Цели и стоп-лосс\n\n"
+            "🔥 Памп-дамп анализ (7%+)\n"
+            "📈 Дивергенции RSI/MACD\n"
+            "📊 VWAP институциональный уровень\n"
+            "🕯 Свечные паттерны\n"
+            "⚡ WebSocket реального времени\n\n"
             "Команды:\n"
             "/scan - Сканировать\n"
             "/status - Статус\n"
@@ -1117,16 +1451,28 @@ class TelegramHandler:
     
     async def status(self, update, context):
         text = "*📡 Статус:*\n\n"
-        for name in self.bot.fetcher.exchanges.keys():
-            status = "✅" if await self.bot.fetcher.test_connection(name) else "❌"
-            text += f"{status} {name}\n"
+        text += f"✅ MEXC: активен\n"
+        text += f"⏸️ Bybit: отключен\n"
+        text += f"⏸️ BingX: отключен\n"
+        text += f"\n📊 Функции:\n"
+        text += f"✓ Памп-дамп: {'вкл' if FEATURES['advanced']['pump_dump'] else 'выкл'}\n"
+        text += f"✓ Дивергенции: {'вкл' if FEATURES['advanced']['divergence'] else 'выкл'}\n"
+        text += f"✓ VWAP: {'вкл' if FEATURES['advanced']['vwap'] else 'выкл'}\n"
+        text += f"✓ Паттерны: {'вкл' if FEATURES['advanced']['patterns'] else 'выкл'}\n"
+        text += f"✓ WebSocket: {'вкл' if FEATURES['data_sources']['websocket'] else 'выкл'}"
         await update.message.reply_text(text, parse_mode='Markdown')
     
     async def help(self, update, context):
         await update.message.reply_text(
             "*Помощь*\n\n"
-            "Бот анализирует фьючерсные пары\n"
-            "При проблемах проверьте интернет",
+            "📊 *Анализ:*\n"
+            "• RSI, MACD, EMA\n"
+            "• Объемы, VWAP\n"
+            "• Дивергенции\n"
+            "• Памп-дамп (>7%)\n"
+            "• Свечные паттерны\n\n"
+            "⚙️ Настройки в config.py\n"
+            "Можно включать/выключать функции",
             parse_mode='Markdown'
         )
     
