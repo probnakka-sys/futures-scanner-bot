@@ -729,7 +729,7 @@ class TelegramHandler:
     
     def __init__(self, bot: FuturesScannerBot):
         self.bot = bot
-        self.app = Application.builder().token(TELEGRAM_TOKEN).build()
+        self.app = Application.builder().token(8472133401:AAEYcS6g7k7Hd50I2hrxlq5jX4p9uOXkk5s).build()
         self.register()
     
     def register(self):
@@ -802,3 +802,4 @@ async def main():
 if __name__ == "__main__":
 
     asyncio.run(main())
+
