@@ -20,7 +20,7 @@ TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 UPDATE_INTERVAL = int(os.getenv('UPDATE_INTERVAL', 900))  # 15 минут
 MIN_CONFIDENCE = int(os.getenv('MIN_CONFIDENCE', 65))      # Мин. уверенность
 TIMEFRAME = os.getenv('TIMEFRAME', '15m')                  # Основной таймфрейм
-PAIRS_TO_SCAN = int(os.getenv('PAIRS_TO_SCAN', 100))        # Сколько пар сканировать
+PAIRS_TO_SCAN = int(os.getenv('PAIRS_TO_SCAN', 50))        # Сколько пар сканировать
 
 # --- Реферальные ссылки ---
 REF_LINKS = {
@@ -42,7 +42,7 @@ FEATURES = {
     # === ИСТОЧНИКИ ДАННЫХ ===
     'data_sources': {
         'http': True,       # HTTP API для исторических данных
-        'websocket': False, # WebSocket для реального времени (в разработке)
+        'websocket': True,  # WebSocket для реального времени
     },
     
     # === ТАЙМФРЕЙМЫ ===
@@ -63,14 +63,14 @@ FEATURES = {
         'volume': True,     # Анализ объемов
     },
     
-    # === РАСШИРЕННЫЙ АНАЛИЗ (новые функции) ===
+    # === РАСШИРЕННЫЙ АНАЛИЗ ===
     'advanced': {
-        'divergence': True,    # Дивергенции RSI/MACD
-        'btc_correlation': False, # Корреляция с BTC
-        'vwap': False,          # VWAP индикатор
-        'patterns': False,      # Свечные паттерны
-        'pump_dump': True,     # Памп-дамп анализ
-        'fibonacci': False,     # Уровни Фибоначчи
+        'divergence': True,      # Дивергенции RSI/MACD
+        'btc_correlation': False, # Корреляция с BTC (пока отключено)
+        'vwap': True,            # VWAP индикатор
+        'patterns': True,        # Свечные паттерны
+        'pump_dump': True,       # Памп-дамп анализ
+        'fibonacci': False,      # Уровни Фибоначчи (пока отключено)
     },
     
     # === ЭКСПЕРИМЕНТАЛЬНЫЕ ===
