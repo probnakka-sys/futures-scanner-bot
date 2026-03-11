@@ -154,8 +154,10 @@ logger = logging.getLogger(__name__)
 
 # ============== WEBSOCKET МОНИТОР ==============
 
+# ============== WEBSOCKET МОНИТОР ==============
+
 class WebSocketMonitor:
-    """Мониторинг цен в реальном времени через WebSocket"""
+    """Мониторинг цен в реальном времени через WebSocket MEXC"""
     
     def __init__(self, callback_function=None):
         self.callback = callback_function
@@ -169,24 +171,30 @@ class WebSocketMonitor:
         self.message_count = 0
         self.last_minute_count = 0
         self.last_minute_time = time.time()
+        self.ping_task = None
+        self.MAX_SUBSCRIPTIONS = 30  # Максимум подписок на одно соединение [citation:2]
         
     async def connect(self):
-        """Подключение к WebSocket MEXC"""
-        uri = "wss://wbs.mexc.com/ws"
+        """Подключение к WebSocket MEXC (правильный URL)"""
+        # Используем правильный URL из документации [citation:2][citation:8]
+        uri = "wss://wbs-api.mexc.com/ws"
         
         try:
-            logger.info("🔌 Подключаюсь к WebSocket MEXC...")
+            logger.info(f"🔌 Подключаюсь к WebSocket MEXC: {uri}")
             self.ws_connection = await websockets.connect(
                 uri, 
-                ping_interval=20, 
-                ping_timeout=20,
-                max_size=2**20
+                ping_interval=None,  # Отключаем автоматический ping, будем отправлять сами
+                ping_timeout=None,
+                max_size=2**20,
+                compression=None
             )
             self.running = True
             self.reconnect_attempts = 0
             logger.info("✅ WebSocket подключен")
             
+            # Запускаем задачи
             asyncio.create_task(self._listen())
+            self.ping_task = asyncio.create_task(self._ping_loop())
             asyncio.create_task(self._stats_logger())
             
             if self.subscribed_symbols:
@@ -197,15 +205,30 @@ class WebSocketMonitor:
             self.running = False
             await self._handle_disconnect()
     
+    async def _ping_loop(self):
+        """Отправка PING каждые 20 секунд для поддержания соединения [citation:2]"""
+        while self.running:
+            try:
+                await asyncio.sleep(20)
+                if self.ws_connection and self.running:
+                    # Формат PING из документации [citation:2]
+                    ping_msg = {"method": "PING"}
+                    await self.ws_connection.send(json.dumps(ping_msg))
+                    logger.debug("📤 PING отправлен")
+            except Exception as e:
+                logger.error(f"❌ Ошибка отправки PING: {e}")
+                break
+    
     async def _stats_logger(self):
         """Логирование статистики WebSocket"""
         while self.running:
-            await asyncio.sleep(60)  # раз в минуту
+            await asyncio.sleep(60)
             current_time = time.time()
             messages_per_min = self.message_count - self.last_minute_count
             self.last_minute_count = self.message_count
             self.last_minute_time = current_time
-            logger.info(f"📊 WebSocket статистика: {messages_per_min} сообщений/мин, {len(self.subscribed_symbols)} подписок")
+            sub_count = len(self.subscribed_symbols)
+            logger.info(f"📊 WebSocket: {messages_per_min} сообщ/мин, {sub_count}/{self.MAX_SUBSCRIPTIONS} подписок")
     
     async def _listen(self):
         """Прослушивание входящих сообщений"""
@@ -214,16 +237,20 @@ class WebSocketMonitor:
                 message = await asyncio.wait_for(self.ws_connection.recv(), timeout=30)
                 self.message_count += 1
                 await self._process_message(message)
+                
             except asyncio.TimeoutError:
+                # Если 30 секунд нет сообщений, проверяем соединение
                 try:
                     await self.ws_connection.ping()
                 except:
                     await self._handle_disconnect()
                     break
+                    
             except websockets.exceptions.ConnectionClosed:
                 logger.warning("⚠️ WebSocket соединение закрыто")
                 await self._handle_disconnect()
                 break
+                
             except Exception as e:
                 logger.error(f"❌ Ошибка при получении сообщения: {e}")
                 await asyncio.sleep(1)
@@ -231,12 +258,26 @@ class WebSocketMonitor:
     async def _process_message(self, message: str):
         """Обработка входящего сообщения"""
         try:
-            data = json.loads(message)
-            
-            if 'ping' in data:
-                await self.ws_connection.send(json.dumps({"pong": data['ping']}))
+            # Проверяем, не бинарное ли это сообщение
+            if isinstance(message, bytes):
+                # Если это бинарные данные (protobuf), пропускаем [citation:9]
+                logger.debug("📦 Получены бинарные данные (protobuf)")
                 return
             
+            data = json.loads(message)
+            
+            # Обработка PONG от сервера [citation:2]
+            if data.get('msg') == 'PONG':
+                logger.debug("📥 PONG получен")
+                return
+            
+            # Обработка подтверждения подписки
+            if 'id' in data and 'msg' in data:
+                if 'SUBSCRIPTION' in data['msg']:
+                    logger.info(f"✅ Подписка подтверждена: {data.get('c', '')}")
+                return
+            
+            # Обработка данных о сделках
             if 'd' in data and 'deals' in data['d']:
                 channel = data.get('c', '')
                 if '@' in channel:
@@ -249,6 +290,7 @@ class WebSocketMonitor:
                             
                             deals = data['d']['deals']
                             if deals:
+                                # Берем последнюю сделку
                                 latest_deal = deals[-1]
                                 price = float(latest_deal.get('p', 0))
                                 timestamp = latest_deal.get('t', int(time.time() * 1000))
@@ -263,9 +305,30 @@ class WebSocketMonitor:
                                 if self.callback:
                                     await self.callback(symbol, price, timestamp)
             
-            elif 'msg' in data and data['msg'] == 'SUBSCRIPTION':
-                logger.info(f"✅ Подписка подтверждена: {data.get('c', '')}")
+            # Обработка мини-тикера (альтернативный источник цен) [citation:2]
+            elif 'd' in data and 's' in data['d']:
+                channel = data.get('c', '')
+                if 'miniTicker' in channel:
+                    ticker_data = data['d']
+                    symbol_raw = ticker_data.get('s', '')
+                    if symbol_raw.endswith('USDT'):
+                        base = symbol_raw.replace('USDT', '')
+                        symbol = f"{base}/USDT"
+                        price = float(ticker_data.get('p', 0))
+                        timestamp = ticker_data.get('t', int(time.time() * 1000))
+                        
+                        async with self.lock:
+                            self.latest_prices[symbol] = {
+                                'price': price,
+                                'timestamp': timestamp,
+                                'time': datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                            }
+                        
+                        if self.callback:
+                            await self.callback(symbol, price, timestamp)
                 
+        except json.JSONDecodeError:
+            logger.error(f"❌ Ошибка парсинга JSON: {message[:100]}")
         except Exception as e:
             logger.error(f"❌ Ошибка обработки сообщения: {e}")
     
@@ -273,18 +336,33 @@ class WebSocketMonitor:
         """Подписка на обновления цены"""
         try:
             if not self.ws_connection or not self.running:
+                logger.warning(f"⚠️ WebSocket не подключен, невозможно подписаться на {symbol}")
                 return False
             
+            # Проверяем лимит подписок [citation:2]
+            if len(self.subscribed_symbols) >= self.MAX_SUBSCRIPTIONS:
+                logger.warning(f"⚠️ Достигнут лимит подписок ({self.MAX_SUBSCRIPTIONS}). Невозможно подписаться на {symbol}")
+                return False
+            
+            # Конвертируем символ из формата BTC/USDT в BTCUSDT
             symbol_raw = symbol.replace('/', '').upper()
-            subscribe_msg = {
-                "method": "SUBSCRIPTION",
-                "params": [f"spot@public.deals.v3.api@{symbol_raw}"]
-            }
+            
+            # Пробуем разные каналы [citation:6][citation:10]
+            channels = [
+                f"spot@public.deals.v3.api@{symbol_raw}",        # Сделки [citation:10]
+                f"spot@public.miniTicker.v3.api@{symbol_raw}",  # Мини-тикер [citation:2]
+            ]
             
             async with self.lock:
-                await self.ws_connection.send(json.dumps(subscribe_msg))
+                for channel in channels:
+                    subscribe_msg = {
+                        "method": "SUBSCRIPTION",
+                        "params": [channel]
+                    }
+                    await self.ws_connection.send(json.dumps(subscribe_msg))
+                    logger.info(f"✅ WebSocket подписка на {symbol} через {channel}")
+                
                 self.subscribed_symbols.add(symbol)
-                logger.info(f"✅ WebSocket подписка на {symbol}")
             return True
             
         except Exception as e:
@@ -292,15 +370,24 @@ class WebSocketMonitor:
             return False
     
     async def _resubscribe_all(self):
-        """Переподписка на все символы"""
-        logger.info(f"🔄 Переподписываюсь на {len(self.subscribed_symbols)} символов...")
-        for symbol in self.subscribed_symbols.copy():
-            await self.subscribe(symbol)
-            await asyncio.sleep(0.1)
+        """Переподписка на все символы после переподключения"""
+        if self.subscribed_symbols:
+            logger.info(f"🔄 Переподписываюсь на {len(self.subscribed_symbols)} символов...")
+            # Подписываемся пакетами по 30 [citation:2]
+            symbols_list = list(self.subscribed_symbols)
+            for i in range(0, len(symbols_list), self.MAX_SUBSCRIPTIONS):
+                batch = symbols_list[i:i+self.MAX_SUBSCRIPTIONS]
+                for symbol in batch:
+                    await self.subscribe(symbol)
+                    await asyncio.sleep(0.1)
+                await asyncio.sleep(1)  # Пауза между батчами
     
     async def _handle_disconnect(self):
-        """Обработка отключения"""
+        """Обработка отключения с автоматическим переподключением"""
         self.running = False
+        if self.ping_task:
+            self.ping_task.cancel()
+        
         if self.ws_connection:
             await self.ws_connection.close()
         
@@ -328,6 +415,8 @@ class WebSocketMonitor:
     async def stop(self):
         """Остановка WebSocket"""
         self.running = False
+        if self.ping_task:
+            self.ping_task.cancel()
         if self.ws_connection:
             await self.ws_connection.close()
         logger.info("🛑 WebSocket монитор остановлен")
@@ -1520,3 +1609,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
