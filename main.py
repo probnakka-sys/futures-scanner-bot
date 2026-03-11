@@ -109,14 +109,8 @@ def calculate_vwap(df: pd.DataFrame) -> pd.Series:
     return vwap
 
 def detect_candle_patterns(df: pd.DataFrame) -> Dict:
-    """Обнаружение свечных паттернов"""
-    patterns = {
-        'pin_bar': False,
-        'engulfing': False,
-        'doji': False,
-        'hammer': False,
-        'shooting_star': False
-    }
+    """Обнаружение свечных паттернов с указанием таймфрейма"""
+    patterns = {}
     
     if len(df) < 2:
         return patterns
@@ -131,19 +125,19 @@ def detect_candle_patterns(df: pd.DataFrame) -> Dict:
     
     if body > 0:
         if upper_wick > body * 2 and lower_wick < body * 0.3:
-            patterns['shooting_star'] = True
+            patterns['shooting_star'] = 'медвежий'
         elif lower_wick > body * 2 and upper_wick < body * 0.3:
-            patterns['hammer'] = True
-            patterns['pin_bar'] = True
+            patterns['hammer'] = 'бычий'
+            patterns['pin_bar'] = 'бычий'
     
     # Поглощение
     if prev['close'] < prev['open'] and last['close'] > last['open']:
         if last['close'] > prev['open'] and last['open'] < prev['close']:
-            patterns['engulfing'] = True
+            patterns['engulfing'] = 'бычий'
     
     # Дожи
     if body < (last['high'] - last['low']) * 0.1:
-        patterns['doji'] = True
+        patterns['doji'] = 'нейтральный'
     
     return patterns
 
@@ -476,16 +470,16 @@ class DivergenceAnalyzer:
         
         return highs, lows
     
-    def detect_rsi_divergence(self, df: pd.DataFrame) -> Dict:
+    def detect_rsi_divergence(self, df: pd.DataFrame, timeframe: str) -> Dict:
         """
-        Поиск дивергенций по RSI.
-        Возвращает словарь с информацией о дивергенциях.
+        Поиск дивергенций по RSI с указанием таймфрейма.
         """
         result = {
             'bullish': False,
             'bearish': False,
             'strength': 0,
-            'description': ''
+            'description': '',
+            'timeframe': timeframe
         }
         
         price_highs, price_lows = self.find_swings(df, 'close')
@@ -501,7 +495,7 @@ class DivergenceAnalyzer:
                 last_rsi_low[1] > prev_rsi_low[1]):
                 result['bullish'] = True
                 result['strength'] = min(100, abs(last_price_low[1] - prev_price_low[1]) / prev_price_low[1] * 500)
-                result['description'] = f"Бычья дивергенция RSI"
+                result['description'] = f"Бычья дивергенция RSI ({timeframe})"
         
         if len(price_highs) >= 2 and len(rsi_highs) >= 2:
             last_price_high = price_highs[-1]
@@ -513,20 +507,20 @@ class DivergenceAnalyzer:
                 last_rsi_high[1] < prev_rsi_high[1]):
                 result['bearish'] = True
                 result['strength'] = min(100, abs(last_price_high[1] - prev_price_high[1]) / prev_price_high[1] * 500)
-                result['description'] = f"Медвежья дивергенция RSI"
+                result['description'] = f"Медвежья дивергенция RSI ({timeframe})"
         
         return result
     
-    def detect_macd_divergence(self, df: pd.DataFrame) -> Dict:
+    def detect_macd_divergence(self, df: pd.DataFrame, timeframe: str) -> Dict:
         """
-        Поиск дивергенций по MACD.
-        Возвращает словарь с информацией о дивергенциях.
+        Поиск дивергенций по MACD с указанием таймфрейма.
         """
         result = {
             'bullish': False,
             'bearish': False,
             'strength': 0,
-            'description': ''
+            'description': '',
+            'timeframe': timeframe
         }
         
         if 'MACD_12_26_9' not in df.columns:
@@ -545,7 +539,7 @@ class DivergenceAnalyzer:
                 last_macd_low[1] > prev_macd_low[1]):
                 result['bullish'] = True
                 result['strength'] = min(100, abs(last_price_low[1] - prev_price_low[1]) / prev_price_low[1] * 500)
-                result['description'] = f"Бычья дивергенция MACD"
+                result['description'] = f"Бычья дивергенция MACD ({timeframe})"
         
         if len(price_highs) >= 2 and len(macd_highs) >= 2:
             last_price_high = price_highs[-1]
@@ -557,14 +551,14 @@ class DivergenceAnalyzer:
                 last_macd_high[1] < prev_macd_high[1]):
                 result['bearish'] = True
                 result['strength'] = min(100, abs(last_price_high[1] - prev_price_high[1]) / prev_price_high[1] * 500)
-                result['description'] = f"Медвежья дивергенция MACD"
+                result['description'] = f"Медвежья дивергенция MACD ({timeframe})"
         
         return result
     
-    def analyze(self, df: pd.DataFrame) -> Dict:
-        """Полный анализ дивергенций"""
-        rsi_div = self.detect_rsi_divergence(df)
-        macd_div = self.detect_macd_divergence(df)
+    def analyze(self, df: pd.DataFrame, timeframe: str) -> Dict:
+        """Полный анализ дивергенций с указанием таймфрейма"""
+        rsi_div = self.detect_rsi_divergence(df, timeframe)
+        macd_div = self.detect_macd_divergence(df, timeframe)
         
         result = {
             'has_divergence': rsi_div['bullish'] or rsi_div['bearish'] or macd_div['bullish'] or macd_div['bearish'],
@@ -811,32 +805,32 @@ class MultiTimeframeAnalyzer:
         
         if 'hourly' in dataframes and not dataframes['hourly'].empty:
             df_h = dataframes['hourly'].iloc[-1]
-            alignment['hourly_trend'] = 'BULLISH' if df_h['ema_9'] > df_h['ema_21'] else 'BEARISH'
+            alignment['hourly_trend'] = 'ВОСХОДЯЩИЙ 📈' if df_h['ema_9'] > df_h['ema_21'] else 'НИСХОДЯЩИЙ 📉'
         
         if 'daily' in dataframes and not dataframes['daily'].empty:
             df_d = dataframes['daily'].iloc[-1]
             if df_d['close'] > df_d['ema_200']:
-                alignment['daily_trend'] = 'BULLISH'
+                alignment['daily_trend'] = 'ВОСХОДЯЩИЙ 📈'
                 if df_d['ema_9'] > df_d['ema_21']:
                     alignment['signals'].append("Дневной тренд восходящий (выше EMA 200)")
             else:
-                alignment['daily_trend'] = 'BEARISH'
+                alignment['daily_trend'] = 'НИСХОДЯЩИЙ 📉'
                 if df_d['ema_9'] < df_d['ema_21']:
                     alignment['signals'].append("Дневной тренд нисходящий (ниже EMA 200)")
         
         if 'weekly' in dataframes and not dataframes['weekly'].empty:
             df_w = dataframes['weekly'].iloc[-1]
             if df_w['close'] > df_w['ema_200']:
-                alignment['weekly_trend'] = 'BULLISH'
+                alignment['weekly_trend'] = 'ВОСХОДЯЩИЙ 📈'
                 alignment['signals'].append("НЕДЕЛЬНЫЙ ТРЕНД ВОСХОДЯЩИЙ (сильный сигнал)")
             else:
-                alignment['weekly_trend'] = 'BEARISH'
+                alignment['weekly_trend'] = 'НИСХОДЯЩИЙ 📉'
                 alignment['signals'].append("НЕДЕЛЬНЫЙ ТРЕНД НИСХОДЯЩИЙ (сильный сигнал)")
         
         trends = [t for t in [alignment['hourly_trend'], alignment['daily_trend'], alignment['weekly_trend']] if t]
         if trends:
-            bullish = trends.count('BULLISH')
-            bearish = trends.count('BEARISH')
+            bullish = trends.count('ВОСХОДЯЩИЙ 📈')
+            bearish = trends.count('НИСХОДЯЩИЙ 📉')
             alignment['trend_alignment'] = (max(bullish, bearish) / len(trends)) * 100
         
         return alignment
@@ -890,10 +884,10 @@ class MultiTimeframeAnalyzer:
         # VWAP
         if FEATURES['advanced']['vwap'] and 'vwap' in df.columns:
             if last['close'] > last['vwap']:
-                reasons.append(f"Цена выше VWAP ({last['vwap']:.2f})")
+                reasons.append(f"Цена выше VWAP ({last['vwap']:.4f})")
                 confidence += 10
             else:
-                reasons.append(f"Цена ниже VWAP ({last['vwap']:.2f})")
+                reasons.append(f"Цена ниже VWAP ({last['vwap']:.4f})")
                 confidence += 10
         
         # Сигналы от старших таймфреймов
@@ -911,7 +905,7 @@ class MultiTimeframeAnalyzer:
         
         # Фандинг
         funding = metadata.get('funding_rate')
-        if funding is not None:
+        if funding is not None and funding != 0:
             funding_pct = funding * 100
             if funding > 0.001:
                 reasons.append(f"💰 Позитивный фандинг ({funding_pct:.4f}%)")
@@ -938,13 +932,13 @@ class MultiTimeframeAnalyzer:
         bearish = sum(1 for r in reasons if any(k in r for k in bearish_keywords))
         
         if bullish > bearish and confidence >= MIN_CONFIDENCE:
-            if alignment['weekly_trend'] == 'BULLISH':
+            if alignment['weekly_trend'] == 'ВОСХОДЯЩИЙ 📈':
                 direction = 'Разворот LONG 📈'
                 reasons.append("🔄 Подтверждение разворота недельным трендом")
             else:
                 direction = 'LONG 📈'
         elif bearish > bullish and confidence >= MIN_CONFIDENCE:
-            if alignment['weekly_trend'] == 'BEARISH':
+            if alignment['weekly_trend'] == 'НИСХОДЯЩИЙ 📉':
                 direction = 'Разворот SHORT 📉'
                 reasons.append("🔄 Подтверждение разворота недельным трендом")
             else:
@@ -983,7 +977,7 @@ class MultiTimeframeAnalyzer:
             'price': current_price,
             'direction': direction,
             'signal_power': signal_power,
-            'confidence': round(min(confidence, 100), 0),
+            'confidence': round(min(confidence, 100), 1),
             'signal_strength': round(signal_strength, 1),
             'reasons': reasons[:8],
             'funding_rate': metadata.get('funding_rate', 0),
@@ -1020,8 +1014,8 @@ class FuturesScannerBot:
             self.divergence = None
     
     def format_funding(self, rate: float) -> str:
-        if rate is None:
-            return "N/A"
+        if rate is None or rate == 0:
+            return "Нет данных"
         color = "🟢" if rate > 0 else "🔴" if rate < 0 else "⚪"
         return f"{color} {rate*100:.4f}%"
     
@@ -1035,7 +1029,7 @@ class FuturesScannerBot:
         else:
             return f"${volume:.1f}"
     
-    def format_message(self, signal: Dict, price_source: Dict = None) -> Tuple[str, InlineKeyboardMarkup]:
+    def format_message(self, signal: Dict, price_source: Dict = None, pump_only: bool = False) -> Tuple[str, InlineKeyboardMarkup]:
         emoji_map = {
             'LONG 📈': '🟢',
             'SHORT 📉': '🔴',
@@ -1059,36 +1053,59 @@ class FuturesScannerBot:
             f"🎯 *Текущая цена:* {price_display}\n"
         ]
         
-        # Дивергенции (отключаемо)
-        if DISPLAY_SETTINGS['show_divergence'] and signal.get('divergence') and signal['divergence']['has_divergence']:
-            lines.append(f"📊 *Дивергенции:*")
-            for div_signal in signal['divergence']['signals']:
-                lines.append(f"└ {div_signal}")
-            lines.append("")
-        
-        # Памп-дамп (отключаемо)
-        if DISPLAY_SETTINGS['show_pump_dump'] and signal.get('pump_dump'):
-            lines.append(f"⚡ *Импульсный анализ:*")
-            for event in signal['pump_dump']:
-                emoji_pump = "🚀" if event['type'] == 'PUMP' else "📉"
-                lines.append(
-                    f"└ {emoji_pump} {event['time_window']}мин: "
-                    f"{event['change_percent']:+.2f}%"
-                )
-            lines.append("")
-        
-        # Свечные паттерны (отключаемо)
-        if DISPLAY_SETTINGS['show_patterns'] and signal.get('patterns'):
-            patterns = signal['patterns']
-            active_patterns = [k for k, v in patterns.items() if v]
-            if active_patterns:
-                lines.append(f"🕯 *Свечные паттерны:*")
-                for pattern in active_patterns:
-                    emoji_pattern = "🟢" if pattern in ['hammer', 'engulfing'] else "🔴"
-                    lines.append(f"└ {emoji_pattern} {pattern.replace('_', ' ').title()}")
+        # Если режим "только памп-дамп", показываем только импульсный анализ
+        if pump_only:
+            if signal.get('pump_dump'):
+                lines.append(f"⚡ *Импульсный анализ:*")
+                for event in signal['pump_dump']:
+                    emoji_pump = "🚀" if event['type'] == 'PUMP' else "📉"
+                    lines.append(
+                        f"└ {emoji_pump} {event['time_window']}мин: "
+                        f"{event['change_percent']:+.2f}% "
+                        f"(до {event['end_price']:.8f})"
+                    )
                 lines.append("")
+        else:
+            # Полный режим - показываем всё
+            # Дивергенции (отключаемо)
+            if DISPLAY_SETTINGS['show_divergence'] and signal.get('divergence') and signal['divergence']['has_divergence']:
+                lines.append(f"📊 *Дивергенции:*")
+                for div_signal in signal['divergence']['signals']:
+                    lines.append(f"└ {div_signal}")
+                lines.append("")
+            
+            # Памп-дамп (отключаемо)
+            if DISPLAY_SETTINGS['show_pump_dump'] and signal.get('pump_dump'):
+                lines.append(f"⚡ *Импульсный анализ:*")
+                for event in signal['pump_dump']:
+                    emoji_pump = "🚀" if event['type'] == 'PUMP' else "📉"
+                    lines.append(
+                        f"└ {emoji_pump} {event['time_window']}мин: "
+                        f"{event['change_percent']:+.2f}%"
+                    )
+                lines.append("")
+            
+            # Свечные паттерны (отключаемо)
+            if DISPLAY_SETTINGS['show_patterns'] and signal.get('patterns'):
+                patterns = signal['patterns']
+                active_patterns = [k for k, v in patterns.items() if v]
+                if active_patterns:
+                    lines.append(f"🕯 *Свечные паттерны (15m):*")
+                    for pattern in active_patterns:
+                        emoji_pattern = "🟢" if pattern in ['hammer', 'engulfing'] else "🔴"
+                        pattern_names = {
+                            'hammer': 'Молот',
+                            'shooting_star': 'Падающая звезда',
+                            'pin_bar': 'Пинбар',
+                            'engulfing': 'Поглощение',
+                            'doji': 'Дожи'
+                        }
+                        name = pattern_names.get(pattern, pattern)
+                        direction = v if isinstance(v, str) else 'бычий' if emoji_pattern == "🟢" else 'медвежий'
+                        lines.append(f"└ {emoji_pattern} {name} ({direction})")
+                    lines.append("")
         
-        # Цели
+        # Цели (показываем всегда)
         if 'target_1' in signal:
             lines.extend([
                 f"🎯 *Цели:*",
@@ -1166,54 +1183,6 @@ class FuturesScannerBot:
         logger.info("🚀 НАЧАЛО СКАНИРОВАНИЯ")
         logger.info("="*50)
         
-        # ==== ТЕСТОВОЕ СКАНИРОВАНИЕ BTC/USDT ====
-        if FEATURES['testing']['test_signal']:
-            test_pair = 'BTC/USDT'
-            logger.info(f"🧪 Тестовое сканирование {test_pair} на MEXC...")
-            
-            # Получаем данные по всем таймфреймам
-            test_dataframes = {}
-            for tf_name, tf_value in TIMEFRAMES.items():
-                limit = 200 if tf_name == 'current' else 100
-                df = await self.fetcher.fetch_ohlcv('MEXC', test_pair, tf_value, limit)
-                if df is not None and not df.empty:
-                    logger.info(f"✅ Загружено {len(df)} свечей для {tf_name} ({tf_value})")
-                    df = self.analyzer.calculate_indicators(df)
-                    test_dataframes[tf_name] = df
-                else:
-                    logger.error(f"❌ Не удалось загрузить данные для {tf_name} ({tf_value})")
-            
-            if test_dataframes:
-                # Получаем метаданные
-                funding = await self.fetcher.fetch_funding_rate('MEXC', test_pair)
-                ticker = await self.fetcher.fetch_ticker('MEXC', test_pair)
-                
-                metadata = {
-                    'funding_rate': funding,
-                    'volume_24h': ticker.get('volume_24h'),
-                    'price_change_24h': ticker.get('price_change_24h')
-                }
-                
-                # Генерируем тестовый сигнал
-                test_signal = self.analyzer.generate_signal(test_dataframes, metadata, test_pair, 'MEXC')
-                if test_signal:
-                    logger.info(f"✅ ТЕСТ: Сгенерирован сигнал с уверенностью {test_signal['confidence']}%")
-                    if test_signal['confidence'] >= MIN_CONFIDENCE:
-                        logger.info(f"🔥 ТЕСТ: Сигнал достиг порога {MIN_CONFIDENCE}%")
-                        logger.info(f"📊 Направление: {test_signal['direction']}")
-                        logger.info(f"📊 Причины: {test_signal['reasons']}")
-                        
-                        # Получаем актуальную цену из WebSocket
-                        price_source = await self.fetcher.get_price_with_source(test_pair, test_signal['price'])
-                        await self.send_signal(test_signal, price_source)
-                    else:
-                        logger.warning(f"⚠️ ТЕСТ: Уверенность {test_signal['confidence']}% ниже порога {MIN_CONFIDENCE}%")
-                else:
-                    logger.warning("⚠️ ТЕСТ: Сигнал не сгенерирован (вернул None)")
-            else:
-                logger.error("❌ ТЕСТ: Нет данных для анализа")
-        # ========================================
-        
         all_signals = []
         
         # Сканируем только MEXC (Bybit и BingX отключены)
@@ -1254,7 +1223,7 @@ class FuturesScannerBot:
                         signal_divergence = None
                         if self.divergence and 'current' in dataframes:
                             df_current = dataframes['current']
-                            signal_divergence = self.divergence.analyze(df_current)
+                            signal_divergence = self.divergence.analyze(df_current, '15m')
                             
                             if signal_divergence and signal_divergence['has_divergence']:
                                 logger.info(f"📊 Обнаружена дивергенция для {pair}: {signal_divergence['signals']}")
@@ -1300,11 +1269,14 @@ class FuturesScannerBot:
                             if patterns:
                                 signal['patterns'] = patterns
                                 if patterns.get('engulfing'):
-                                    signal['reasons'].append("📊 Паттерн поглощения")
+                                    signal['reasons'].append("📊 Паттерн поглощения (15m)")
                                     signal['confidence'] = min(signal['confidence'] + 15, 100)
                                 if patterns.get('pin_bar'):
-                                    signal['reasons'].append("📊 Пинбар")
+                                    signal['reasons'].append("📊 Пинбар (15m)")
                                     signal['confidence'] = min(signal['confidence'] + 10, 100)
+                                if patterns.get('doji'):
+                                    signal['reasons'].append("📊 Дожи (15m)")
+                                    signal['confidence'] = min(signal['confidence'] + 5, 100)
                         
                         if signal and signal['confidence'] >= MIN_CONFIDENCE:
                             all_signals.append(signal)
@@ -1330,16 +1302,17 @@ class FuturesScannerBot:
         
         return all_signals
     
-    async def send_signal(self, signal: Dict, price_source: Dict = None):
+    async def send_signal(self, signal: Dict, price_source: Dict = None, pump_only: bool = False):
         """Отправка сигнала"""
-        msg, keyboard = self.format_message(signal, price_source)
+        msg, keyboard = self.format_message(signal, price_source, pump_only)
         await self.telegram_bot.send_message(
             chat_id=TELEGRAM_CHAT_ID,
             text=msg,
             parse_mode='Markdown',
             reply_markup=keyboard
         )
-        logger.info(f"✅ Отправлен сигнал: {signal['symbol']}")
+        signal_type = "ПАМП/ДАМП" if pump_only else ""
+        logger.info(f"✅ Отправлен сигнал {signal_type}: {signal['symbol']}")
     
     async def scheduled(self):
         """Плановый анализ"""
@@ -1348,12 +1321,19 @@ class FuturesScannerBot:
         signals = await self.scan_all()
         
         if signals:
+            # Отправляем все сигналы (без фильтра)
             for i, signal in enumerate(signals[:5]):  # Отправляем только 5 лучших
-                # Получаем актуальную цену из WebSocket для каждого сигнала
                 price_source = await self.fetcher.get_price_with_source(signal['symbol'], signal['price'])
-                await self.send_signal(signal, price_source)
+                await self.send_signal(signal, price_source, pump_only=False)
                 if i < len(signals[:5]) - 1:
                     await asyncio.sleep(3)
+            
+            # Если хотим отправлять только памп-дамп сигналы, нужно добавить фильтр
+            # pump_signals = [s for s in signals if s.get('pump_dump')]
+            # for i, signal in enumerate(pump_signals[:5]):
+            #     price_source = await self.fetcher.get_price_with_source(signal['symbol'], signal['price'])
+            #     await self.send_signal(signal, price_source, pump_only=True)
+            #     await asyncio.sleep(3)
         else:
             logger.info("❌ Сигналов не найдено")
     
@@ -1388,6 +1368,7 @@ class TelegramHandler:
         self.app.add_handler(CommandHandler("scan", self.scan))
         self.app.add_handler(CommandHandler("status", self.status))
         self.app.add_handler(CommandHandler("help", self.help))
+        self.app.add_handler(CommandHandler("pump", self.pump_only))
         self.app.add_handler(CallbackQueryHandler(self.button))
     
     async def start(self, update, context):
@@ -1402,6 +1383,7 @@ class TelegramHandler:
             "⚡ WebSocket реального времени (w)\n\n"
             "Команды:\n"
             "/scan - Сканировать\n"
+            "/pump - Только памп-дамп сигналы\n"
             "/status - Статус\n"
             "/help - Помощь",
             parse_mode='Markdown'
@@ -1414,10 +1396,25 @@ class TelegramHandler:
             await msg.edit_text(f"✅ Найдено {len(signals)} сигналов")
             for signal in signals[:5]:
                 price_source = await self.bot.fetcher.get_price_with_source(signal['symbol'], signal['price'])
-                await self.bot.send_signal(signal, price_source)
+                await self.bot.send_signal(signal, price_source, pump_only=False)
                 await asyncio.sleep(2)
         else:
             await msg.edit_text("❌ Сигналов не найдено")
+    
+    async def pump_only(self, update, context):
+        """Команда для отправки только памп-дамп сигналов"""
+        msg = await update.message.reply_text("🔍 Ищу памп-дамп сигналы...")
+        signals = await self.bot.scan_all()
+        pump_signals = [s for s in signals if s.get('pump_dump')]
+        
+        if pump_signals:
+            await msg.edit_text(f"✅ Найдено {len(pump_signals)} памп-дамп сигналов")
+            for signal in pump_signals[:5]:
+                price_source = await self.bot.fetcher.get_price_with_source(signal['symbol'], signal['price'])
+                await self.bot.send_signal(signal, price_source, pump_only=True)
+                await asyncio.sleep(2)
+        else:
+            await msg.edit_text("❌ Памп-дамп сигналов не найдено")
     
     async def status(self, update, context):
         text = "*📡 Статус:*\n\n"
@@ -1429,7 +1426,7 @@ class TelegramHandler:
         else:
             text += f"❌ WebSocket: отключен\n"
         
-        text += f"\n📊 Функции:\n"
+        text += f"\n📊 *Функции:*\n"
         text += f"✓ Памп-дамп: {'вкл' if FEATURES['advanced']['pump_dump'] else 'выкл'}\n"
         text += f"✓ Дивергенции: {'вкл' if FEATURES['advanced']['divergence'] else 'выкл'}\n"
         text += f"✓ VWAP: {'вкл' if FEATURES['advanced']['vwap'] else 'выкл'}\n"
@@ -1447,6 +1444,10 @@ class TelegramHandler:
             "• Памп-дамп (>7%)\n"
             "• Свечные паттерны\n"
             "• WebSocket (w) реальное время\n\n"
+            "⚙️ *Команды:*\n"
+            "/scan - все сигналы\n"
+            "/pump - только памп-дамп\n"
+            "/status - состояние бота\n\n"
             "⚙️ *Кнопки:*\n"
             "🔄 Обновить - обновить сигнал\n"
             "📊 Детали - подробный анализ\n\n"
@@ -1467,7 +1468,6 @@ class TelegramHandler:
             await query.edit_message_text(f"🔄 Обновляю {symbol}...")
             
             # Здесь будет логика обновления сигнала
-            # TODO: Запросить свежие данные и отправить новый сигнал
             await asyncio.sleep(1)
             await query.edit_message_text(f"✅ {symbol} обновлен")
         
