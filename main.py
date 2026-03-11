@@ -638,7 +638,11 @@ class FuturesDataFetcher:
                         
                         # Подписываемся на WebSocket
                         if self.websocket and FEATURES['data_sources']['websocket']:
-                            await self.websocket.subscribe(pair)
+                            success = await self.websocket.subscribe(pair)
+                            if success:
+                                logger.info(f"✅ WebSocket подписка на {pair} успешна")
+                            else:
+                                logger.warning(f"⚠️ WebSocket подписка на {pair} не удалась")
             
             logger.info(f"📊 MEXC: загружено {len(all_pairs)} USDT пар")
             return all_pairs
@@ -692,17 +696,32 @@ class FuturesDataFetcher:
     async def fetch_funding_rate(self, exchange_name: str, symbol: str) -> Optional[float]:
         """Получение ставки фондирования с MEXC"""
         try:
-            # Для MEXC используем отдельный эндпоинт
+            # Для MEXC используем правильный эндпоинт
             symbol_raw = symbol.replace('/', '')
-            url = f"https://contract.mexc.com/api/v1/contract/funding_rate/{symbol_raw}"
+            # Пробуем разные варианты эндпоинтов
+            urls = [
+                f"https://futures.mexc.com/api/v1/contract/funding_rate/{symbol_raw}",
+                f"https://contract.mexc.com/api/v1/contract/funding_rate/{symbol_raw}",
+                f"https://api.mexc.com/api/v3/fundingRate?symbol={symbol_raw}"
+            ]
             
-            response = await asyncio.to_thread(requests.get, url, timeout=5)
+            for url in urls:
+                try:
+                    response = await asyncio.to_thread(requests.get, url, timeout=5)
+                    if response.status_code == 200:
+                        data = response.json()
+                        # Пробуем разные форматы ответа
+                        if isinstance(data, dict):
+                            if data.get('success') and data.get('data') is not None:
+                                return float(data['data'])
+                            elif data.get('fundingRate'):
+                                return float(data['fundingRate'])
+                            elif data.get('data', {}).get('fundingRate'):
+                                return float(data['data']['fundingRate'])
+                except:
+                    continue
             
-            if response.status_code == 200:
-                data = response.json()
-                if data.get('success') and data.get('data') is not None:
-                    funding_rate = float(data['data'])
-                    return funding_rate
+            logger.debug(f"Фандинг для {symbol} не найден")
             return 0.0
         except Exception as e:
             logger.debug(f"Ошибка получения фандинга для {symbol}: {e}")
@@ -977,7 +996,7 @@ class MultiTimeframeAnalyzer:
             'price': current_price,
             'direction': direction,
             'signal_power': signal_power,
-            'confidence': round(min(confidence, 100), 1),
+            'confidence': confidence,  # Не округляем здесь, округлим позже
             'signal_strength': round(signal_strength, 1),
             'reasons': reasons[:8],
             'funding_rate': metadata.get('funding_rate', 0),
@@ -1092,7 +1111,8 @@ class FuturesScannerBot:
                 if active_patterns:
                     lines.append(f"🕯 *Свечные паттерны (15m):*")
                     for pattern in active_patterns:
-                        emoji_pattern = "🟢" if pattern in ['hammer', 'engulfing'] else "🔴"
+                        direction = patterns[pattern]
+                        emoji_pattern = "🟢" if direction in ['бычий', True] else "🔴" if direction in ['медвежий', False] else "⚪"
                         pattern_names = {
                             'hammer': 'Молот',
                             'shooting_star': 'Падающая звезда',
@@ -1101,7 +1121,6 @@ class FuturesScannerBot:
                             'doji': 'Дожи'
                         }
                         name = pattern_names.get(pattern, pattern)
-                        direction = v if isinstance(v, str) else 'бычий' if emoji_pattern == "🟢" else 'медвежий'
                         lines.append(f"└ {emoji_pattern} {name} ({direction})")
                     lines.append("")
         
@@ -1277,6 +1296,9 @@ class FuturesScannerBot:
                                 if patterns.get('doji'):
                                     signal['reasons'].append("📊 Дожи (15m)")
                                     signal['confidence'] = min(signal['confidence'] + 5, 100)
+                            
+                            # ОКРУГЛЯЕМ ЗДЕСЬ, ПОСЛЕ ВСЕХ ИЗМЕНЕНИЙ
+                            signal['confidence'] = round(signal['confidence'], 1)
                         
                         if signal and signal['confidence'] >= MIN_CONFIDENCE:
                             all_signals.append(signal)
@@ -1304,6 +1326,11 @@ class FuturesScannerBot:
     
     async def send_signal(self, signal: Dict, price_source: Dict = None, pump_only: bool = False):
         """Отправка сигнала"""
+        # Если это команда /pump и в сигнале нет памп-дамп событий - не отправляем
+        if pump_only and not signal.get('pump_dump'):
+            logger.debug(f"Сигнал {signal['symbol']} пропущен (нет памп-дамп)")
+            return
+        
         msg, keyboard = self.format_message(signal, price_source, pump_only)
         await self.telegram_bot.send_message(
             chat_id=TELEGRAM_CHAT_ID,
@@ -1328,7 +1355,7 @@ class FuturesScannerBot:
                 if i < len(signals[:5]) - 1:
                     await asyncio.sleep(3)
             
-            # Если хотим отправлять только памп-дамп сигналы, нужно добавить фильтр
+            # Если хотим отправлять только памп-дамп сигналы, нужно раскомментировать:
             # pump_signals = [s for s in signals if s.get('pump_dump')]
             # for i, signal in enumerate(pump_signals[:5]):
             #     price_source = await self.fetcher.get_price_with_source(signal['symbol'], signal['price'])
@@ -1405,7 +1432,7 @@ class TelegramHandler:
         """Команда для отправки только памп-дамп сигналов"""
         msg = await update.message.reply_text("🔍 Ищу памп-дамп сигналы...")
         signals = await self.bot.scan_all()
-        pump_signals = [s for s in signals if s.get('pump_dump')]
+        pump_signals = [s for s in signals if s.get('pump_dump') and len(s['pump_dump']) > 0]
         
         if pump_signals:
             await msg.edit_text(f"✅ Найдено {len(pump_signals)} памп-дамп сигналов")
