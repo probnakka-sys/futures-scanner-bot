@@ -1,0 +1,10 @@
+ccxt
+python-telegram-bot
+pandas
+numpy
+python-dotenv
+matplotlib
+pillow
+aiohttp
+requests
+websockets
