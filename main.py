@@ -20,6 +20,21 @@ import random
 import ssl
 import certifi
 
+# Импорт конфигурации
+from config import (
+    TELEGRAM_TOKEN,
+    TELEGRAM_CHAT_ID,
+    UPDATE_INTERVAL,
+    MIN_CONFIDENCE,
+    TIMEFRAMES,
+    REF_LINKS,
+    FEATURES,
+    INDICATOR_SETTINGS,
+    INDICATOR_WEIGHTS,
+    PUMP_DUMP_SETTINGS,
+    PAIRS_TO_SCAN
+)
+
 # Временно отключаем проверку SSL для теста
 ssl._create_default_https_context = ssl._create_unverified_context
 
@@ -32,7 +47,14 @@ FALLBACK_PAIRS = [
     'AAVE/USDT', 'COMP/USDT', 'MKR/USDT', 'SNX/USDT', 'YFI/USDT',
     'CRV/USDT', 'BAL/USDT', '1INCH/USDT', 'OP/USDT', 'IMX/USDT',
     'AXS/USDT', 'SAND/USDT', 'MANA/USDT', 'GALA/USDT', 'ENJ/USDT',
-    'FET/USDT', 'AGIX/USDT', 'OCEAN/USDT', 'GRT/USDT', 'BAND/USDT'
+    'FET/USDT', 'AGIX/USDT', 'OCEAN/USDT', 'GRT/USDT', 'BAND/USDT',
+    'ATOM/USDT', 'OSMO/USDT', 'DOT/USDT', 'KSM/USDT', 'NEAR/USDT',
+    'SOL/USDT', 'RAY/USDT', 'AVAX/USDT', 'JOE/USDT', 'BNB/USDT',
+    'CAKE/USDT', 'BAKE/USDT', 'XVS/USDT', 'ALPACA/USDT', 'TWT/USDT',
+    'ICP/USDT', 'RNDR/USDT', 'STX/USDT', 'FLOW/USDT', 'MINA/USDT',
+    'EGLD/USDT', 'KDA/USDT', 'HNT/USDT', 'ANKR/USDT', 'ZIL/USDT',
+    'IOST/USDT', 'IOTX/USDT', 'VET/USDT', 'THETA/USDT', 'TFUEL/USDT',
+    'ROSE/USDT', 'CELR/USDT', 'CKB/USDT', 'ONE/USDT', 'HARMONY/USDT'
 ]
 
 # Ручной расчет индикаторов
@@ -90,27 +112,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Конфигурация
-TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
-TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
-UPDATE_INTERVAL = int(os.getenv('UPDATE_INTERVAL', 900))
-MIN_CONFIDENCE = int(os.getenv('MIN_CONFIDENCE', 65))
-TIMEFRAME = os.getenv('TIMEFRAME', '15m')
-
-# Реферальные ссылки
-REF_LINKS = {
-    'MEXC': os.getenv('MEXC_REF_LINK', 'https://www.mexc.com'),
-    'Bybit': os.getenv('BYBIT_REF_LINK', 'https://www.bybit.com'),
-    'BingX': os.getenv('BINGX_REF_LINK', 'https://bingx.com')
-}
-
-# Таймфреймы
-TIMEFRAMES = {
-    'current': TIMEFRAME,
-    'hourly': '1h',
-    'daily': '1d',
-    'weekly': '1w'
-}
+# Конфигурация (импортирована из config.py)
+# TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, UPDATE_INTERVAL, MIN_CONFIDENCE, TIMEFRAMES, REF_LINKS
 
 # ============== ЗАПАСНОЙ СПИСОК ==============
 FALLBACK_PAIRS = [
@@ -139,8 +142,17 @@ class FuturesDataFetcher:
         self.available_pairs = {}
         self.session = None
         logger.info("✅ MEXC будет работать через прямое API (синхронные запросы)")
-        logger.warning("⚠️ Bybit временно отключен")
-        logger.warning("⚠️ BingX временно отключен")
+        
+        # Используем настройки из FEATURES
+        if FEATURES['exchanges']['bybit']:
+            logger.info("✅ Bybit подключен (в разработке)")
+        else:
+            logger.warning("⚠️ Bybit временно отключен")
+            
+        if FEATURES['exchanges']['bingx']:
+            logger.info("✅ BingX подключен (в разработке)")
+        else:
+            logger.warning("⚠️ BingX временно отключен")
     
     async def fetch_all_pairs(self, exchange_name: str) -> List[str]:
         """Получение всех доступных пар. Работает только для MEXC."""
@@ -263,29 +275,38 @@ class MultiTimeframeAnalyzer:
     
     def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         """Расчет индикаторов"""
-        df['rsi'] = calculate_rsi(df['close'], 14)
+        # Используем настройки из INDICATOR_SETTINGS
+        df['rsi'] = calculate_rsi(df['close'], INDICATOR_SETTINGS['rsi_period'])
         
-        macd_line, signal_line, hist = calculate_macd(df['close'])
+        macd_line, signal_line, hist = calculate_macd(
+            df['close'], 
+            INDICATOR_SETTINGS['macd_fast'],
+            INDICATOR_SETTINGS['macd_slow'],
+            INDICATOR_SETTINGS['macd_signal']
+        )
         df['MACD_12_26_9'] = macd_line
         df['MACDs_12_26_9'] = signal_line
         df['MACDh_12_26_9'] = hist
         
-        df['ema_9'] = calculate_ema(df['close'], 9)
-        df['ema_21'] = calculate_ema(df['close'], 21)
-        df['ema_50'] = calculate_ema(df['close'], 50)
-        df['ema_200'] = calculate_ema(df['close'], 200)
+        # EMA для разных периодов
+        for period in INDICATOR_SETTINGS['ema_periods']:
+            df[f'ema_{period}'] = calculate_ema(df['close'], period)
         
         df['sma_50'] = calculate_sma(df['close'], 50)
         df['sma_200'] = calculate_sma(df['close'], 200)
         
-        sma, upper, lower = calculate_bollinger_bands(df['close'])
+        sma, upper, lower = calculate_bollinger_bands(
+            df['close'], 
+            INDICATOR_SETTINGS['bollinger_period'],
+            INDICATOR_SETTINGS['bollinger_std']
+        )
         df['BBL_20_2.0'] = lower
         df['BBM_20_2.0'] = sma
         df['BBU_20_2.0'] = upper
         
-        df['atr'] = calculate_atr(df['high'], df['low'], df['close'])
+        df['atr'] = calculate_atr(df['high'], df['low'], df['close'], INDICATOR_SETTINGS['atr_period'])
         
-        df['volume_sma'] = calculate_sma(df['volume'], 20)
+        df['volume_sma'] = calculate_sma(df['volume'], INDICATOR_SETTINGS['volume_sma_period'])
         df['volume_ratio'] = df['volume'] / df['volume_sma']
         
         return df
@@ -349,47 +370,47 @@ class MultiTimeframeAnalyzer:
         
         # RSI
         if pd.notna(last['rsi']):
-            if last['rsi'] < 30:
+            if last['rsi'] < INDICATOR_SETTINGS['rsi_oversold']:
                 reasons.append(f"RSI перепродан ({last['rsi']:.1f})")
-                confidence += 10
-            elif last['rsi'] > 70:
+                confidence += INDICATOR_WEIGHTS['rsi']
+            elif last['rsi'] > INDICATOR_SETTINGS['rsi_overbought']:
                 reasons.append(f"RSI перекуплен ({last['rsi']:.1f})")
-                confidence += 10
+                confidence += INDICATOR_WEIGHTS['rsi']
         
         # MACD
         if pd.notna(last['MACD_12_26_9']) and pd.notna(last['MACDs_12_26_9']):
             if last['MACD_12_26_9'] > last['MACDs_12_26_9'] and prev['MACD_12_26_9'] <= prev['MACDs_12_26_9']:
                 reasons.append("Бычье пересечение MACD")
-                confidence += 15
+                confidence += INDICATOR_WEIGHTS['macd']
             elif last['MACD_12_26_9'] < last['MACDs_12_26_9'] and prev['MACD_12_26_9'] >= prev['MACDs_12_26_9']:
                 reasons.append("Медвежье пересечение MACD")
-                confidence += 15
+                confidence += INDICATOR_WEIGHTS['macd']
         
         # EMA
         if last['ema_9'] > last['ema_21'] and prev['ema_9'] <= prev['ema_21']:
             reasons.append("Бычье пересечение EMA (9/21)")
-            confidence += 15
+            confidence += INDICATOR_WEIGHTS['ema_cross']
         elif last['ema_9'] < last['ema_21'] and prev['ema_9'] >= prev['ema_21']:
             reasons.append("Медвежье пересечение EMA (9/21)")
-            confidence += 15
+            confidence += INDICATOR_WEIGHTS['ema_cross']
         
         # Объем
         if last['volume_ratio'] > 1.5:
             reasons.append(f"Объем x{last['volume_ratio']:.1f} от нормы")
-            confidence += 10
+            confidence += INDICATOR_WEIGHTS['volume']
         
         # Сигналы от старших таймфреймов
         for signal in alignment['signals']:
             reasons.append(f"📊 {signal}")
             if "НЕДЕЛЬНЫЙ" in signal:
-                confidence += 25
+                confidence += INDICATOR_WEIGHTS['weekly_trend']
             elif "Дневной" in signal:
-                confidence += 15
+                confidence += INDICATOR_WEIGHTS['daily_trend']
         
         # Согласованность трендов
         if alignment['trend_alignment'] > 70:
             reasons.append(f"✅ Тренды согласованы ({alignment['trend_alignment']:.0f}%)")
-            confidence += 10
+            confidence += INDICATOR_WEIGHTS['trend_alignment']
         
         # Фандинг
         funding = metadata.get('funding_rate')
@@ -580,47 +601,48 @@ class FuturesScannerBot:
         logger.info("="*50)
         
         # ==== ТЕСТОВОЕ СКАНИРОВАНИЕ BTC/USDT ====
-        test_pair = 'BTC/USDT'
-        logger.info(f"🧪 Тестовое сканирование {test_pair} на MEXC...")
-        
-        # Получаем данные по всем таймфреймам
-        test_dataframes = {}
-        for tf_name, tf_value in TIMEFRAMES.items():
-            limit = 200 if tf_name == 'current' else 100
-            df = await self.fetcher.fetch_ohlcv('MEXC', test_pair, tf_value, limit)
-            if df is not None and not df.empty:
-                logger.info(f"✅ Загружено {len(df)} свечей для {tf_name} ({tf_value})")
-                df = self.analyzer.calculate_indicators(df)
-                test_dataframes[tf_name] = df
-            else:
-                logger.error(f"❌ Не удалось загрузить данные для {tf_name} ({tf_value})")
-        
-        if test_dataframes:
-            # Получаем метаданные
-            funding = await self.fetcher.fetch_funding_rate('MEXC', test_pair)
-            ticker = await self.fetcher.fetch_ticker('MEXC', test_pair)
+        if FEATURES['testing']['test_signal']:
+            test_pair = 'BTC/USDT'
+            logger.info(f"🧪 Тестовое сканирование {test_pair} на MEXC...")
             
-            metadata = {
-                'funding_rate': funding,
-                'volume_24h': ticker.get('volume_24h'),
-                'price_change_24h': ticker.get('price_change_24h')
-            }
-            
-            # Генерируем тестовый сигнал
-            test_signal = self.analyzer.generate_signal(test_dataframes, metadata, test_pair, 'MEXC')
-            if test_signal:
-                logger.info(f"✅ ТЕСТ: Сгенерирован сигнал с уверенностью {test_signal['confidence']}%")
-                if test_signal['confidence'] >= MIN_CONFIDENCE:
-                    logger.info(f"🔥 ТЕСТ: Сигнал достиг порога {MIN_CONFIDENCE}%")
-                    logger.info(f"📊 Направление: {test_signal['direction']}")
-                    logger.info(f"📊 Причины: {test_signal['reasons']}")
-                    await self.send_signal(test_signal)
+            # Получаем данные по всем таймфреймам
+            test_dataframes = {}
+            for tf_name, tf_value in TIMEFRAMES.items():
+                limit = 200 if tf_name == 'current' else 100
+                df = await self.fetcher.fetch_ohlcv('MEXC', test_pair, tf_value, limit)
+                if df is not None and not df.empty:
+                    logger.info(f"✅ Загружено {len(df)} свечей для {tf_name} ({tf_value})")
+                    df = self.analyzer.calculate_indicators(df)
+                    test_dataframes[tf_name] = df
                 else:
-                    logger.warning(f"⚠️ ТЕСТ: Уверенность {test_signal['confidence']}% ниже порога {MIN_CONFIDENCE}%")
+                    logger.error(f"❌ Не удалось загрузить данные для {tf_name} ({tf_value})")
+            
+            if test_dataframes:
+                # Получаем метаданные
+                funding = await self.fetcher.fetch_funding_rate('MEXC', test_pair)
+                ticker = await self.fetcher.fetch_ticker('MEXC', test_pair)
+                
+                metadata = {
+                    'funding_rate': funding,
+                    'volume_24h': ticker.get('volume_24h'),
+                    'price_change_24h': ticker.get('price_change_24h')
+                }
+                
+                # Генерируем тестовый сигнал
+                test_signal = self.analyzer.generate_signal(test_dataframes, metadata, test_pair, 'MEXC')
+                if test_signal:
+                    logger.info(f"✅ ТЕСТ: Сгенерирован сигнал с уверенностью {test_signal['confidence']}%")
+                    if test_signal['confidence'] >= MIN_CONFIDENCE:
+                        logger.info(f"🔥 ТЕСТ: Сигнал достиг порога {MIN_CONFIDENCE}%")
+                        logger.info(f"📊 Направление: {test_signal['direction']}")
+                        logger.info(f"📊 Причины: {test_signal['reasons']}")
+                        await self.send_signal(test_signal)
+                    else:
+                        logger.warning(f"⚠️ ТЕСТ: Уверенность {test_signal['confidence']}% ниже порога {MIN_CONFIDENCE}%")
+                else:
+                    logger.warning("⚠️ ТЕСТ: Сигнал не сгенерирован (вернул None)")
             else:
-                logger.warning("⚠️ ТЕСТ: Сигнал не сгенерирован (вернул None)")
-        else:
-            logger.error("❌ ТЕСТ: Нет данных для анализа")
+                logger.error("❌ ТЕСТ: Нет данных для анализа")
         # ========================================
         
         all_signals = []
@@ -629,9 +651,9 @@ class FuturesScannerBot:
         try:
             pairs = await self.fetcher.fetch_all_pairs('MEXC')
             if pairs:
-                logger.info(f"📊 MEXC: анализирую {min(50, len(pairs))} пар из {len(pairs)}")
+                logger.info(f"📊 MEXC: анализирую {min(PAIRS_TO_SCAN, len(pairs))} пар из {len(pairs)}")
                 
-                for i, pair in enumerate(pairs[:300]):  # Анализируем первые 50 пар
+                for i, pair in enumerate(pairs[:PAIRS_TO_SCAN]):
                     try:
                         # Получаем данные по всем таймфреймам
                         dataframes = {}
@@ -664,7 +686,7 @@ class FuturesScannerBot:
                         
                         # Прогресс
                         if (i + 1) % 10 == 0:
-                            logger.info(f"📊 Прогресс MEXC: {i + 1}/{min(50, len(pairs))}")
+                            logger.info(f"📊 Прогресс MEXC: {i + 1}/{min(PAIRS_TO_SCAN, len(pairs))}")
                         
                         await asyncio.sleep(0.3)  # Задержка между запросами
                         
@@ -800,9 +822,4 @@ async def main():
         polling.cancel()
 
 if __name__ == "__main__":
-
     asyncio.run(main())
-
-
-
-
