@@ -65,7 +65,7 @@ FEATURES = {
     
     # === РАСШИРЕННЫЙ АНАЛИЗ (новые функции) ===
     'advanced': {
-        'divergence': False,    # Дивергенции RSI/MACD
+        'divergence': True,    # Дивергенции RSI/MACD
         'btc_correlation': False, # Корреляция с BTC
         'vwap': False,          # VWAP индикатор
         'patterns': False,      # Свечные паттерны
