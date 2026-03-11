@@ -235,6 +235,161 @@ class PumpDumpAnalyzer:
         
         return "\n".join(lines)
 
+
+# ============== АНАЛИЗАТОР ДИВЕРГЕНЦИЙ ==============
+
+class DivergenceAnalyzer:
+    """
+    Анализатор дивергенций RSI и MACD.
+    Отслеживает расхождения между ценой и индикаторами.
+    """
+    
+    def __init__(self):
+        self.lookback = 30  # количество свечей для поиска экстремумов
+        
+    def find_swings(self, df: pd.DataFrame, column: str = 'close', window: int = 5) -> Tuple[List, List]:
+        """
+        Поиск свинг-хаев и свинг-лоев.
+        Возвращает (swing_highs, swing_lows) где каждый элемент = (индекс, значение)
+        """
+        highs = []
+        lows = []
+        
+        for i in range(window, len(df) - window):
+            # Свинг-хай (локальный максимум)
+            if all(df[column].iloc[i] > df[column].iloc[j] 
+                   for j in range(i - window, i + window + 1) if j != i):
+                highs.append((i, df[column].iloc[i]))
+            
+            # Свинг-лоу (локальный минимум)
+            if all(df[column].iloc[i] < df[column].iloc[j] 
+                   for j in range(i - window, i + window + 1) if j != i):
+                lows.append((i, df[column].iloc[i]))
+        
+        return highs, lows
+    
+    def detect_rsi_divergence(self, df: pd.DataFrame) -> Dict:
+        """
+        Поиск дивергенций по RSI.
+        Возвращает словарь с информацией о дивергенциях.
+        """
+        result = {
+            'bullish': False,  # бычья дивергенция (цена делает更低 лой, RSI выше)
+            'bearish': False,  # медвежья дивергенция (цена делает выше хай, RSI ниже)
+            'strength': 0,     # сила дивергенции (0-100)
+            'description': ''
+        }
+        
+        # Ищем свинги по цене и RSI
+        price_highs, price_lows = self.find_swings(df, 'close')
+        rsi_highs, rsi_lows = self.find_swings(df, 'rsi')
+        
+        if len(price_lows) >= 2 and len(rsi_lows) >= 2:
+            # Последние два лоя
+            last_price_low = price_lows[-1]
+            prev_price_low = price_lows[-2]
+            last_rsi_low = rsi_lows[-1]
+            prev_rsi_low = rsi_lows[-2]
+            
+            # Бычья дивергенция: цена делает更低 лой, а RSI выше
+            if (last_price_low[1] < prev_price_low[1] and 
+                last_rsi_low[1] > prev_rsi_low[1]):
+                result['bullish'] = True
+                result['strength'] = min(100, abs(last_price_low[1] - prev_price_low[1]) / prev_price_low[1] * 500)
+                result['description'] = f"Бычья дивергенция RSI: цена {last_price_low[1]:.2f} < {prev_price_low[1]:.2f}, RSI {last_rsi_low[1]:.1f} > {prev_rsi_low[1]:.1f}"
+        
+        if len(price_highs) >= 2 and len(rsi_highs) >= 2:
+            # Последние два хая
+            last_price_high = price_highs[-1]
+            prev_price_high = price_highs[-2]
+            last_rsi_high = rsi_highs[-1]
+            prev_rsi_high = rsi_highs[-2]
+            
+            # Медвежья дивергенция: цена делает выше хай, а RSI ниже
+            if (last_price_high[1] > prev_price_high[1] and 
+                last_rsi_high[1] < prev_rsi_high[1]):
+                result['bearish'] = True
+                result['strength'] = min(100, abs(last_price_high[1] - prev_price_high[1]) / prev_price_high[1] * 500)
+                result['description'] = f"Медвежья дивергенция RSI: цена {last_price_high[1]:.2f} > {prev_price_high[1]:.2f}, RSI {last_rsi_high[1]:.1f} < {prev_rsi_high[1]:.1f}"
+        
+        return result
+    
+    def detect_macd_divergence(self, df: pd.DataFrame) -> Dict:
+        """
+        Поиск дивергенций по MACD.
+        Возвращает словарь с информацией о дивергенциях.
+        """
+        result = {
+            'bullish': False,
+            'bearish': False,
+            'strength': 0,
+            'description': ''
+        }
+        
+        # Используем MACD линию для поиска дивергенций
+        if 'MACD_12_26_9' not in df.columns:
+            return result
+        
+        # Ищем свинги по цене и MACD
+        price_highs, price_lows = self.find_swings(df, 'close')
+        macd_highs, macd_lows = self.find_swings(df, 'MACD_12_26_9')
+        
+        if len(price_lows) >= 2 and len(macd_lows) >= 2:
+            last_price_low = price_lows[-1]
+            prev_price_low = price_lows[-2]
+            last_macd_low = macd_lows[-1]
+            prev_macd_low = macd_lows[-2]
+            
+            # Бычья дивергенция MACD
+            if (last_price_low[1] < prev_price_low[1] and 
+                last_macd_low[1] > prev_macd_low[1]):
+                result['bullish'] = True
+                result['strength'] = min(100, abs(last_price_low[1] - prev_price_low[1]) / prev_price_low[1] * 500)
+                result['description'] = f"Бычья дивергенция MACD"
+        
+        if len(price_highs) >= 2 and len(macd_highs) >= 2:
+            last_price_high = price_highs[-1]
+            prev_price_high = price_highs[-2]
+            last_macd_high = macd_highs[-1]
+            prev_macd_high = macd_highs[-2]
+            
+            # Медвежья дивергенция MACD
+            if (last_price_high[1] > prev_price_high[1] and 
+                last_macd_high[1] < prev_macd_high[1]):
+                result['bearish'] = True
+                result['strength'] = min(100, abs(last_price_high[1] - prev_price_high[1]) / prev_price_high[1] * 500)
+                result['description'] = f"Медвежья дивергенция MACD"
+        
+        return result
+    
+    def analyze(self, df: pd.DataFrame) -> Dict:
+        """
+        Полный анализ дивергенций.
+        Возвращает словарь с результатами.
+        """
+        rsi_div = self.detect_rsi_divergence(df)
+        macd_div = self.detect_macd_divergence(df)
+        
+        result = {
+            'has_divergence': rsi_div['bullish'] or rsi_div['bearish'] or macd_div['bullish'] or macd_div['bearish'],
+            'bullish': rsi_div['bullish'] or macd_div['bullish'],
+            'bearish': rsi_div['bearish'] or macd_div['bearish'],
+            'strength': max(rsi_div.get('strength', 0), macd_div.get('strength', 0)),
+            'signals': []
+        }
+        
+        if rsi_div['bullish']:
+            result['signals'].append(rsi_div['description'])
+        if rsi_div['bearish']:
+            result['signals'].append(rsi_div['description'])
+        if macd_div['bullish']:
+            result['signals'].append(macd_div['description'])
+        if macd_div['bearish']:
+            result['signals'].append(macd_div['description'])
+        
+        return result
+
+
 class FuturesDataFetcher:
     """Класс для получения данных с бирж. Использует синхронные запросы для надежности."""
     
@@ -370,6 +525,7 @@ class FuturesDataFetcher:
     async def close_all(self):
         """Закрытие соединений."""
         pass
+
 
 class MultiTimeframeAnalyzer:
     """Анализатор"""
@@ -599,6 +755,7 @@ class MultiTimeframeAnalyzer:
             **targets
         }
 
+
 class FuturesScannerBot:
     """Основной класс бота"""
     
@@ -608,12 +765,19 @@ class FuturesScannerBot:
         self.telegram_bot = Bot(token=TELEGRAM_TOKEN)
         self.scanned_pairs = set()
         
-        # Добавляем памп-дамп анализатор
+        # Памп-дамп анализатор
         if FEATURES['advanced']['pump_dump']:
             self.pump_dump = PumpDumpAnalyzer(PUMP_DUMP_SETTINGS)
             logger.info("✅ Памп-дамп анализатор инициализирован")
         else:
             self.pump_dump = None
+        
+        # Анализатор дивергенций
+        if FEATURES['advanced']['divergence']:
+            self.divergence = DivergenceAnalyzer()
+            logger.info("✅ Анализатор дивергенций инициализирован")
+        else:
+            self.divergence = None
     
     def format_funding(self, rate: float) -> str:
         if rate is None:
@@ -801,6 +965,15 @@ class FuturesScannerBot:
                             if pump_events:
                                 logger.info(f"📊 Обнаружен памп/дамп для {pair}: {pump_events}")
                         
+                        # Анализ дивергенций
+                        signal_divergence = None
+                        if self.divergence and 'current' in dataframes:
+                            df_current = dataframes['current']
+                            signal_divergence = self.divergence.analyze(df_current)
+                            
+                            if signal_divergence and signal_divergence['has_divergence']:
+                                logger.info(f"📊 Обнаружена дивергенция для {pair}: {signal_divergence['signals']}")
+                        
                         # Получаем метаданные
                         funding = await self.fetcher.fetch_funding_rate('MEXC', pair)
                         ticker = await self.fetcher.fetch_ticker('MEXC', pair)
@@ -815,15 +988,26 @@ class FuturesScannerBot:
                         signal = self.analyzer.generate_signal(dataframes, metadata, pair, 'MEXC')
                         
                         # Добавляем информацию о памп-дампе в сигнал
-                        if signal and pump_events:
-                            signal['pump_dump'] = pump_events
-                            # Увеличиваем уверенность при сильном импульсе
-                            if len(pump_events) > 0:
-                                strongest = max(pump_events, key=lambda x: abs(x['change_percent']))
-                                if abs(strongest['change_percent']) >= 10:
-                                    signal['confidence'] = min(signal['confidence'] + 15, 100)
-                                elif abs(strongest['change_percent']) >= 7:
-                                    signal['confidence'] = min(signal['confidence'] + 10, 100)
+                        if signal:
+                            if pump_events:
+                                signal['pump_dump'] = pump_events
+                                # Увеличиваем уверенность при сильном импульсе
+                                if len(pump_events) > 0:
+                                    strongest = max(pump_events, key=lambda x: abs(x['change_percent']))
+                                    if abs(strongest['change_percent']) >= 10:
+                                        signal['confidence'] = min(signal['confidence'] + 15, 100)
+                                    elif abs(strongest['change_percent']) >= 7:
+                                        signal['confidence'] = min(signal['confidence'] + 10, 100)
+                            
+                            # Добавляем информацию о дивергенции в сигнал
+                            if signal_divergence and signal_divergence['has_divergence']:
+                                signal['divergence'] = signal_divergence
+                                # Увеличиваем уверенность при дивергенции
+                                signal['confidence'] = min(signal['confidence'] + signal_divergence['strength'] / 2, 100)
+                                if signal_divergence['bullish']:
+                                    signal['reasons'].append(f"📊 Бычья дивергенция (сила {signal_divergence['strength']:.0f}%)")
+                                elif signal_divergence['bearish']:
+                                    signal['reasons'].append(f"📊 Медвежья дивергенция (сила {signal_divergence['strength']:.0f}%)")
                         
                         if signal and signal['confidence'] >= MIN_CONFIDENCE:
                             all_signals.append(signal)
@@ -891,6 +1075,7 @@ class FuturesScannerBot:
         finally:
             await self.fetcher.close_all()
 
+
 class TelegramHandler:
     """Обработчик команд"""
     
@@ -955,6 +1140,7 @@ class TelegramHandler:
     def run(self):
         self.app.run_polling()
 
+
 async def main():
     bot = FuturesScannerBot()
     handler = TelegramHandler(bot)
@@ -965,6 +1151,7 @@ async def main():
         await bot.run()
     finally:
         polling.cancel()
+
 
 if __name__ == "__main__":
     asyncio.run(main())
