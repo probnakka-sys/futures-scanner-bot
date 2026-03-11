@@ -483,7 +483,7 @@ class FuturesScannerBot:
     def __init__(self):
         self.fetcher = FuturesDataFetcher()
         self.analyzer = MultiTimeframeAnalyzer()
-        self.telegram_bot = Bot(token="8472133401:AAEYcS6g7k7Hd50I2hrxlq5jX4p9uOXkk5s")
+        self.telegram_bot = Bot(token=TELEGRAM_TOKEN)
         self.scanned_pairs = set()
     
     def format_funding(self, rate: float) -> str:
@@ -686,7 +686,7 @@ class FuturesScannerBot:
         """Отправка сигнала"""
         msg, keyboard = self.format_message(signal)
         await self.telegram_bot.send_message(
-            chat_id=-5278064279,
+            chat_id=TELEGRAM_CHAT_ID,
             text=msg,
             parse_mode='Markdown',
             reply_markup=keyboard
@@ -729,7 +729,7 @@ class TelegramHandler:
     
     def __init__(self, bot: FuturesScannerBot):
         self.bot = bot
-        self.app = Application.builder().token("8472133401:AAEYcS6g7k7Hd50I2hrxlq5jX4p9uOXkk5s").build()
+        self.app = Application.builder().token(TELEGRAM_TOKEN).build()
         self.register()
     
     def register(self):
@@ -802,6 +802,7 @@ async def main():
 if __name__ == "__main__":
 
     asyncio.run(main())
+
 
 
 
