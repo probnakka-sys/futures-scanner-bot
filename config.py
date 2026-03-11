@@ -20,7 +20,7 @@ TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 UPDATE_INTERVAL = int(os.getenv('UPDATE_INTERVAL', 900))  # 15 минут
 MIN_CONFIDENCE = int(os.getenv('MIN_CONFIDENCE', 65))      # Мин. уверенность
 TIMEFRAME = os.getenv('TIMEFRAME', '15m')                  # Основной таймфрейм
-PAIRS_TO_SCAN = int(os.getenv('PAIRS_TO_SCAN', 50))        # Сколько пар сканировать
+PAIRS_TO_SCAN = int(os.getenv('PAIRS_TO_SCAN', 100))        # Сколько пар сканировать
 
 # --- Реферальные ссылки ---
 REF_LINKS = {
@@ -69,7 +69,7 @@ FEATURES = {
         'btc_correlation': False, # Корреляция с BTC
         'vwap': False,          # VWAP индикатор
         'patterns': False,      # Свечные паттерны
-        'pump_dump': False,     # Памп-дамп анализ
+        'pump_dump': True,     # Памп-дамп анализ
         'fibonacci': False,     # Уровни Фибоначчи
     },
     
@@ -125,7 +125,7 @@ INDICATOR_WEIGHTS = {
 # ============== НАСТРОЙКИ ПАМП-ДАМП ==============
 
 PUMP_DUMP_SETTINGS = {
-    'enabled': False,
+    'enabled': True,
     'threshold': 7.0,           # % для определения пампа
     'time_windows': [1, 3, 5, 15],  # минут для анализа
     'history_minutes': 30,       # храним историю цен
