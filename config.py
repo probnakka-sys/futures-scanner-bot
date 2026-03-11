@@ -66,11 +66,11 @@ FEATURES = {
     # === РАСШИРЕННЫЙ АНАЛИЗ ===
     'advanced': {
         'divergence': True,      # Дивергенции RSI/MACD
-        'btc_correlation': False, # Корреляция с BTC (пока отключено)
+        'btc_correlation': False, # Корреляция с BTC
         'vwap': True,            # VWAP индикатор
         'patterns': True,        # Свечные паттерны
         'pump_dump': True,       # Памп-дамп анализ
-        'fibonacci': False,      # Уровни Фибоначчи (пока отключено)
+        'fibonacci': False,      # Уровни Фибоначчи
     },
     
     # === ЭКСПЕРИМЕНТАЛЬНЫЕ ===
@@ -85,6 +85,30 @@ FEATURES = {
     'testing': {
         'test_signal': True,    # Тестовый сигнал по BTC/USDT
         'debug_mode': False,    # Режим отладки
+    }
+}
+
+# ============== НАСТРОЙКИ ОТОБРАЖЕНИЯ ==============
+
+DISPLAY_SETTINGS = {
+    # Источник цены
+    'show_price_source': True,    # Показывать (w) или (h)
+    
+    # Что показывать в сигнале
+    'show_funding': True,           # Показывать фандинг
+    'show_volume': True,             # Показывать объем
+    'show_divergence': True,         # Показывать дивергенции
+    'show_patterns': True,           # Показывать свечные паттерны
+    'show_pump_dump': True,          # Показывать памп-дамп
+    'show_vwap': True,               # Показывать VWAP
+    'show_alignment': True,           # Показывать старшие таймфреймы
+    
+    # Кнопки
+    'buttons': {
+        'copy': True,                 # Кнопка копирования
+        'trade': True,                # Кнопка торговли (реферальная)
+        'refresh': True,               # Кнопка обновления
+        'details': True,               # Кнопка деталей
     }
 }
 
