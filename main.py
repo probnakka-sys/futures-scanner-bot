@@ -19,6 +19,7 @@ import traceback
 import random
 import ssl
 import certifi
+import time
 
 # Импорт конфигурации
 from config import (
@@ -112,27 +113,127 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Конфигурация (импортирована из config.py)
-# TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, UPDATE_INTERVAL, MIN_CONFIDENCE, TIMEFRAMES, REF_LINKS
+# ============== ПАМП-ДАМП АНАЛИЗАТОР ==============
 
-# ============== ЗАПАСНОЙ СПИСОК ==============
-FALLBACK_PAIRS = [
-    'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT', 'XRP/USDT',
-    'ADA/USDT', 'DOGE/USDT', 'DOT/USDT', 'LINK/USDT', 'MATIC/USDT',
-    'AVAX/USDT', 'UNI/USDT', 'ATOM/USDT', 'LTC/USDT', 'BCH/USDT',
-    'ALGO/USDT', 'NEAR/USDT', 'FIL/USDT', 'APT/USDT', 'ARB/USDT',
-    'AAVE/USDT', 'COMP/USDT', 'MKR/USDT', 'SNX/USDT', 'YFI/USDT',
-    'CRV/USDT', 'BAL/USDT', '1INCH/USDT', 'OP/USDT', 'IMX/USDT',
-    'AXS/USDT', 'SAND/USDT', 'MANA/USDT', 'GALA/USDT', 'ENJ/USDT',
-    'FET/USDT', 'AGIX/USDT', 'OCEAN/USDT', 'GRT/USDT', 'BAND/USDT',
-    'ATOM/USDT', 'OSMO/USDT', 'DOT/USDT', 'KSM/USDT', 'NEAR/USDT',
-    'SOL/USDT', 'RAY/USDT', 'AVAX/USDT', 'JOE/USDT', 'BNB/USDT',
-    'CAKE/USDT', 'BAKE/USDT', 'XVS/USDT', 'ALPACA/USDT', 'TWT/USDT',
-    'ICP/USDT', 'RNDR/USDT', 'STX/USDT', 'FLOW/USDT', 'MINA/USDT',
-    'EGLD/USDT', 'KDA/USDT', 'HNT/USDT', 'ANKR/USDT', 'ZIL/USDT',
-    'IOST/USDT', 'IOTX/USDT', 'VET/USDT', 'THETA/USDT', 'TFUEL/USDT',
-    'ROSE/USDT', 'CELR/USDT', 'CKB/USDT', 'ONE/USDT', 'HARMONY/USDT'
-]
+class PumpDumpAnalyzer:
+    """
+    Анализатор пампа и дампа.
+    Отслеживает резкие ценовые движения.
+    """
+    
+    def __init__(self, settings: Dict = None):
+        self.settings = settings or PUMP_DUMP_SETTINGS
+        self.pump_threshold = self.settings.get('threshold', 7.0)
+        self.dump_threshold = -self.pump_threshold
+        self.time_windows = self.settings.get('time_windows', [1, 3, 5, 15])
+        self.max_history_minutes = self.settings.get('history_minutes', 30)
+        self.price_history = {}  # {symbol: [(timestamp, price)]}
+        self.last_events = {}     # для предотвращения дублей
+        
+    async def add_price_point(self, symbol: str, price: float, timestamp: int):
+        """Добавление новой цены в историю"""
+        if symbol not in self.price_history:
+            self.price_history[symbol] = []
+        
+        current_time = timestamp / 1000  # переводим в секунды
+        self.price_history[symbol].append((current_time, price))
+        
+        # Очищаем старые записи
+        cutoff_time = current_time - (self.max_history_minutes * 60)
+        self.price_history[symbol] = [
+            (t, p) for t, p in self.price_history[symbol] if t > cutoff_time
+        ]
+        
+        # Анализируем на наличие событий
+        return await self.analyze_symbol(symbol)
+    
+    def calculate_change(self, symbol: str, minutes: int) -> Optional[Dict]:
+        """Расчет изменения цены за указанное количество минут"""
+        if symbol not in self.price_history or len(self.price_history[symbol]) < 2:
+            return None
+        
+        history = self.price_history[symbol]
+        current_time = history[-1][0]
+        current_price = history[-1][1]
+        
+        # Ищем цену minutes назад
+        target_time = current_time - (minutes * 60)
+        closest_point = None
+        min_time_diff = float('inf')
+        
+        for t, p in history:
+            time_diff = abs(t - target_time)
+            if time_diff < min_time_diff:
+                min_time_diff = time_diff
+                closest_point = (t, p)
+        
+        if closest_point is None or min_time_diff > 60:  # если расхождение больше минуты
+            return None
+        
+        past_price = closest_point[1]
+        time_span = current_time - closest_point[0]  # фактический промежуток в секундах
+        
+        if time_span < 30:  # слишком маленький промежуток
+            return None
+        
+        change_percent = ((current_price - past_price) / past_price) * 100
+        
+        # Определение направления
+        direction = None
+        if change_percent >= self.pump_threshold:
+            direction = 'PUMP'
+        elif change_percent <= self.dump_threshold:
+            direction = 'DUMP'
+        
+        if direction is None:
+            return None
+        
+        return {
+            'symbol': symbol,
+            'type': direction,
+            'change_percent': round(change_percent, 2),
+            'time_window': minutes,
+            'actual_time': round(time_span / 60, 1),  # в минутах
+            'start_price': round(past_price, 8),
+            'end_price': round(current_price, 8),
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        }
+    
+    async def analyze_symbol(self, symbol: str) -> List[Dict]:
+        """Анализ символа по всем временным окнам"""
+        events = []
+        
+        for minutes in self.time_windows:
+            event = self.calculate_change(symbol, minutes)
+            if event:
+                # Проверяем на дубли (чтобы не спамить одним и тем же)
+                event_key = f"{symbol}_{minutes}_{event['type']}"
+                last_time = self.last_events.get(event_key, 0)
+                
+                # Если прошло больше 5 минут с последнего такого события
+                if time.time() - last_time > 300:
+                    events.append(event)
+                    self.last_events[event_key] = time.time()
+        
+        return events
+    
+    def get_summary(self, events: List[Dict]) -> str:
+        """Получение текстового резюме по событиям"""
+        if not events:
+            return ""
+        
+        lines = ["\n📈 **Pump/Dump анализ:**"]
+        
+        for event in events:
+            emoji = "🚀" if event['type'] == 'PUMP' else "📉"
+            color = "🟢" if event['type'] == 'PUMP' else "🔴"
+            lines.append(
+                f"{color} {emoji} {event['time_window']}мин: "
+                f"{event['change_percent']:+.2f}% "
+                f"(факт: {event['actual_time']}мин)"
+            )
+        
+        return "\n".join(lines)
 
 class FuturesDataFetcher:
     """Класс для получения данных с бирж. Использует синхронные запросы для надежности."""
@@ -506,6 +607,13 @@ class FuturesScannerBot:
         self.analyzer = MultiTimeframeAnalyzer()
         self.telegram_bot = Bot(token=TELEGRAM_TOKEN)
         self.scanned_pairs = set()
+        
+        # Добавляем памп-дамп анализатор
+        if FEATURES['advanced']['pump_dump']:
+            self.pump_dump = PumpDumpAnalyzer(PUMP_DUMP_SETTINGS)
+            logger.info("✅ Памп-дамп анализатор инициализирован")
+        else:
+            self.pump_dump = None
     
     def format_funding(self, rate: float) -> str:
         if rate is None:
@@ -539,6 +647,18 @@ class FuturesScannerBot:
             f"📊 *Направление:* {signal['direction']}",
             f"🎯 *Текущая цена:* `{signal['price']:.8f}`\n"
         ]
+        
+        # Отображение памп-дамп информации
+        if signal.get('pump_dump'):
+            lines.append(f"⚡ **Импульсный анализ:**")
+            for event in signal['pump_dump']:
+                emoji_pump = "🚀" if event['type'] == 'PUMP' else "📉"
+                lines.append(
+                    f"└ {emoji_pump} {event['time_window']}мин: "
+                    f"{event['change_percent']:+.2f}% "
+                    f"(до {event['end_price']:.8f})"
+                )
+            lines.append("")
         
         if 'target_1' in signal:
             lines.extend([
@@ -667,6 +787,20 @@ class FuturesScannerBot:
                         if not dataframes:
                             continue
                         
+                        # Памп-дамп анализ
+                        pump_events = []
+                        if self.pump_dump and 'current' in dataframes:
+                            df_current = dataframes['current']
+                            last_price = df_current['close'].iloc[-1]
+                            last_timestamp = int(df_current.index[-1].timestamp() * 1000)
+                            
+                            pump_events = await self.pump_dump.add_price_point(
+                                pair, last_price, last_timestamp
+                            )
+                            
+                            if pump_events:
+                                logger.info(f"📊 Обнаружен памп/дамп для {pair}: {pump_events}")
+                        
                         # Получаем метаданные
                         funding = await self.fetcher.fetch_funding_rate('MEXC', pair)
                         ticker = await self.fetcher.fetch_ticker('MEXC', pair)
@@ -679,6 +813,17 @@ class FuturesScannerBot:
                         
                         # Генерируем сигнал
                         signal = self.analyzer.generate_signal(dataframes, metadata, pair, 'MEXC')
+                        
+                        # Добавляем информацию о памп-дампе в сигнал
+                        if signal and pump_events:
+                            signal['pump_dump'] = pump_events
+                            # Увеличиваем уверенность при сильном импульсе
+                            if len(pump_events) > 0:
+                                strongest = max(pump_events, key=lambda x: abs(x['change_percent']))
+                                if abs(strongest['change_percent']) >= 10:
+                                    signal['confidence'] = min(signal['confidence'] + 15, 100)
+                                elif abs(strongest['change_percent']) >= 7:
+                                    signal['confidence'] = min(signal['confidence'] + 10, 100)
                         
                         if signal and signal['confidence'] >= MIN_CONFIDENCE:
                             all_signals.append(signal)
