@@ -17,10 +17,10 @@ TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 
 # --- Основные параметры ---
-UPDATE_INTERVAL = int(os.getenv('UPDATE_INTERVAL', 900))  # 15 минут
+UPDATE_INTERVAL = int(os.getenv('UPDATE_INTERVAL', 300))  # 5 минут(300), 15 минут (900)
 MIN_CONFIDENCE = int(os.getenv('MIN_CONFIDENCE', 65))      # Мин. уверенность
 TIMEFRAME = os.getenv('TIMEFRAME', '15m')                  # Основной таймфрейм
-PAIRS_TO_SCAN = int(os.getenv('PAIRS_TO_SCAN', 50))        # Сколько пар сканировать
+PAIRS_TO_SCAN = int(os.getenv('PAIRS_TO_SCAN', 200))        # Сколько пар сканировать
 
 # --- Реферальные ссылки ---
 REF_LINKS = {
@@ -150,9 +150,9 @@ INDICATOR_WEIGHTS = {
 
 PUMP_DUMP_SETTINGS = {
     'enabled': True,
-    'threshold': 7.0,           # % для определения пампа
-    'time_windows': [1, 3, 5, 15],  # минут для анализа
-    'history_minutes': 30,       # храним историю цен
+    'threshold': 5.0,           # % для определения пампа
+    'time_windows': [1, 3, 5, 10, 15, 30],  # минут для анализа
+    'history_minutes': 60,       # храним историю цен
 }
 
 # ============== ТАЙМФРЕЙМЫ ==============
