@@ -105,10 +105,10 @@ DISPLAY_SETTINGS = {
     
     # Кнопки
     'buttons': {
-        'copy': True,                 # Кнопка копирования
-        'trade': True,                # Кнопка торговли (реферальная)
-        'refresh': True,               # Кнопка обновления
-        'details': True,               # Кнопка деталей
+        'copy': False,                 # Кнопка копирования
+        'trade': False,                # Кнопка торговли (реферальная)
+        'refresh': False,               # Кнопка обновления
+        'details': False,               # Кнопка деталей
     }
 }
 
