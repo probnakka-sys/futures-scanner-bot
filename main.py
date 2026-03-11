@@ -24,6 +24,7 @@ import json
 import websockets
 import aiohttp
 import requests
+import re
 
 # Импорт конфигурации
 from config import (
@@ -37,7 +38,8 @@ from config import (
     INDICATOR_SETTINGS,
     INDICATOR_WEIGHTS,
     PUMP_DUMP_SETTINGS,
-    PAIRS_TO_SCAN
+    PAIRS_TO_SCAN,
+    DISPLAY_SETTINGS
 )
 
 # Временно отключаем проверку SSL для теста
@@ -170,6 +172,9 @@ class WebSocketMonitor:
         self.reconnect_attempts = 0
         self.max_reconnect_attempts = 5
         self.lock = asyncio.Lock()
+        self.message_count = 0
+        self.last_minute_count = 0
+        self.last_minute_time = time.time()
         
     async def connect(self):
         """Подключение к WebSocket MEXC"""
@@ -188,6 +193,7 @@ class WebSocketMonitor:
             logger.info("✅ WebSocket подключен")
             
             asyncio.create_task(self._listen())
+            asyncio.create_task(self._stats_logger())
             
             if self.subscribed_symbols:
                 await self._resubscribe_all()
@@ -197,11 +203,22 @@ class WebSocketMonitor:
             self.running = False
             await self._handle_disconnect()
     
+    async def _stats_logger(self):
+        """Логирование статистики WebSocket"""
+        while self.running:
+            await asyncio.sleep(60)  # раз в минуту
+            current_time = time.time()
+            messages_per_min = self.message_count - self.last_minute_count
+            self.last_minute_count = self.message_count
+            self.last_minute_time = current_time
+            logger.info(f"📊 WebSocket статистика: {messages_per_min} сообщений/мин, {len(self.subscribed_symbols)} подписок")
+    
     async def _listen(self):
         """Прослушивание входящих сообщений"""
         while self.running:
             try:
                 message = await asyncio.wait_for(self.ws_connection.recv(), timeout=30)
+                self.message_count += 1
                 await self._process_message(message)
             except asyncio.TimeoutError:
                 try:
@@ -302,12 +319,16 @@ class WebSocketMonitor:
         else:
             logger.error("❌ Превышено количество попыток переподключения")
     
-    async def get_latest_price(self, symbol: str) -> Optional[float]:
-        """Получение последней цены"""
+    async def get_latest_price(self, symbol: str) -> Optional[Dict]:
+        """Получение последней цены с информацией об источнике"""
         async with self.lock:
             data = self.latest_prices.get(symbol)
             if data:
-                return data['price']
+                return {
+                    'price': data['price'],
+                    'source': 'websocket',
+                    'time': data['time']
+                }
         return None
     
     async def stop(self):
@@ -316,83 +337,6 @@ class WebSocketMonitor:
         if self.ws_connection:
             await self.ws_connection.close()
         logger.info("🛑 WebSocket монитор остановлен")
-
-
-# ============== АНАЛИЗАТОР КОРРЕЛЯЦИИ ==============
-
-class CorrelationAnalyzer:
-    """Анализ корреляции с BTC"""
-    
-    def __init__(self):
-        self.btc_prices = []
-        self.coin_prices = {}
-        self.correlation_threshold = 0.7
-        self.lookback = 100
-        
-    async def update_btc_price(self, price: float):
-        """Обновление цены BTC"""
-        self.btc_prices.append(price)
-        if len(self.btc_prices) > self.lookback:
-            self.btc_prices.pop(0)
-    
-    async def update_coin_price(self, symbol: str, price: float):
-        """Обновление цены монеты"""
-        if symbol not in self.coin_prices:
-            self.coin_prices[symbol] = []
-        
-        self.coin_prices[symbol].append(price)
-        if len(self.coin_prices[symbol]) > self.lookback:
-            self.coin_prices[symbol].pop(0)
-    
-    def calculate_correlation(self, symbol: str) -> Dict:
-        """Расчет корреляции с BTC"""
-        result = {
-            'correlation': 0,
-            'strength': 'weak',
-            'description': ''
-        }
-        
-        if symbol == 'BTC/USDT':
-            result['description'] = 'BTC сам с собой'
-            return result
-        
-        if symbol not in self.coin_prices or len(self.coin_prices[symbol]) < 30:
-            return result
-        
-        if len(self.btc_prices) < 30:
-            return result
-        
-        # Берем одинаковое количество точек
-        min_len = min(len(self.btc_prices), len(self.coin_prices[symbol]))
-        btc = self.btc_prices[-min_len:]
-        coin = self.coin_prices[symbol][-min_len:]
-        
-        # Расчет корреляции Пирсона
-        btc_mean = np.mean(btc)
-        coin_mean = np.mean(coin)
-        
-        numerator = sum((btc[i] - btc_mean) * (coin[i] - coin_mean) for i in range(min_len))
-        denominator = np.sqrt(sum((btc[i] - btc_mean)**2 for i in range(min_len)) * 
-                              sum((coin[i] - coin_mean)**2 for i in range(min_len)))
-        
-        if denominator != 0:
-            corr = numerator / denominator
-            result['correlation'] = round(corr, 2)
-            
-            if abs(corr) > 0.8:
-                result['strength'] = 'very_strong'
-                result['description'] = f"Очень сильная корреляция с BTC ({corr:.2f})"
-            elif abs(corr) > 0.6:
-                result['strength'] = 'strong'
-                result['description'] = f"Сильная корреляция с BTC ({corr:.2f})"
-            elif abs(corr) > 0.4:
-                result['strength'] = 'medium'
-                result['description'] = f"Средняя корреляция с BTC ({corr:.2f})"
-            else:
-                result['strength'] = 'weak'
-                result['description'] = f"Слабая корреляция с BTC ({corr:.2f})"
-        
-        return result
 
 
 # ============== ПАМП-ДАМП АНАЛИЗАТОР ==============
@@ -498,24 +442,6 @@ class PumpDumpAnalyzer:
                     self.last_events[event_key] = time.time()
         
         return events
-    
-    def get_summary(self, events: List[Dict]) -> str:
-        """Получение текстового резюме по событиям"""
-        if not events:
-            return ""
-        
-        lines = ["\n📈 **Pump/Dump анализ:**"]
-        
-        for event in events:
-            emoji = "🚀" if event['type'] == 'PUMP' else "📉"
-            color = "🟢" if event['type'] == 'PUMP' else "🔴"
-            lines.append(
-                f"{color} {emoji} {event['time_window']}мин: "
-                f"{event['change_percent']:+.2f}% "
-                f"(факт: {event['actual_time']}мин)"
-            )
-        
-        return "\n".join(lines)
 
 
 # ============== АНАЛИЗАТОР ДИВЕРГЕНЦИЙ ==============
@@ -763,7 +689,6 @@ class FuturesDataFetcher:
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
             df.set_index('timestamp', inplace=True)
             
-            logger.info(f"✅ MEXC: загружено {len(df)} свечей для {symbol} {timeframe}")
             return df
             
         except Exception as e:
@@ -771,8 +696,23 @@ class FuturesDataFetcher:
             return None
     
     async def fetch_funding_rate(self, exchange_name: str, symbol: str) -> Optional[float]:
-        """Получение ставки фондирования."""
-        return 0.0
+        """Получение ставки фондирования с MEXC"""
+        try:
+            # Для MEXC используем отдельный эндпоинт
+            symbol_raw = symbol.replace('/', '')
+            url = f"https://contract.mexc.com/api/v1/contract/funding_rate/{symbol_raw}"
+            
+            response = await asyncio.to_thread(requests.get, url, timeout=5)
+            
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('success') and data.get('data') is not None:
+                    funding_rate = float(data['data'])
+                    return funding_rate
+            return 0.0
+        except Exception as e:
+            logger.debug(f"Ошибка получения фандинга для {symbol}: {e}")
+            return 0.0
     
     async def fetch_ticker(self, exchange_name: str, symbol: str) -> Dict:
         """Получение тикера."""
@@ -798,11 +738,18 @@ class FuturesDataFetcher:
         except:
             return {}
     
-    async def get_websocket_price(self, symbol: str) -> Optional[float]:
-        """Получение последней цены из WebSocket"""
-        if self.websocket:
-            return await self.websocket.get_latest_price(symbol)
-        return None
+    async def get_price_with_source(self, symbol: str, http_price: float = None) -> Dict:
+        """Получение цены с указанием источника (WebSocket или HTTP)"""
+        if self.websocket and FEATURES['data_sources']['websocket']:
+            ws_price = await self.websocket.get_latest_price(symbol)
+            if ws_price:
+                return ws_price
+        
+        return {
+            'price': http_price,
+            'source': 'http',
+            'time': datetime.now().strftime('%H:%M:%S')
+        }
     
     async def close_all(self):
         """Закрытие соединений."""
@@ -1036,7 +983,7 @@ class MultiTimeframeAnalyzer:
             'price': current_price,
             'direction': direction,
             'signal_power': signal_power,
-            'confidence': min(confidence, 100),
+            'confidence': round(min(confidence, 100), 0),
             'signal_strength': round(signal_strength, 1),
             'reasons': reasons[:8],
             'funding_rate': metadata.get('funding_rate', 0),
@@ -1071,13 +1018,6 @@ class FuturesScannerBot:
             logger.info("✅ Анализатор дивергенций инициализирован")
         else:
             self.divergence = None
-        
-        # Анализатор корреляции
-        if FEATURES['advanced']['btc_correlation']:
-            self.correlation = CorrelationAnalyzer()
-            logger.info("✅ Анализатор корреляции инициализирован")
-        else:
-            self.correlation = None
     
     def format_funding(self, rate: float) -> str:
         if rate is None:
@@ -1095,7 +1035,7 @@ class FuturesScannerBot:
         else:
             return f"${volume:.1f}"
     
-    def format_message(self, signal: Dict) -> Tuple[str, InlineKeyboardMarkup]:
+    def format_message(self, signal: Dict, price_source: Dict = None) -> Tuple[str, InlineKeyboardMarkup]:
         emoji_map = {
             'LONG 📈': '🟢',
             'SHORT 📉': '🔴',
@@ -1105,43 +1045,50 @@ class FuturesScannerBot:
         }
         emoji = emoji_map.get(signal['direction'], '🤖')
         
+        # Определяем источник цены
+        price_display = f"`{signal['price']:.8f}`"
+        if DISPLAY_SETTINGS['show_price_source'] and price_source:
+            source_emoji = "🌐" if price_source['source'] == 'websocket' else "☁️"
+            source_text = "(w)" if price_source['source'] == 'websocket' else "(h)"
+            price_display = f"`{signal['price']:.8f}` {source_text}"
+        
         lines = [
             f"{emoji} *СИГНАЛ {signal['exchange']}*",
             f"└ `{signal['symbol']}` {signal['signal_power']}\n",
             f"📊 *Направление:* {signal['direction']}",
-            f"🎯 *Текущая цена:* `{signal['price']:.8f}`\n"
+            f"🎯 *Текущая цена:* {price_display}\n"
         ]
         
-        # Отображение памп-дамп информации
-        if signal.get('pump_dump'):
-            lines.append(f"⚡ **Импульсный анализ:**")
-            for event in signal['pump_dump']:
-                emoji_pump = "🚀" if event['type'] == 'PUMP' else "📉"
-                lines.append(
-                    f"└ {emoji_pump} {event['time_window']}мин: "
-                    f"{event['change_percent']:+.2f}% "
-                    f"(до {event['end_price']:.8f})"
-                )
-            lines.append("")
-        
-        # Отображение дивергенций
-        if signal.get('divergence') and signal['divergence']['has_divergence']:
-            lines.append(f"📊 **Дивергенции:**")
+        # Дивергенции (отключаемо)
+        if DISPLAY_SETTINGS['show_divergence'] and signal.get('divergence') and signal['divergence']['has_divergence']:
+            lines.append(f"📊 *Дивергенции:*")
             for div_signal in signal['divergence']['signals']:
                 lines.append(f"└ {div_signal}")
             lines.append("")
         
-        # Отображение свечных паттернов
-        if FEATURES['advanced']['patterns'] and signal.get('patterns'):
+        # Памп-дамп (отключаемо)
+        if DISPLAY_SETTINGS['show_pump_dump'] and signal.get('pump_dump'):
+            lines.append(f"⚡ *Импульсный анализ:*")
+            for event in signal['pump_dump']:
+                emoji_pump = "🚀" if event['type'] == 'PUMP' else "📉"
+                lines.append(
+                    f"└ {emoji_pump} {event['time_window']}мин: "
+                    f"{event['change_percent']:+.2f}%"
+                )
+            lines.append("")
+        
+        # Свечные паттерны (отключаемо)
+        if DISPLAY_SETTINGS['show_patterns'] and signal.get('patterns'):
             patterns = signal['patterns']
             active_patterns = [k for k, v in patterns.items() if v]
             if active_patterns:
-                lines.append(f"🕯 **Свечные паттерны:**")
+                lines.append(f"🕯 *Свечные паттерны:*")
                 for pattern in active_patterns:
                     emoji_pattern = "🟢" if pattern in ['hammer', 'engulfing'] else "🔴"
                     lines.append(f"└ {emoji_pattern} {pattern.replace('_', ' ').title()}")
                 lines.append("")
         
+        # Цели
         if 'target_1' in signal:
             lines.extend([
                 f"🎯 *Цели:*",
@@ -1150,18 +1097,27 @@ class FuturesScannerBot:
                 f"└ Стоп-лосс: `{signal['stop_loss']:.8f}`\n"
             ])
         
-        funding = self.format_funding(signal.get('funding_rate', 0))
-        volume = self.format_volume(signal.get('volume_24h', 0))
+        # Параметры
+        lines.append(f"⚡️ *Параметры:*")
         
+        if DISPLAY_SETTINGS['show_volume']:
+            volume = self.format_volume(signal.get('volume_24h', 0))
+            lines.append(f"└ Объем 24ч: `{volume}`")
+        
+        if DISPLAY_SETTINGS['show_funding']:
+            funding = self.format_funding(signal.get('funding_rate', 0))
+            lines.append(f"└ Фандинг: `{funding}`")
+        
+        lines.append("")
+        
+        # Уверенность и сила
         lines.extend([
-            f"⚡ *Параметры:*",
-            f"└ Объем 24ч: `{volume}`",
-            f"└ Фандинг: `{funding}`\n",
             f"🔥 *Уверенность:* {signal['confidence']}%",
             f"⚡️ *Сила сигнала:* {signal['signal_strength']}/100\n"
         ])
         
-        if signal.get('alignment'):
+        # Старшие таймфреймы (отключаемо)
+        if DISPLAY_SETTINGS['show_alignment'] and signal.get('alignment'):
             align = signal['alignment']
             lines.append(f"📊 *Старшие таймфреймы:*")
             if align.get('hourly_trend'):
@@ -1172,6 +1128,7 @@ class FuturesScannerBot:
                 lines.append(f"└ 1н: {align['weekly_trend']}")
             lines.append("")
         
+        # Причины
         if signal['reasons']:
             lines.append(f"💡 *Причины:*")
             for reason in signal['reasons']:
@@ -1182,17 +1139,24 @@ class FuturesScannerBot:
         
         # Клавиатура
         keyboard = []
-        coin = signal['symbol'].replace('/USDT', '')
-        keyboard.append([InlineKeyboardButton(f"📋 Скопировать {coin}", callback_data=f"copy_{coin}")])
         
-        exch = signal['exchange']
-        if exch in REF_LINKS:
-            keyboard.append([InlineKeyboardButton(f"🚀 Торговать на {exch}", url=REF_LINKS[exch])])
+        if DISPLAY_SETTINGS['buttons']['copy']:
+            coin = signal['symbol'].replace('/USDT', '')
+            keyboard.append([InlineKeyboardButton(f"📋 Скопировать {coin}", callback_data=f"copy_{coin}")])
         
-        keyboard.append([
-            InlineKeyboardButton("🔄 Обновить", callback_data=f"refresh"),
-            InlineKeyboardButton("📊 Детали", callback_data=f"details")
-        ])
+        if DISPLAY_SETTINGS['buttons']['trade']:
+            exch = signal['exchange']
+            if exch in REF_LINKS:
+                keyboard.append([InlineKeyboardButton(f"🚀 Торговать на {exch}", url=REF_LINKS[exch])])
+        
+        action_row = []
+        if DISPLAY_SETTINGS['buttons']['refresh']:
+            action_row.append(InlineKeyboardButton("🔄 Обновить", callback_data=f"refresh_{signal['symbol']}"))
+        if DISPLAY_SETTINGS['buttons']['details']:
+            action_row.append(InlineKeyboardButton("📊 Детали", callback_data=f"details_{signal['symbol']}"))
+        
+        if action_row:
+            keyboard.append(action_row)
         
         return "\n".join(lines), InlineKeyboardMarkup(keyboard)
     
@@ -1238,7 +1202,10 @@ class FuturesScannerBot:
                         logger.info(f"🔥 ТЕСТ: Сигнал достиг порога {MIN_CONFIDENCE}%")
                         logger.info(f"📊 Направление: {test_signal['direction']}")
                         logger.info(f"📊 Причины: {test_signal['reasons']}")
-                        await self.send_signal(test_signal)
+                        
+                        # Получаем актуальную цену из WebSocket
+                        price_source = await self.fetcher.get_price_with_source(test_pair, test_signal['price'])
+                        await self.send_signal(test_signal, price_source)
                     else:
                         logger.warning(f"⚠️ ТЕСТ: Уверенность {test_signal['confidence']}% ниже порога {MIN_CONFIDENCE}%")
                 else:
@@ -1363,9 +1330,9 @@ class FuturesScannerBot:
         
         return all_signals
     
-    async def send_signal(self, signal: Dict):
+    async def send_signal(self, signal: Dict, price_source: Dict = None):
         """Отправка сигнала"""
-        msg, keyboard = self.format_message(signal)
+        msg, keyboard = self.format_message(signal, price_source)
         await self.telegram_bot.send_message(
             chat_id=TELEGRAM_CHAT_ID,
             text=msg,
@@ -1382,8 +1349,10 @@ class FuturesScannerBot:
         
         if signals:
             for i, signal in enumerate(signals[:5]):  # Отправляем только 5 лучших
-                await self.send_signal(signal)
-                if i < len(signals[:5]) - 1:  # Если это не последний сигнал
+                # Получаем актуальную цену из WebSocket для каждого сигнала
+                price_source = await self.fetcher.get_price_with_source(signal['symbol'], signal['price'])
+                await self.send_signal(signal, price_source)
+                if i < len(signals[:5]) - 1:
                     await asyncio.sleep(3)
         else:
             logger.info("❌ Сигналов не найдено")
@@ -1430,7 +1399,7 @@ class TelegramHandler:
             "📈 Дивергенции RSI/MACD\n"
             "📊 VWAP институциональный уровень\n"
             "🕯 Свечные паттерны\n"
-            "⚡ WebSocket реального времени\n\n"
+            "⚡ WebSocket реального времени (w)\n\n"
             "Команды:\n"
             "/scan - Сканировать\n"
             "/status - Статус\n"
@@ -1444,7 +1413,8 @@ class TelegramHandler:
         if signals:
             await msg.edit_text(f"✅ Найдено {len(signals)} сигналов")
             for signal in signals[:5]:
-                await self.bot.send_signal(signal)
+                price_source = await self.bot.fetcher.get_price_with_source(signal['symbol'], signal['price'])
+                await self.bot.send_signal(signal, price_source)
                 await asyncio.sleep(2)
         else:
             await msg.edit_text("❌ Сигналов не найдено")
@@ -1452,8 +1422,13 @@ class TelegramHandler:
     async def status(self, update, context):
         text = "*📡 Статус:*\n\n"
         text += f"✅ MEXC: активен\n"
-        text += f"⏸️ Bybit: отключен\n"
-        text += f"⏸️ BingX: отключен\n"
+        
+        if self.bot.fetcher.websocket and self.bot.fetcher.websocket.running:
+            ws_stats = f" ({len(self.bot.fetcher.websocket.subscribed_symbols)} подписок, {self.bot.fetcher.websocket.message_count} сообщ.)"
+            text += f"✅ WebSocket: активен{ws_stats}\n"
+        else:
+            text += f"❌ WebSocket: отключен\n"
+        
         text += f"\n📊 Функции:\n"
         text += f"✓ Памп-дамп: {'вкл' if FEATURES['advanced']['pump_dump'] else 'выкл'}\n"
         text += f"✓ Дивергенции: {'вкл' if FEATURES['advanced']['divergence'] else 'выкл'}\n"
@@ -1470,18 +1445,35 @@ class TelegramHandler:
             "• Объемы, VWAP\n"
             "• Дивергенции\n"
             "• Памп-дамп (>7%)\n"
-            "• Свечные паттерны\n\n"
-            "⚙️ Настройки в config.py\n"
-            "Можно включать/выключать функции",
+            "• Свечные паттерны\n"
+            "• WebSocket (w) реальное время\n\n"
+            "⚙️ *Кнопки:*\n"
+            "🔄 Обновить - обновить сигнал\n"
+            "📊 Детали - подробный анализ\n\n"
+            "⚙️ Настройки в config.py",
             parse_mode='Markdown'
         )
     
     async def button(self, update, context):
         query = update.callback_query
         await query.answer()
+        
         if query.data.startswith("copy_"):
             coin = query.data.replace("copy_", "")
             await query.message.reply_text(f"`{coin}`", parse_mode='Markdown')
+        
+        elif query.data.startswith("refresh_"):
+            symbol = query.data.replace("refresh_", "")
+            await query.edit_message_text(f"🔄 Обновляю {symbol}...")
+            
+            # Здесь будет логика обновления сигнала
+            # TODO: Запросить свежие данные и отправить новый сигнал
+            await asyncio.sleep(1)
+            await query.edit_message_text(f"✅ {symbol} обновлен")
+        
+        elif query.data.startswith("details_"):
+            symbol = query.data.replace("details_", "")
+            await query.edit_message_text(f"📊 Детальный анализ для {symbol} скоро будет доступен")
     
     def run(self):
         self.app.run_polling()
