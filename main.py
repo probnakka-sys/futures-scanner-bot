@@ -483,7 +483,7 @@ class FuturesScannerBot:
     def __init__(self):
         self.fetcher = FuturesDataFetcher()
         self.analyzer = MultiTimeframeAnalyzer()
-        self.telegram_bot = Bot(token=TELEGRAM_TOKEN)
+        self.telegram_bot = Bot(token="8472133401:AAEYcS6g7k7Hd50I2hrxlq5jX4p9uOXkk5s")
         self.scanned_pairs = set()
     
     def format_funding(self, rate: float) -> str:
@@ -800,4 +800,5 @@ async def main():
         polling.cancel()
 
 if __name__ == "__main__":
+
     asyncio.run(main())
