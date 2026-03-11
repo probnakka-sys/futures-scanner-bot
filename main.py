@@ -686,7 +686,7 @@ class FuturesScannerBot:
         """Отправка сигнала"""
         msg, keyboard = self.format_message(signal)
         await self.telegram_bot.send_message(
-            chat_id=TELEGRAM_CHAT_ID,
+            chat_id=-5278064279,
             text=msg,
             parse_mode='Markdown',
             reply_markup=keyboard
@@ -802,5 +802,6 @@ async def main():
 if __name__ == "__main__":
 
     asyncio.run(main())
+
 
 
