@@ -1288,18 +1288,21 @@ class FuturesScannerBot:
                 
                 for i, pair in enumerate(pairs[:PAIRS_TO_SCAN]):
                     try:
-                        is_futures = await self.fetcher.check_is_futures(pair)
-                        if not is_futures:
-                            logger.debug(f"⏭️ {pair} не является фьючерсом, пропускаем")
-                            continue
+                        #is_futures = await self.fetcher.check_is_futures(pair)
+                        #if not is_futures:
+                            #logger.debug(f"⏭️ {pair} не является фьючерсом, пропускаем")
+                            #continue
                         
                         dataframes = {}
                         for tf_name, tf_value in TIMEFRAMES.items():
                             limit = 200 if tf_name == 'current' else 100
                             df = await self.fetcher.fetch_ohlcv('MEXC', pair, tf_value, limit)
                             if df is not None and not df.empty:
+                                logger.info(f"✅ Загружено {len(df)} свечей для {pair} {tf_value}")
                                 df = self.analyzer.calculate_indicators(df)
                                 dataframes[tf_name] = df
+                            else:
+                                logger.warning(f"⚠️ Нет данных для {pair} {tf_value}")
                         
                         if not dataframes:
                             continue
@@ -1575,3 +1578,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
