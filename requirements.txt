@@ -10,3 +10,4 @@ requests
 websockets
 python-bingx
 bingx-py
+python-bingx>=1.0.0
