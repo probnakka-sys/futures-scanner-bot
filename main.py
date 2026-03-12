@@ -184,10 +184,10 @@ class BybitFetcher(BaseExchangeFetcher):
     async def fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 200) -> Optional[pd.DataFrame]:
         return None
 
-# ============== BINGX FUTURES С WEBSOCKET (ИСПРАВЛЕННАЯ ВЕРСИЯ) ==============
+# ============== BINGX FUTURES С WEBSOCKET (РАБОЧАЯ ВЕРСИЯ) ==============
 
 class BingxFetcher(BaseExchangeFetcher):
-    """Фетчер для BingX Futures с WebSocket поддержкой"""
+    """Фетчер для BingX Futures с WebSocket через python-bingx"""
     
     def __init__(self):
         super().__init__("BingX")
@@ -201,7 +201,7 @@ class BingxFetcher(BaseExchangeFetcher):
             }
         })
         
-        # WebSocket через библиотеку bingx
+        # WebSocket через библиотеку python-bingx
         self.ws_client = None
         self.ws_enabled = FEATURES['data_sources'].get('websocket', False)
         self.latest_prices = {}
@@ -213,11 +213,12 @@ class BingxFetcher(BaseExchangeFetcher):
         logger.info("✅ BingX Futures инициализирован")
     
     async def _init_websocket(self):
-        """Инициализация WebSocket"""
+        """Инициализация WebSocket через python-bingx"""
         try:
-            from bingx import BingxWs
+            from bingX import BingX
             
-            self.ws_client = BingxWs({})
+            # Ключи не обязательны для публичных данных!
+            self.ws_client = BingX(api_key="", secret_key="")
             logger.info("✅ WebSocket клиент BingX инициализирован")
             
             # Запускаем прослушивание
@@ -227,19 +228,29 @@ class BingxFetcher(BaseExchangeFetcher):
             logger.error(f"❌ Ошибка инициализации WebSocket: {e}")
     
     async def _ws_listen(self):
-        """Прослушивание WebSocket потока"""
+        """Прослушивание публичных WebSocket каналов"""
         try:
-            # watch_orders - правильный метод из документации
-            while True:
-                orders = await self.ws_client.watch_orders()
-                
-                # Обрабатываем полученные данные
-                if orders:
-                    logger.debug(f"📨 Получены данные: {orders}")
-                    # Здесь можно извлечь цены из ордеров
-                    
-                await asyncio.sleep(0.01)
+            from bingX.perpetual.v2 import PerpetualV2
+            
+            # Создаем клиент для публичных данных
+            client = PerpetualV2(api_key="", secret_key="")
+            
+            # Подписываемся на поток всех тикеров (публичный канал)
+            async for ticker in client.market.ws_tickers():
+                if ticker:
+                    symbol_raw = ticker.get('symbol', '')
+                    if symbol_raw and 'USDT' in symbol_raw:
+                        base = symbol_raw.replace('USDT', '').replace('-', '')
+                        symbol = f"{base}/USDT:USDT"
+                        price = float(ticker.get('lastPrice', 0))
                         
+                        if price > 0:
+                            self.latest_prices[symbol] = {
+                                'price': price,
+                                'time': datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                            }
+                            logger.debug(f"📈 WebSocket {symbol}: {price}")
+                            
         except Exception as e:
             logger.error(f"❌ Ошибка в WebSocket потоке: {e}")
             await asyncio.sleep(5)
@@ -1231,6 +1242,7 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
 
 
