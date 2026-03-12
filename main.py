@@ -686,122 +686,116 @@ class FuturesDataFetcher:
             return False
     
     async def fetch_all_pairs(self, exchange_name: str) -> List[str]:
-        """Получение всех доступных фьючерсных пар с MEXC"""
-        if exchange_name != 'MEXC':
-            return []
+    """Получение всех доступных фьючерсных пар с MEXC"""
+    if exchange_name != 'MEXC':
+        return []
+    
+    try:
+        url = "https://api.mexc.com/api/v1/contract/detail"
+        logger.info(f"🔍 Загружаю список всех фьючерсных пар...")
         
-        try:
-            url = "https://api.mexc.com/api/v1/contract/detail"
-            logger.info(f"🔍 Загружаю список всех фьючерсных пар с MEXC...")
-            
-            headers = {
-                'User-Agent': 'Mozilla/5.0'
-            }
-            
-            response = await asyncio.to_thread(requests.get, url, timeout=10, headers=headers)
-            
-            if response.status_code != 200:
-                logger.error(f"❌ MEXC: HTTP {response.status_code}")
-                fallback_futures = [
-                    'BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT',
-                    'DOGE/USDT', 'ADA/USDT', 'AVAX/USDT', 'LINK/USDT', 'MATIC/USDT',
-                    'DOT/USDT', 'UNI/USDT', 'ATOM/USDT', 'LTC/USDT', 'BCH/USDT',
-                    'ALGO/USDT', 'NEAR/USDT', 'FIL/USDT', 'APT/USDT', 'ARB/USDT',
-                    'OP/USDT', 'INJ/USDT', 'TIA/USDT', 'WIF/USDT', 'PEPE/USDT',
-                    'BONK/USDT', 'SHIB/USDT', 'AAVE/USDT', 'CRV/USDT', 'SNX/USDT'
-                ]
-                logger.info(f"📊 Использую запасной список из {len(fallback_futures)} фьючерсных пар")
-                return fallback_futures
-            
-            data = response.json()
-            
-            all_pairs = []
-            if isinstance(data, dict) and data.get('code') == 200 and data.get('data'):
-                contracts = data['data']
-                for contract in contracts:
-                    if isinstance(contract, dict):
-                        symbol = contract.get('symbol')
-                        if symbol and 'USDT' in symbol:
-                            base = symbol.replace('USDT', '')
-                            formatted = f"{base}/USDT"
-                            all_pairs.append(formatted)
-                            
-                            if self.websocket and FEATURES['data_sources']['websocket']:
-                                await self.websocket.subscribe(formatted)
-            
-            if all_pairs:
-                logger.info(f"📊 MEXC Futures: загружено {len(all_pairs)} пар")
-                return all_pairs
-            else:
-                fallback_futures = [
-                    'BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT',
-                    'DOGE/USDT', 'ADA/USDT', 'AVAX/USDT', 'LINK/USDT', 'MATIC/USDT',
-                    'DOT/USDT', 'UNI/USDT', 'ATOM/USDT', 'LTC/USDT', 'BCH/USDT',
-                    'ALGO/USDT', 'NEAR/USDT', 'FIL/USDT', 'APT/USDT', 'ARB/USDT',
-                    'OP/USDT', 'INJ/USDT', 'TIA/USDT', 'WIF/USDT', 'PEPE/USDT',
-                    'BONK/USDT', 'SHIB/USDT', 'AAVE/USDT', 'CRV/USDT', 'SNX/USDT'
-                ]
-                logger.info(f"📊 Использую запасной список из {len(fallback_futures)} фьючерсных пар")
-                return fallback_futures
-            
-        except Exception as e:
-            logger.error(f"❌ MEXC: ошибка загрузки пар - {e}")
-            fallback_futures = [
-                'BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT',
-                'DOGE/USDT', 'ADA/USDT', 'AVAX/USDT', 'LINK/USDT', 'MATIC/USDT',
-                'DOT/USDT', 'UNI/USDT', 'ATOM/USDT', 'LTC/USDT', 'BCH/USDT',
-                'ALGO/USDT', 'NEAR/USDT', 'FIL/USDT', 'APT/USDT', 'ARB/USDT',
-                'OP/USDT', 'INJ/USDT', 'TIA/USDT', 'WIF/USDT', 'PEPE/USDT',
-                'BONK/USDT', 'SHIB/USDT', 'AAVE/USDT', 'CRV/USDT', 'SNX/USDT'
-            ]
-            logger.info(f"📊 Использую запасной список из {len(fallback_futures)} фьючерсных пар")
-            return fallback_futures
+        response = await asyncio.to_thread(requests.get, url, timeout=10)
+        
+        if response.status_code != 200:
+            logger.error(f"❌ MEXC: HTTP {response.status_code}")
+            return self.get_futures_fallback_list()
+        
+        data = response.json()
+        
+        if not data.get('success') or not data.get('data'):
+            logger.warning("⚠️ MEXC: API вернуло пустой список")
+            return self.get_futures_fallback_list()
+        
+        all_pairs = []
+        contracts = data['data']
+        for contract in contracts:
+            if isinstance(contract, dict):
+                symbol = contract.get('symbol')
+                if symbol and 'USDT' in symbol:
+                    # Конвертируем из BTC_USDT в BTC/USDT для внутреннего использования
+                    formatted = symbol.replace('_', '/')
+                    all_pairs.append(formatted)
+                    
+                    if self.websocket and FEATURES['data_sources']['websocket']:
+                        await self.websocket.subscribe(formatted)
+        
+        logger.info(f"📊 MEXC Futures: загружено {len(all_pairs)} пар")
+        return all_pairs if all_pairs else self.get_futures_fallback_list()
+        
+    except Exception as e:
+        logger.error(f"❌ MEXC: ошибка загрузки пар - {e}")
+        return self.get_futures_fallback_list()
+
+def get_futures_fallback_list(self) -> List[str]:
+    """Запасной список популярных фьючерсных пар"""
+    fallback = [
+        'BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT',
+        'DOGE/USDT', 'ADA/USDT', 'AVAX/USDT', 'LINK/USDT', 'MATIC/USDT',
+        'DOT/USDT', 'UNI/USDT', 'ATOM/USDT', 'LTC/USDT', 'BCH/USDT',
+        'ALGO/USDT', 'NEAR/USDT', 'FIL/USDT', 'APT/USDT', 'ARB/USDT',
+        'OP/USDT', 'INJ/USDT', 'TIA/USDT', 'WIF/USDT', 'PEPE/USDT',
+        'BONK/USDT', 'SHIB/USDT', 'AAVE/USDT', 'CRV/USDT', 'SNX/USDT'
+    ]
+    logger.info(f"📊 Использую запасной список из {len(fallback)} фьючерсных пар")
+    return fallback
     
     async def fetch_ohlcv(self, exchange_name: str, symbol: str, timeframe: str, limit: int = 200) -> Optional[pd.DataFrame]:
-        """Получение свечных данных (фьючерсы)"""
-        if exchange_name != 'MEXC':
+    """Получение свечных данных (фьючерсы MEXC)"""
+    if exchange_name != 'MEXC':
+        return None
+    
+    try:
+        # КРИТИЧЕСКИ ВАЖНО: формат BTC_USDT с подчеркиванием!
+        symbol_raw = symbol.replace('/', '_').upper()
+        
+        interval_map = {
+            '1m': 'Min1', '5m': 'Min5', '15m': 'Min15', '30m': 'Min30',
+            '1h': 'Min60', '4h': 'Hour4', '1d': 'Day1', '1w': 'Week1'
+        }
+        interval = interval_map.get(timeframe, 'Min15')
+        
+        # Правильный эндпоинт для фьючерсных свечей
+        url = f"https://api.mexc.com/api/v1/contract/kline/{symbol_raw}"
+        params = {
+            'interval': interval,
+            'limit': limit
+        }
+        
+        logger.info(f"🔍 Запрашиваю фьючерсные свечи: {url}?interval={interval}&limit={limit}")
+        
+        response = await asyncio.to_thread(requests.get, url, params=params, timeout=10)
+        
+        if response.status_code != 200:
+            logger.error(f"❌ MEXC Futures: HTTP {response.status_code} для {symbol}")
             return None
         
-        try:
-            symbol_raw = symbol.replace('/', '').upper()
-            
-            interval_map = {
-                '1m': '1m', '5m': '5m', '15m': '15m', '30m': '30m',
-                '1h': '1h', '4h': '4h', '1d': '1d', '1w': '1w'
-            }
-            interval = interval_map.get(timeframe, '15m')
-            
-            url = f"https://api.mexc.com/api/v1/contract/kline/{symbol_raw}?interval={interval}&limit={limit}"
-            
-            response = await asyncio.to_thread(requests.get, url, timeout=10)
-            
-            if response.status_code != 200:
-                logger.error(f"❌ MEXC Futures: HTTP {response.status_code} для {symbol} {timeframe}")
-                return None
-            
-            data = response.json()
-            
-            if data.get('code') != 200 or not data.get('data'):
-                return None
-            
-            klines = data['data']
-            if len(klines) < 20:
-                return None
-            
-            rows = []
-            for kline in klines:
-                rows.append([kline[0], float(kline[1]), float(kline[2]), 
-                            float(kline[3]), float(kline[4]), float(kline[5])])
-            
-            df = pd.DataFrame(rows, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-            df.set_index('timestamp', inplace=True)
-            
-            return df
-            
-        except Exception as e:
-            logger.error(f"Ошибка загрузки {symbol} {timeframe} с MEXC: {e}")
+        data = response.json()
+        
+        if not data.get('success') or not data.get('data'):
+            logger.warning(f"⚠️ MEXC Futures: нет данных для {symbol}")
             return None
+        
+        klines = data['data']
+        if len(klines) < 20:
+            logger.warning(f"⚠️ MEXC Futures: недостаточно данных для {symbol}")
+            return None
+        
+        rows = []
+        for kline in klines:
+            # Формат фьючерсных свечей: [timestamp, open, high, low, close, volume]
+            rows.append([kline[0], float(kline[1]), float(kline[2]), 
+                        float(kline[3]), float(kline[4]), float(kline[5])])
+        
+        df = pd.DataFrame(rows, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        df.set_index('timestamp', inplace=True)
+        
+        logger.info(f"✅ MEXC Futures: загружено {len(df)} свечей для {symbol}")
+        return df
+        
+    except Exception as e:
+        logger.error(f"Ошибка загрузки {symbol}: {e}")
+        return None
     
     async def fetch_funding_rate(self, exchange_name: str, symbol: str) -> Optional[float]:
         """Получение ставки фондирования с MEXC Futures"""
@@ -834,7 +828,7 @@ class FuturesDataFetcher:
             return {}
         
         try:
-            symbol_raw = symbol.replace('/', '').upper()
+            symbol_raw = symbol.replace('/', '_').upper()
             url = f"https://api.mexc.com/api/v1/contract/ticker/{symbol_raw}"
             
             response = await asyncio.to_thread(requests.get, url, timeout=5)
@@ -844,7 +838,7 @@ class FuturesDataFetcher:
             
             data = response.json()
             
-            if data.get('code') == 200 and data.get('data'):
+            if data.get('success') and data.get('data'):
                 ticker = data['data']
                 return {
                     'volume_24h': float(ticker.get('volume', 0)),
@@ -852,7 +846,8 @@ class FuturesDataFetcher:
                     'last': float(ticker.get('lastPrice', 0))
                 }
             return {}
-        except:
+        except Exception as e:
+            logger.debug(f"Ошибка получения тикера для {symbol}: {e}")
             return {}
     
     async def get_price_with_source(self, symbol: str, http_price: float = None) -> Dict:
@@ -1578,4 +1573,5 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
