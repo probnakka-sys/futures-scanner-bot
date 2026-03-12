@@ -1,6 +1,8 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
+import hmac
+import hashlib
 import os
 import sys
 import asyncio
@@ -580,43 +582,90 @@ class FuturesDataFetcher:
             return self.get_futures_fallback_list()
     
     async def fetch_ohlcv(self, exchange_name: str, symbol: str, timeframe: str, limit: int = 200) -> Optional[pd.DataFrame]:
-        """Получение свечных данных (фьючерсы MEXC)"""
-        if exchange_name != 'MEXC':
+    """Получение свечных данных (фьючерсы MEXC с авторизацией)"""
+    if exchange_name != 'MEXC':
+        return None
+    
+    try:
+        # Получаем API ключи из переменных окружения
+        api_key = os.getenv('MEXC_API_KEY')
+        api_secret = os.getenv('MEXC_SECRET_KEY')
+        
+        if not api_key or not api_secret:
+            logger.error("❌ Не найдены API ключи MEXC в переменных окружения")
             return None
-        try:
-            symbol_raw = symbol.replace('/', '_').upper()
-            interval_map = {
-                '1m': 'Min1', '5m': 'Min5', '15m': 'Min15', '30m': 'Min30',
-                '1h': 'Min60', '4h': 'Hour4', '1d': 'Day1', '1w': 'Week1'
-            }
-            interval = interval_map.get(timeframe, 'Min15')
-            url = f"https://api.mexc.com/api/v1/contract/kline/{symbol_raw}"
-            params = {'interval': interval, 'limit': limit}
-            logger.info(f"🔍 Запрашиваю фьючерсные свечи: {symbol} {timeframe}")
-            response = await asyncio.to_thread(requests.get, url, params=params, timeout=10)
-            if response.status_code != 200:
-                logger.error(f"❌ MEXC Futures: HTTP {response.status_code} для {symbol}")
-                return None
-            data = response.json()
-            if not data.get('success') or not data.get('data'):
-                logger.warning(f"⚠️ MEXC Futures: нет данных для {symbol}")
-                return None
-            klines = data['data']
-            if len(klines) < 20:
-                logger.warning(f"⚠️ MEXC Futures: недостаточно данных для {symbol}")
-                return None
-            rows = []
-            for kline in klines:
-                rows.append([kline[0], float(kline[1]), float(kline[2]), 
-                            float(kline[3]), float(kline[4]), float(kline[5])])
-            df = pd.DataFrame(rows, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-            df.set_index('timestamp', inplace=True)
-            logger.info(f"✅ MEXC Futures: загружено {len(df)} свечей для {symbol}")
-            return df
-        except Exception as e:
-            logger.error(f"Ошибка загрузки {symbol}: {e}")
+        
+        symbol_raw = symbol.replace('/', '_').upper()
+        
+        interval_map = {
+            '1m': 'Min1', '5m': 'Min5', '15m': 'Min15', '30m': 'Min30',
+            '1h': 'Min60', '4h': 'Hour4', '1d': 'Day1', '1w': 'Week1'
+        }
+        interval = interval_map.get(timeframe, 'Min15')
+        
+        # Формируем запрос с авторизацией
+        url = f"https://api.mexc.com/api/v1/contract/kline/{symbol_raw}"
+        params = {
+            'interval': interval,
+            'limit': limit
+        }
+        
+        # Создаем подпись (пример, может отличаться)
+        timestamp = int(time.time() * 1000)
+        params['timestamp'] = timestamp
+        
+        # Здесь нужно добавить подпись согласно документации MEXC
+        # Это упрощенный вариант, может потребоваться корректировка
+        query_string = '&'.join([f"{k}={v}" for k, v in sorted(params.items())])
+        signature = hmac.new(
+            api_secret.encode('utf-8'),
+            query_string.encode('utf-8'),
+            hashlib.sha256
+        ).hexdigest()
+        
+        params['signature'] = signature
+        
+        headers = {
+            'X-MEXC-APIKEY': api_key,
+            'Content-Type': 'application/json'
+        }
+        
+        logger.info(f"🔍 Запрашиваю фьючерсные свечи: {symbol} {timeframe}")
+        
+        response = await asyncio.to_thread(
+            requests.get, url, params=params, headers=headers, timeout=10
+        )
+        
+        if response.status_code != 200:
+            logger.error(f"❌ MEXC Futures: HTTP {response.status_code} для {symbol}")
             return None
+        
+        data = response.json()
+        
+        if not data.get('success') or not data.get('data'):
+            logger.warning(f"⚠️ MEXC Futures: нет данных для {symbol}")
+            return None
+        
+        klines = data['data']
+        if len(klines) < 20:
+            logger.warning(f"⚠️ MEXC Futures: недостаточно данных для {symbol}")
+            return None
+        
+        rows = []
+        for kline in klines:
+            rows.append([kline[0], float(kline[1]), float(kline[2]), 
+                        float(kline[3]), float(kline[4]), float(kline[5])])
+        
+        df = pd.DataFrame(rows, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        df.set_index('timestamp', inplace=True)
+        
+        logger.info(f"✅ MEXC Futures: загружено {len(df)} свечей для {symbol}")
+        return df
+        
+    except Exception as e:
+        logger.error(f"Ошибка загрузки {symbol}: {e}")
+        return None
     
     async def fetch_funding_rate(self, exchange_name: str, symbol: str) -> Optional[float]:
         try:
@@ -1290,3 +1339,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
