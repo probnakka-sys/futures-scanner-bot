@@ -32,7 +32,7 @@ FEATURES = {
     
     'data_sources': {
         'http': True,
-        'websocket': False,
+        'websocket': True,
     },
     
     'timeframes': {
@@ -125,6 +125,15 @@ PUMP_DUMP_SETTINGS = {
     'threshold': 7.0,
     'time_windows': [1, 3, 5, 15],
     'history_minutes': 30,
+}
+
+# ============== Настройки WebSocket ============== 
+
+WEBSOCKET_SETTINGS = {
+    'enabled': True,
+    'ping_interval': 30,  # секунд
+    'reconnect_delay': 5,
+    'max_retries': 5
 }
 
 # ============== ТАЙМФРЕЙМЫ ==============
