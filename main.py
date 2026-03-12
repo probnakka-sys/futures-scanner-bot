@@ -154,8 +154,6 @@ logger = logging.getLogger(__name__)
 
 # ============== WEBSOCKET МОНИТОР ==============
 
-# ============== WEBSOCKET МОНИТОР ==============
-
 class WebSocketMonitor:
     """Мониторинг цен в реальном времени через WebSocket MEXC"""
     
@@ -420,7 +418,6 @@ class WebSocketMonitor:
         if self.ws_connection:
             await self.ws_connection.close()
         logger.info("🛑 WebSocket монитор остановлен")
-
 
 # ============== ПАМП-ДАМП АНАЛИЗАТОР ==============
 
@@ -1609,4 +1606,5 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
