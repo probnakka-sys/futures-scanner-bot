@@ -173,36 +173,35 @@ class WebSocketMonitor:
         self.MAX_SUBSCRIPTIONS = 30
         
     async def connect(self):
-        """Подключение к WebSocket MEXC (фьючерсы)"""
-        uri = "wss://wbs-api.mexc.com/ws"
+    """Подключение к WebSocket MEXC (фьючерсы)"""
+    uri = "wss://wbs-api.mexc.com/ws"
+    
+    try:
+        logger.info(f"🔌 Подключаюсь к WebSocket MEXC Futures: {uri}")
+        # Убираем extra_headers, так как он не поддерживается
+        self.ws_connection = await websockets.connect(
+            uri, 
+            ping_interval=None,
+            ping_timeout=None,
+            max_size=2**20,
+            compression=None
+            # extra_headers убран!
+        )
+        self.running = True
+        self.reconnect_attempts = 0
+        logger.info("✅ WebSocket Futures подключен")
         
-        try:
-            logger.info(f"🔌 Подключаюсь к WebSocket MEXC Futures: {uri}")
-            self.ws_connection = await websockets.connect(
-                uri, 
-                ping_interval=None,
-                ping_timeout=None,
-                max_size=2**20,
-                compression=None,
-                extra_headers={
-                    'User-Agent': 'Mozilla/5.0'
-                }
-            )
-            self.running = True
-            self.reconnect_attempts = 0
-            logger.info("✅ WebSocket Futures подключен")
+        asyncio.create_task(self._listen())
+        self.ping_task = asyncio.create_task(self._ping_loop())
+        asyncio.create_task(self._stats_logger())
+        
+        if self.subscribed_symbols:
+            await self._resubscribe_all()
             
-            asyncio.create_task(self._listen())
-            self.ping_task = asyncio.create_task(self._ping_loop())
-            asyncio.create_task(self._stats_logger())
-            
-            if self.subscribed_symbols:
-                await self._resubscribe_all()
-                
-        except Exception as e:
-            logger.error(f"❌ Ошибка подключения WebSocket: {e}")
-            self.running = False
-            await self._handle_disconnect()
+    except Exception as e:
+        logger.error(f"❌ Ошибка подключения WebSocket: {e}")
+        self.running = False
+        await self._handle_disconnect()
     
     async def _ping_loop(self):
         """Отправка PING каждые 20 секунд для поддержания соединения"""
@@ -689,41 +688,81 @@ class FuturesDataFetcher:
             return False
     
     async def fetch_all_pairs(self, exchange_name: str) -> List[str]:
-        """Получение всех доступных фьючерсных пар с MEXC"""
-        if exchange_name != 'MEXC':
-            return []
+    """Получение всех доступных фьючерсных пар с MEXC"""
+    if exchange_name != 'MEXC':
+        return []
+    
+    try:
+        # Используем альтернативный эндпоинт для получения списка контрактов
+        url = "https://api.mexc.com/api/v1/contract/detail"
+        logger.info(f"🔍 Загружаю список всех фьючерсных пар с MEXC...")
         
-        try:
-            # Используем эндпоинт для фьючерсных контрактов
-            url = "https://api.mexc.com/api/v1/contract/detail"
-            logger.info(f"🔍 Загружаю список всех фьючерсных пар с MEXC...")
-            
-            response = await asyncio.to_thread(requests.get, url, timeout=10)
-            
-            if response.status_code != 200:
-                logger.error(f"❌ MEXC: HTTP {response.status_code}")
-                return FALLBACK_PAIRS
-            
-            data = response.json()
-            
-            all_pairs = []
-            if data.get('code') == 200 and data.get('data'):
-                for contract in data['data']:
+        headers = {
+            'User-Agent': 'Mozilla/5.0'
+        }
+        
+        response = await asyncio.to_thread(requests.get, url, timeout=10, headers=headers)
+        
+        if response.status_code != 200:
+            logger.error(f"❌ MEXC: HTTP {response.status_code}")
+            # Если не работает, используем запасной список популярных фьючерсов
+            fallback_futures = [
+                'BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT',
+                'DOGE/USDT', 'ADA/USDT', 'AVAX/USDT', 'LINK/USDT', 'MATIC/USDT',
+                'DOT/USDT', 'UNI/USDT', 'ATOM/USDT', 'LTC/USDT', 'BCH/USDT',
+                'ALGO/USDT', 'NEAR/USDT', 'FIL/USDT', 'APT/USDT', 'ARB/USDT',
+                'OP/USDT', 'INJ/USDT', 'TIA/USDT', 'WIF/USDT', 'PEPE/USDT',
+                'BONK/USDT', 'SHIB/USDT', 'AAVE/USDT', 'CRV/USDT', 'SNX/USDT'
+            ]
+            logger.info(f"📊 Использую запасной список из {len(fallback_futures)} фьючерсных пар")
+            return fallback_futures
+        
+        data = response.json()
+        
+        all_pairs = []
+        if isinstance(data, dict) and data.get('code') == 200 and data.get('data'):
+            contracts = data['data']
+            for contract in contracts:
+                if isinstance(contract, dict):
                     symbol = contract.get('symbol')
                     if symbol and 'USDT' in symbol:
                         # Конвертируем из BTCUSDT в BTC/USDT
-                        formatted = f"{symbol.replace('USDT', '')}/USDT"
+                        base = symbol.replace('USDT', '')
+                        formatted = f"{base}/USDT"
                         all_pairs.append(formatted)
                         
                         if self.websocket and FEATURES['data_sources']['websocket']:
                             await self.websocket.subscribe(formatted)
-            
+        
+        if all_pairs:
             logger.info(f"📊 MEXC Futures: загружено {len(all_pairs)} пар")
-            return all_pairs if all_pairs else FALLBACK_PAIRS
+            return all_pairs
+        else:
+            # Если API вернуло пустой список, используем запасной
+            fallback_futures = [
+                'BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT',
+                'DOGE/USDT', 'ADA/USDT', 'AVAX/USDT', 'LINK/USDT', 'MATIC/USDT',
+                'DOT/USDT', 'UNI/USDT', 'ATOM/USDT', 'LTC/USDT', 'BCH/USDT',
+                'ALGO/USDT', 'NEAR/USDT', 'FIL/USDT', 'APT/USDT', 'ARB/USDT',
+                'OP/USDT', 'INJ/USDT', 'TIA/USDT', 'WIF/USDT', 'PEPE/USDT',
+                'BONK/USDT', 'SHIB/USDT', 'AAVE/USDT', 'CRV/USDT', 'SNX/USDT'
+            ]
+            logger.info(f"📊 Использую запасной список из {len(fallback_futures)} фьючерсных пар")
+            return fallback_futures
             
-        except Exception as e:
-            logger.error(f"❌ MEXC: ошибка загрузки пар - {e}")
-            return FALLBACK_PAIRS
+    except Exception as e:
+        logger.error(f"❌ MEXC: ошибка загрузки пар - {e}")
+        # В случае ошибки используем запасной список
+        fallback_futures = [
+            'BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT',
+            'DOGE/USDT', 'ADA/USDT', 'AVAX/USDT', 'LINK/USDT', 'MATIC/USDT',
+            'DOT/USDT', 'UNI/USDT', 'ATOM/USDT', 'LTC/USDT', 'BCH/USDT',
+            'ALGO/USDT', 'NEAR/USDT', 'FIL/USDT', 'APT/USDT', 'ARB/USDT',
+            'OP/USDT', 'INJ/USDT', 'TIA/USDT', 'WIF/USDT', 'PEPE/USDT',
+            'BONK/USDT', 'SHIB/USDT', 'AAVE/USDT', 'CRV/USDT', 'SNX/USDT'
+        ]
+        logger.info(f"📊 Использую запасной список из {len(fallback_futures)} фьючерсных пар")
+        return fallback_futures
     
     async def fetch_ohlcv(self, exchange_name: str, symbol: str, timeframe: str, limit: int = 200) -> Optional[pd.DataFrame]:
         """Получение свечных данных (фьючерсы)"""
@@ -1546,3 +1585,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
