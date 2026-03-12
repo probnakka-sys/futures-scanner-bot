@@ -8,4 +8,4 @@ pillow
 aiohttp
 requests
 websockets
-bingx
+python-bingx>=1.0.0
