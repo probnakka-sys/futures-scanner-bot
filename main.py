@@ -41,7 +41,8 @@ from config import (
     INDICATOR_WEIGHTS,
     PUMP_DUMP_SETTINGS,
     PAIRS_TO_SCAN,
-    DISPLAY_SETTINGS
+    DISPLAY_SETTINGS,
+    WEBSOCKET_SETTINGS
 )
 
 # Временно отключаем проверку SSL для теста
@@ -131,6 +132,199 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+# ============== WEBSOCKET МЕНЕДЖЕР ДЛЯ BINGX ==============
+
+class BingXWebSocketManager:
+    """Менеджер WebSocket для получения цен в реальном времени с BingX"""
+    
+    def __init__(self, callback_function=None):
+        self.callback = callback_function
+        self.ws_connection = None
+        self.running = False
+        self.subscribed_symbols = set()
+        self.latest_prices = {}
+        self.reconnect_attempts = 0
+        self.max_reconnect_attempts = WEBSOCKET_SETTINGS.get('max_retries', 5)
+        self.lock = asyncio.Lock()
+        self.message_count = 0
+        self.ping_task = None
+        self.listen_key = None
+        self.ping_interval = WEBSOCKET_SETTINGS.get('ping_interval', 30)
+        
+    async def connect(self):
+        """Подключение к WebSocket BingX"""
+        try:
+            uri = "wss://ws-api.bingx.com/ws"
+            
+            logger.info(f"🔌 Подключаюсь к WebSocket BingX: {uri}")
+            self.ws_connection = await websockets.connect(
+                uri,
+                ping_interval=20,
+                ping_timeout=20,
+                max_size=2**20
+            )
+            self.running = True
+            self.reconnect_attempts = 0
+            logger.info("✅ WebSocket BingX подключен")
+            
+            asyncio.create_task(self._listen())
+            self.ping_task = asyncio.create_task(self._ping_loop())
+            
+            if self.subscribed_symbols:
+                await self._resubscribe_all()
+                
+        except Exception as e:
+            logger.error(f"❌ Ошибка подключения WebSocket BingX: {e}")
+            self.running = False
+            await self._handle_disconnect()
+    
+    async def _ping_loop(self):
+        """Отправка ping для поддержания соединения"""
+        while self.running:
+            try:
+                await asyncio.sleep(self.ping_interval)
+                if self.ws_connection and self.running:
+                    ping_msg = json.dumps({"ping": int(time.time() * 1000)})
+                    await self.ws_connection.send(ping_msg)
+                    logger.debug("📤 Ping отправлен в BingX")
+            except Exception as e:
+                logger.error(f"❌ Ошибка отправки ping: {e}")
+                break
+    
+    async def _listen(self):
+        """Прослушивание входящих сообщений"""
+        while self.running:
+            try:
+                message = await asyncio.wait_for(self.ws_connection.recv(), timeout=30)
+                self.message_count += 1
+                await self._process_message(message)
+                
+            except asyncio.TimeoutError:
+                try:
+                    await self.ws_connection.ping()
+                except:
+                    await self._handle_disconnect()
+                    break
+                    
+            except websockets.exceptions.ConnectionClosed:
+                logger.warning("⚠️ WebSocket BingX соединение закрыто")
+                await self._handle_disconnect()
+                break
+                
+            except Exception as e:
+                logger.error(f"❌ Ошибка при получении сообщения: {e}")
+                await asyncio.sleep(1)
+    
+    async def _process_message(self, message: str):
+        """Обработка входящего сообщения"""
+        try:
+            data = json.loads(message)
+            
+            if 'pong' in data:
+                logger.debug("📥 Pong получен от BingX")
+                return
+            
+            if 'data' in data and 'c' in data.get('data', {}):
+                ticker_data = data['data']
+                symbol_raw = ticker_data.get('s', '')
+                if symbol_raw:
+                    base = symbol_raw.split('-')[0]
+                    symbol = f"{base}/USDT:USDT"
+                    price = float(ticker_data.get('c', 0))
+                    timestamp = ticker_data.get('t', int(time.time() * 1000))
+                    
+                    async with self.lock:
+                        self.latest_prices[symbol] = {
+                            'price': price,
+                            'timestamp': timestamp,
+                            'time': datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                        }
+                    
+                    if self.callback:
+                        await self.callback(symbol, price, timestamp)
+                        
+        except json.JSONDecodeError:
+            logger.error(f"❌ Ошибка парсинга JSON: {message[:100]}")
+        except Exception as e:
+            logger.error(f"❌ Ошибка обработки сообщения: {e}")
+    
+    async def subscribe(self, symbol: str) -> bool:
+        """Подписка на обновления цены"""
+        try:
+            if not self.ws_connection or not self.running:
+                logger.warning(f"⚠️ WebSocket не подключен, невозможно подписаться на {symbol}")
+                return False
+            
+            if len(self.subscribed_symbols) >= WEBSOCKET_SETTINGS.get('subscription_limit', 100):
+                logger.warning(f"⚠️ Достигнут лимит подписок WebSocket ({len(self.subscribed_symbols)})")
+                return False
+            
+            symbol_raw = symbol.replace('/', '-').replace(':USDT', '')
+            
+            subscribe_msg = {
+                "id": "price_sub",
+                "reqType": "sub",
+                "dataType": f"{symbol_raw}@ticker"
+            }
+            
+            async with self.lock:
+                await self.ws_connection.send(json.dumps(subscribe_msg))
+                self.subscribed_symbols.add(symbol)
+                logger.info(f"✅ WebSocket подписка на {symbol}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка подписки на {symbol}: {e}")
+            return False
+    
+    async def _resubscribe_all(self):
+        """Переподписка на все символы после переподключения"""
+        if self.subscribed_symbols:
+            logger.info(f"🔄 Переподписываюсь на {len(self.subscribed_symbols)} символов...")
+            for symbol in self.subscribed_symbols.copy():
+                await self.subscribe(symbol)
+                await asyncio.sleep(0.1)
+    
+    async def _handle_disconnect(self):
+        """Обработка отключения с автоматическим переподключением"""
+        self.running = False
+        if self.ping_task:
+            self.ping_task.cancel()
+        
+        if self.ws_connection:
+            await self.ws_connection.close()
+        
+        if self.reconnect_attempts < self.max_reconnect_attempts:
+            self.reconnect_attempts += 1
+            wait_time = min(2 ** self.reconnect_attempts, 30)
+            logger.info(f"🔄 Попытка переподключения BingX {self.reconnect_attempts}/{self.max_reconnect_attempts} через {wait_time}с...")
+            await asyncio.sleep(wait_time)
+            await self.connect()
+        else:
+            logger.error("❌ Превышено количество попыток переподключения BingX")
+    
+    async def get_latest_price(self, symbol: str) -> Optional[Dict]:
+        """Получение последней цены из WebSocket"""
+        async with self.lock:
+            data = self.latest_prices.get(symbol)
+            if data:
+                return {
+                    'price': data['price'],
+                    'source': 'websocket',
+                    'time': data['time']
+                }
+        return None
+    
+    async def stop(self):
+        """Остановка WebSocket"""
+        self.running = False
+        if self.ping_task:
+            self.ping_task.cancel()
+        if self.ws_connection:
+            await self.ws_connection.close()
+        logger.info("🛑 WebSocket BingX остановлен")
+
+
 # ============== БАЗОВЫЙ КЛАСС ДЛЯ БИРЖ ==============
 
 class BaseExchangeFetcher:
@@ -169,79 +363,26 @@ class BaseExchangeFetcher:
         pass
 
 
-# ============== BYBIT FUTURES ==============
+# ============== BYBIT FUTURES (отключен) ==============
 
 class BybitFetcher(BaseExchangeFetcher):
-    """Фетчер для Bybit Futures (линейные контракты)"""
+    """Фетчер для Bybit Futures (временно отключен из-за блокировки)"""
     
     def __init__(self):
         super().__init__("Bybit")
-        self.exchange = ccxt.bybit({
-            'apiKey': os.getenv('BYBIT_API_KEY'),
-            'secret': os.getenv('BYBIT_SECRET_KEY'),
-            'enableRateLimit': True,
-            'options': {
-                'defaultType': 'linear',  # USDT линейные фьючерсы
-                'adjustForTimeDifference': True
-            }
-        })
-        logger.info("✅ Bybit Futures инициализирован")
+        logger.warning("⚠️ Bybit временно отключен из-за геоблокировки")
     
     async def fetch_all_pairs(self) -> List[str]:
-        try:
-            markets = await self.exchange.load_markets()
-            usdt_pairs = []
-            for symbol, market in markets.items():
-                if (market['quote'] == 'USDT' and 
-                    market['active'] and 
-                    market['type'] == 'swap'):
-                    usdt_pairs.append(symbol)
-            logger.info(f"📊 Bybit Futures: загружено {len(usdt_pairs)} пар")
-            return usdt_pairs[:PAIRS_TO_SCAN]
-        except Exception as e:
-            logger.error(f"❌ Bybit ошибка: {e}")
-            return []
+        return []
     
     async def fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 200) -> Optional[pd.DataFrame]:
-        try:
-            ohlcv = await self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
-            if not ohlcv or len(ohlcv) < 20:
-                return None
-            
-            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-            df.set_index('timestamp', inplace=True)
-            return df
-        except Exception as e:
-            logger.error(f"Ошибка Bybit {symbol}: {e}")
-            return None
-    
-    async def fetch_funding_rate(self, symbol: str) -> Optional[float]:
-        try:
-            funding = await self.exchange.fetch_funding_rate(symbol)
-            return funding['fundingRate'] if funding else 0.0
-        except:
-            return 0.0
-    
-    async def fetch_ticker(self, symbol: str) -> Dict:
-        try:
-            ticker = await self.exchange.fetch_ticker(symbol)
-            return {
-                'volume_24h': ticker.get('quoteVolume'),
-                'price_change_24h': ticker.get('percentage'),
-                'last': ticker.get('last')
-            }
-        except:
-            return {}
-    
-    async def close(self):
-        await self.exchange.close()
+        return None
 
 
-# ============== BINGX FUTURES ==============
+# ============== BINGX FUTURES С WEBSOCKET ==============
 
 class BingxFetcher(BaseExchangeFetcher):
-    """Фетчер для BingX Futures (swap контракты)"""
+    """Фетчер для BingX Futures с WebSocket поддержкой"""
     
     def __init__(self):
         super().__init__("BingX")
@@ -250,13 +391,30 @@ class BingxFetcher(BaseExchangeFetcher):
             'secret': os.getenv('BINGX_SECRET_KEY'),
             'enableRateLimit': True,
             'options': {
-                'defaultType': 'swap',  # USDS-M фьючерсы
+                'defaultType': 'swap',
                 'adjustForTimeDifference': True
             }
         })
+        self.websocket = None
+        self.ws_enabled = FEATURES['data_sources'].get('websocket', False)
+        
+        if self.ws_enabled:
+            asyncio.create_task(self._init_websocket())
+        
         logger.info("✅ BingX Futures инициализирован")
     
+    async def _init_websocket(self):
+        """Инициализация WebSocket"""
+        self.websocket = BingXWebSocketManager(self._on_price_update)
+        await self.websocket.connect()
+    
+    async def _on_price_update(self, symbol: str, price: float, timestamp: int):
+        """Callback при обновлении цены через WebSocket"""
+        # Здесь можно добавить логику для памп-дамп анализа
+        logger.debug(f"📈 WebSocket обновление {symbol}: {price}")
+    
     async def fetch_all_pairs(self) -> List[str]:
+        """Получение всех пар и подписка на WebSocket"""
         try:
             markets = await self.exchange.load_markets()
             usdt_pairs = []
@@ -265,13 +423,18 @@ class BingxFetcher(BaseExchangeFetcher):
                     market['active'] and 
                     market['type'] in ['swap', 'future']):
                     usdt_pairs.append(symbol)
+                    
+                    if self.websocket and self.ws_enabled:
+                        await self.websocket.subscribe(symbol)
+            
             logger.info(f"📊 BingX Futures: загружено {len(usdt_pairs)} пар")
-            return usdt_pairs[:PAIRS_TO_SCAN]
+            return usdt_pairs
         except Exception as e:
             logger.error(f"❌ BingX ошибка: {e}")
             return []
     
     async def fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 200) -> Optional[pd.DataFrame]:
+        """Получение свечных данных"""
         try:
             ohlcv = await self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
             if not ohlcv or len(ohlcv) < 20:
@@ -286,6 +449,7 @@ class BingxFetcher(BaseExchangeFetcher):
             return None
     
     async def fetch_funding_rate(self, symbol: str) -> Optional[float]:
+        """Получение ставки фондирования"""
         try:
             funding = await self.exchange.fetch_funding_rate(symbol)
             return funding['fundingRate'] if funding else 0.0
@@ -293,6 +457,7 @@ class BingxFetcher(BaseExchangeFetcher):
             return 0.0
     
     async def fetch_ticker(self, symbol: str) -> Dict:
+        """Получение тикера"""
         try:
             ticker = await self.exchange.fetch_ticker(symbol)
             return {
@@ -303,88 +468,40 @@ class BingxFetcher(BaseExchangeFetcher):
         except:
             return {}
     
+    async def get_price_with_source(self, symbol: str, http_price: float = None) -> Dict:
+        """Получение цены с указанием источника (WebSocket или HTTP)"""
+        if self.websocket and self.ws_enabled:
+            ws_price = await self.websocket.get_latest_price(symbol)
+            if ws_price:
+                return ws_price
+        
+        return {
+            'price': http_price,
+            'source': 'http',
+            'time': datetime.now().strftime('%H:%M:%S')
+        }
+    
     async def close(self):
+        """Закрытие соединений"""
         await self.exchange.close()
+        if self.websocket:
+            await self.websocket.stop()
 
 
-# ============== MEXC FUTURES (официальное API) ==============
+# ============== MEXC FUTURES (отключен) ==============
 
 class MexcFetcher(BaseExchangeFetcher):
-    """Фетчер для MEXC Futures (официальное API)"""
+    """Фетчер для MEXC Futures (временно отключен)"""
     
     def __init__(self):
         super().__init__("MEXC")
-        self.api_key = os.getenv('MEXC_API_KEY')
-        self.secret = os.getenv('MEXC_SECRET_KEY')
-        logger.info("✅ MEXC Futures инициализирован")
+        logger.warning("⚠️ MEXC временно отключен")
     
     async def fetch_all_pairs(self) -> List[str]:
-        try:
-            url = "https://api.mexc.com/api/v1/contract/detail"
-            response = await asyncio.to_thread(requests.get, url, timeout=10)
-            if response.status_code != 200:
-                return self.get_fallback_list()
-            
-            data = response.json()
-            if not data.get('success') or not data.get('data'):
-                return self.get_fallback_list()
-            
-            all_pairs = []
-            contracts = data['data']
-            for contract in contracts:
-                if isinstance(contract, dict):
-                    symbol = contract.get('symbol')
-                    if symbol and 'USDT' in symbol:
-                        formatted = symbol.replace('_', '/')
-                        all_pairs.append(formatted)
-            
-            logger.info(f"📊 MEXC Futures: загружено {len(all_pairs)} пар")
-            return all_pairs[:PAIRS_TO_SCAN]
-        except Exception as e:
-            logger.error(f"❌ MEXC ошибка: {e}")
-            return self.get_fallback_list()
-    
-    def get_fallback_list(self) -> List[str]:
-        fallback = [
-            'BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT',
-            'DOGE/USDT', 'ADA/USDT', 'AVAX/USDT', 'LINK/USDT', 'MATIC/USDT',
-            'DOT/USDT', 'UNI/USDT', 'ATOM/USDT', 'LTC/USDT', 'BCH/USDT'
-        ]
-        logger.info(f"📊 MEXC: запасной список {len(fallback)} пар")
-        return fallback[:PAIRS_TO_SCAN]
+        return []
     
     async def fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 200) -> Optional[pd.DataFrame]:
-        try:
-            symbol_raw = symbol.replace('/', '').upper()
-            
-            interval_map = {
-                '1m': '1m', '5m': '5m', '15m': '15m', '30m': '30m',
-                '1h': '1h', '4h': '4h', '1d': '1d', '1w': '1w'
-            }
-            interval = interval_map.get(timeframe, '15m')
-            
-            url = f"https://api.mexc.com/api/v3/klines?symbol={symbol_raw}&interval={interval}&limit={limit}"
-            
-            response = await asyncio.to_thread(requests.get, url, timeout=10)
-            if response.status_code != 200:
-                return None
-            
-            data = response.json()
-            if not data or len(data) < 20:
-                return None
-            
-            rows = []
-            for item in data:
-                rows.append([item[0], float(item[1]), float(item[2]), 
-                            float(item[3]), float(item[4]), float(item[5])])
-            
-            df = pd.DataFrame(rows, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-            df.set_index('timestamp', inplace=True)
-            return df
-        except Exception as e:
-            logger.error(f"Ошибка MEXC {symbol}: {e}")
-            return None
+        return None
 
 
 # ============== ОСНОВНОЙ КЛАСС БОТА ==============
@@ -585,7 +702,8 @@ class MultiExchangeScannerBot:
                 logger.warning(f"⚠️ {name}: нет пар для анализа")
                 return []
             
-            logger.info(f"📊 {name}: анализирую {min(PAIRS_TO_SCAN, len(pairs))} пар")
+            scan_count = min(PAIRS_TO_SCAN, len(pairs))
+            logger.info(f"📊 {name}: анализирую {scan_count} пар из {len(pairs)}")
             
             for i, pair in enumerate(pairs[:PAIRS_TO_SCAN]):
                 try:
@@ -600,7 +718,6 @@ class MultiExchangeScannerBot:
                     if not dataframes:
                         continue
                     
-                    # Памп-дамп анализ
                     pump_events = []
                     if self.pump_dump and 'current' in dataframes:
                         df_current = dataframes['current']
@@ -611,19 +728,16 @@ class MultiExchangeScannerBot:
                             pair, last_price, last_timestamp
                         )
                     
-                    # Дивергенции
                     signal_divergence = None
                     if self.divergence and 'current' in dataframes:
                         df_current = dataframes['current']
                         signal_divergence = self.divergence.analyze(df_current, '15m')
                     
-                    # Паттерны
                     patterns = None
                     if FEATURES['advanced']['patterns'] and 'current' in dataframes:
                         df_current = dataframes['current']
                         patterns = detect_candle_patterns(df_current)
                     
-                    # Метаданные
                     funding = await fetcher.fetch_funding_rate(pair)
                     ticker = await fetcher.fetch_ticker(pair)
                     
@@ -633,7 +747,6 @@ class MultiExchangeScannerBot:
                         'price_change_24h': ticker.get('price_change_24h')
                     }
                     
-                    # Генерация сигнала
                     signal = self.analyzer.generate_signal(dataframes, metadata, pair, name)
                     
                     if signal:
@@ -673,7 +786,7 @@ class MultiExchangeScannerBot:
                         logger.info(f"✅ {name} {pair} - {signal['direction']} ({signal['confidence']}%)")
                     
                     if (i + 1) % 10 == 0:
-                        logger.info(f"📊 Прогресс {name}: {i + 1}/{min(PAIRS_TO_SCAN, len(pairs))}")
+                        logger.info(f"📊 Прогресс {name}: {i + 1}/{scan_count}")
                     
                     await asyncio.sleep(0.3)
                     
@@ -710,9 +823,14 @@ class MultiExchangeScannerBot:
         
         return all_signals
     
-    async def send_signal(self, signal: Dict, price_source: Dict = None, pump_only: bool = False):
+    async def send_signal(self, signal: Dict, pump_only: bool = False):
         if pump_only and not signal.get('pump_dump'):
             return
+        
+        price_source = None
+        if 'BingX' in self.fetchers and signal['exchange'] == 'BingX':
+            price_source = await self.fetchers['BingX'].get_price_with_source(signal['symbol'], signal['price'])
+            signal['price'] = price_source['price']
         
         msg, keyboard = self.format_message(signal, price_source, pump_only)
         await self.telegram_bot.send_message(
@@ -1165,9 +1283,11 @@ class TelegramHandler:
     
     async def start(self, update, context):
         active_exchanges = ", ".join(self.bot.fetchers.keys())
+        ws_status = "✅ Включен" if FEATURES['data_sources']['websocket'] else "❌ Отключен"
         await update.message.reply_text(
             f"🤖 *Мульти-биржевой фьючерсный сканер*\n\n"
             f"📊 Активные биржи: {active_exchanges}\n"
+            f"⚡ WebSocket: {ws_status}\n"
             f"📈 Мультитаймфрейм (15m/1h/1d/1w)\n"
             f"🔥 Памп-дамп анализ (7%+)\n"
             f"📈 Дивергенции RSI/MACD\n"
@@ -1210,6 +1330,8 @@ class TelegramHandler:
         
         for name in self.bot.fetchers.keys():
             text += f"✅ {name} Futures: активен\n"
+        
+        text += f"\n⚡ WebSocket: {'✅ активен' if FEATURES['data_sources']['websocket'] else '❌ отключен'}\n"
         
         text += f"\n📊 *Функции:*\n"
         text += f"✓ Памп-дамп: {'вкл' if FEATURES['advanced']['pump_dump'] else 'выкл'}\n"
