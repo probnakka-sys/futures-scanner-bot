@@ -154,7 +154,9 @@ class BingXWebSocketManager:
     async def connect(self):
         """Подключение к WebSocket BingX"""
         try:
-            uri = "wss://ws-api.bingx.com/ws"
+            uri = "wss://open-api-swap.bingx.com/ws"  # Для фьючерсов
+            # или
+            # uri = "wss://open-api.bingx.com/ws"  # Альтернативный вариант
             
             logger.info(f"🔌 Подключаюсь к WebSocket BingX: {uri}")
             self.ws_connection = await websockets.connect(
@@ -1396,3 +1398,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
