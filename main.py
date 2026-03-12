@@ -132,8 +132,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# ============== WEBSOCKET МЕНЕДЖЕР ДЛЯ BINGX ==============
-
 # ============== WEBSOCKET МЕНЕДЖЕР ДЛЯ BINGX (исправленный) ==============
 
 class BingXWebSocketManager:
@@ -292,97 +290,6 @@ class BingXWebSocketManager:
             # Формат подписки для BingX 
             subscribe_msg = {
                 "id": int(time.time() * 1000),
-                "reqType": "sub",
-                "dataType": f"{symbol_raw}@ticker"
-            }
-            
-            async with self.lock:
-                await self.ws_connection.send(json.dumps(subscribe_msg))
-                self.subscribed_symbols.add(symbol)
-                logger.info(f"✅ WebSocket подписка на {symbol}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"❌ Ошибка подписки на {symbol}: {e}")
-            return False
-    
-    async def _resubscribe_all(self):
-        """Переподписка на все символы после переподключения"""
-        if self.subscribed_symbols:
-            logger.info(f"🔄 Переподписываюсь на {len(self.subscribed_symbols)} символов...")
-            for symbol in self.subscribed_symbols.copy():
-                await self.subscribe(symbol)
-                await asyncio.sleep(0.1)
-    
-    async def _handle_disconnect(self):
-        """Обработка отключения с автоматическим переподключением"""
-        self.running = False
-        if self.ping_task:
-            self.ping_task.cancel()
-        
-        if self.ws_connection:
-            await self.ws_connection.close()
-        
-        if self.reconnect_attempts < self.max_reconnect_attempts:
-            self.reconnect_attempts += 1
-            wait_time = min(2 ** self.reconnect_attempts, 30)
-            logger.info(f"🔄 Попытка переподключения BingX {self.reconnect_attempts}/{self.max_reconnect_attempts} через {wait_time}с...")
-            await asyncio.sleep(wait_time)
-            await self.connect()
-        else:
-            logger.error("❌ Превышено количество попыток переподключения BingX")
-    
-    async def get_latest_price(self, symbol: str) -> Optional[Dict]:
-        """Получение последней цены из WebSocket"""
-        async with self.lock:
-            data = self.latest_prices.get(symbol)
-            if data:
-                return {
-                    'price': data['price'],
-                    'source': 'websocket',
-                    'time': data['time']
-                }
-        return None
-    
-    async def stop(self):
-        """Остановка WebSocket"""
-        self.running = False
-        if self.ping_task:
-            self.ping_task.cancel()
-        if self.ws_connection:
-            await self.ws_connection.close()
-        logger.info("🛑 WebSocket BingX остановлен")
-                    
-                    async with self.lock:
-                        self.latest_prices[symbol] = {
-                            'price': price,
-                            'timestamp': timestamp,
-                            'time': datetime.now().strftime('%H:%M:%S.%f')[:-3]
-                        }
-                    
-                    if self.callback:
-                        await self.callback(symbol, price, timestamp)
-                        
-        except json.JSONDecodeError:
-            logger.error(f"❌ Ошибка парсинга JSON: {message[:100]}")
-        except Exception as e:
-            logger.error(f"❌ Ошибка обработки сообщения: {e}")
-    
-    async def subscribe(self, symbol: str) -> bool:
-        """Подписка на обновления цены"""
-        try:
-            if not self.ws_connection or not self.running:
-                logger.warning(f"⚠️ WebSocket не подключен, невозможно подписаться на {symbol}")
-                return False
-            
-            if len(self.subscribed_symbols) >= WEBSOCKET_SETTINGS.get('subscription_limit', 100):
-                logger.warning(f"⚠️ Достигнут лимит подписок WebSocket ({len(self.subscribed_symbols)})")
-                return False
-            
-            symbol_raw = symbol.replace('/', '-').replace(':USDT', '')
-            
-            subscribe_msg = {
-                "id": "price_sub",
                 "reqType": "sub",
                 "dataType": f"{symbol_raw}@ticker"
             }
@@ -1516,6 +1423,7 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
 
 
