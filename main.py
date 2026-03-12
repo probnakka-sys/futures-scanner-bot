@@ -184,7 +184,7 @@ class BybitFetcher(BaseExchangeFetcher):
     async def fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 200) -> Optional[pd.DataFrame]:
         return None
 
-# ============== BINGX FUTURES С WEBSOCKET (исправленный) ==============
+# ============== BINGX FUTURES С WEBSOCKET (исправленная версия) ==============
 
 class BingxFetcher(BaseExchangeFetcher):
     """Фетчер для BingX Futures с WebSocket поддержкой через готовую библиотеку"""
@@ -213,32 +213,32 @@ class BingxFetcher(BaseExchangeFetcher):
         logger.info("✅ BingX Futures инициализирован")
     
     async def _init_websocket(self):
-        """Инициализация WebSocket через готовую библиотеку"""
+        """Инициализация WebSocket через BingxWs"""
         try:
-            from bingX import BingX  # Импортируем готовую библиотеку
+            # Импортируем правильный класс из библиотеки
+            from bingx import BingxWs
             
-            self.ws_client = BingX(api_key="", secret_key="")  # Для публичных данных ключи не обязательны
+            # Создаем экземпляр WebSocket клиента
+            self.ws_client = BingxWs({})
             logger.info("✅ WebSocket клиент BingX инициализирован")
             
-            # Запускаем прослушивание в отдельной задаче
+            # Запускаем прослушивание
             self.ws_task = asyncio.create_task(self._ws_listen())
             
         except Exception as e:
             logger.error(f"❌ Ошибка инициализации WebSocket: {e}")
     
     async def _ws_listen(self):
-        """Прослушивание WebSocket потока"""
+        """Прослушивание WebSocket потока всех тикеров"""
         try:
-            from bingX.perpetual.v2 import PerpetualV2
-            
-            # Подключаемся к потоку всех тикеров
-            async for ticker in PerpetualV2(api_key="", secret_key="").market.ws_all_tickers():
-                if ticker and 'symbol' in ticker and 'lastPrice' in ticker:
+            # Используем watch_orders или watch_tickers согласно документации
+            async for ticker in self.ws_client.watch_tickers():
+                if ticker and 'symbol' in ticker and 'last' in ticker:
                     symbol_raw = ticker['symbol']
-                    # Конвертируем из BTC-USDT в BTC/USDT:USDT
-                    base = symbol_raw.split('-')[0]
+                    # Конвертируем из BTCUSDT в BTC/USDT:USDT
+                    base = symbol_raw.replace('USDT', '')
                     symbol = f"{base}/USDT:USDT"
-                    price = float(ticker['lastPrice'])
+                    price = float(ticker['last'])
                     
                     self.latest_prices[symbol] = {
                         'price': price,
@@ -247,14 +247,25 @@ class BingxFetcher(BaseExchangeFetcher):
                     
                     logger.debug(f"📈 WebSocket обновление {symbol}: {price}")
                     
+        except AttributeError as e:
+            # Если watch_tickers не работает, пробуем другой метод
+            logger.warning(f"⚠️ watch_tickers не поддерживается, пробую watch_orders...")
+            try:
+                async for order in self.ws_client.watch_orders():
+                    # Обработка ордеров (менее полезно для цен)
+                    pass
+            except Exception as e2:
+                logger.error(f"❌ WebSocket методы не поддерживаются: {e2}")
+                
         except Exception as e:
             logger.error(f"❌ Ошибка в WebSocket потоке: {e}")
             await asyncio.sleep(5)
             # Перезапускаем при ошибке
-            asyncio.create_task(self._ws_listen())
+            if self.ws_enabled:
+                asyncio.create_task(self._ws_listen())
     
     async def fetch_all_pairs(self) -> List[str]:
-        """Получение всех пар и подписка на WebSocket"""
+        """Получение всех пар"""
         try:
             markets = await self.exchange.load_markets()
             usdt_pairs = []
@@ -325,6 +336,13 @@ class BingxFetcher(BaseExchangeFetcher):
         await self.exchange.close()
         if self.ws_task:
             self.ws_task.cancel()
+            try:
+                await self.ws_task
+            except:
+                pass
+        if self.ws_client:
+            await self.ws_client.close()
+            
 # ============== MEXC FUTURES (отключен) ==============
 
 class MexcFetcher(BaseExchangeFetcher):
@@ -1232,6 +1250,7 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
 
 
