@@ -13,7 +13,7 @@ TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 UPDATE_INTERVAL = int(os.getenv('UPDATE_INTERVAL', 300))  # 5 минут
 MIN_CONFIDENCE = int(os.getenv('MIN_CONFIDENCE', 65))
 TIMEFRAME = os.getenv('TIMEFRAME', '15m')
-PAIRS_TO_SCAN = int(os.getenv('PAIRS_TO_SCAN', 50))
+PAIRS_TO_SCAN = int(os.getenv('PAIRS_TO_SCAN', 500))
 
 REF_LINKS = {
     'MEXC': os.getenv('MEXC_REF_LINK', 'https://www.mexc.com'),
