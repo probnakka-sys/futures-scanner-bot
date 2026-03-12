@@ -184,10 +184,10 @@ class BybitFetcher(BaseExchangeFetcher):
     async def fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 200) -> Optional[pd.DataFrame]:
         return None
 
-# ============== BINGX FUTURES С WEBSOCKET (РАБОЧАЯ ВЕРСИЯ) ==============
+# ============== BINGX FUTURES С WEBSOCKET (ИСПРАВЛЕННАЯ ВЕРСИЯ) ==============
 
 class BingxFetcher(BaseExchangeFetcher):
-    """Фетчер для BingX Futures с WebSocket через библиотеку bingx"""
+    """Фетчер для BingX Futures с WebSocket поддержкой"""
     
     def __init__(self):
         super().__init__("BingX")
@@ -213,45 +213,53 @@ class BingxFetcher(BaseExchangeFetcher):
         logger.info("✅ BingX Futures инициализирован")
     
     async def _init_websocket(self):
-        """Инициализация WebSocket через библиотеку bingx"""
+        """Инициализация WebSocket"""
         try:
             from bingx import BingxWs
             
             self.ws_client = BingxWs({})
             logger.info("✅ WebSocket клиент BingX инициализирован")
             
-            # Запускаем прослушивание цен
-            self.ws_task = asyncio.create_task(self._ws_listen_prices())
+            # Запускаем прослушивание
+            self.ws_task = asyncio.create_task(self._ws_listen())
             
         except Exception as e:
             logger.error(f"❌ Ошибка инициализации WebSocket: {e}")
     
-    async def _ws_listen_prices(self):
-        """Прослушивание цен через WebSocket"""
+    async def _ws_listen(self):
+        """Прослушивание WebSocket потока"""
         try:
-            # Подписываемся на все тикеры
-            async for ticker in self.ws_client.watch_tickers():
-                if ticker and 'symbol' in ticker and 'last' in ticker:
-                    symbol_raw = ticker['symbol']
-                    # Конвертируем из BTCUSDT в BTC/USDT:USDT
-                    if 'USDT' in symbol_raw:
-                        base = symbol_raw.replace('USDT', '')
-                        symbol = f"{base}/USDT:USDT"
-                        price = float(ticker['last'])
-                        
-                        self.latest_prices[symbol] = {
-                            'price': price,
-                            'time': datetime.now().strftime('%H:%M:%S.%f')[:-3]
-                        }
-                        
-                        logger.debug(f"📈 WebSocket {symbol}: {price}")
+            # ВАЖНО: watch_tickers() возвращает корутину, которую нужно await,
+            # а затем мы получаем список тикеров для итерации
+            while True:
+                tickers = await self.ws_client.watch_tickers()
+                
+                # Обрабатываем каждый тикер в полученном списке
+                if tickers and isinstance(tickers, list):
+                    for ticker in tickers:
+                        if ticker and 'symbol' in ticker and 'last' in ticker:
+                            symbol_raw = ticker['symbol']
+                            if 'USDT' in symbol_raw:
+                                base = symbol_raw.replace('USDT', '')
+                                symbol = f"{base}/USDT:USDT"
+                                price = float(ticker['last'])
+                                
+                                self.latest_prices[symbol] = {
+                                    'price': price,
+                                    'time': datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                                }
+                                
+                                logger.debug(f"📈 WebSocket {symbol}: {price}")
+                
+                # Небольшая пауза между обработками
+                await asyncio.sleep(0.01)
                         
         except Exception as e:
             logger.error(f"❌ Ошибка в WebSocket потоке: {e}")
             await asyncio.sleep(5)
             # Перезапускаем при ошибке
             if self.ws_enabled:
-                asyncio.create_task(self._ws_listen_prices())
+                asyncio.create_task(self._ws_listen())
     
     async def fetch_all_pairs(self) -> List[str]:
         """Получение всех пар"""
@@ -1237,6 +1245,7 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
 
 
