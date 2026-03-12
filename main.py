@@ -331,41 +331,37 @@ class WebSocketMonitor:
             logger.error(f"❌ Ошибка обработки сообщения: {e}")
     
     async def subscribe(self, symbol: str) -> bool:
-        """Подписка на обновления цены"""
-        try:
-            if not self.ws_connection or not self.running:
-                logger.warning(f"⚠️ WebSocket не подключен, невозможно подписаться на {symbol}")
-                return False
-            
-            # Проверяем лимит подписок [citation:2]
-            if len(self.subscribed_symbols) >= self.MAX_SUBSCRIPTIONS:
-                logger.warning(f"⚠️ Достигнут лимит подписок ({self.MAX_SUBSCRIPTIONS}). Невозможно подписаться на {symbol}")
-                return False
-            
-            # Конвертируем символ из формата BTC/USDT в BTCUSDT
-            symbol_raw = symbol.replace('/', '').upper()
-            
-            # Пробуем разные каналы [citation:6][citation:10]
-            channels = [
-                f"spot@public.deals.v3.api@{symbol_raw}",        # Сделки [citation:10]
-                f"spot@public.miniTicker.v3.api@{symbol_raw}",  # Мини-тикер [citation:2]
-            ]
-            
-            async with self.lock:
-                for channel in channels:
-                    subscribe_msg = {
-                        "method": "SUBSCRIPTION",
-                        "params": [channel]
-                    }
-                    await self.ws_connection.send(json.dumps(subscribe_msg))
-                    logger.info(f"✅ WebSocket подписка на {symbol} через {channel}")
-                
-                self.subscribed_symbols.add(symbol)
-            return True
-            
-        except Exception as e:
-            logger.error(f"❌ Ошибка подписки на {symbol}: {e}")
+    """Подписка на обновления цены (фьючерсные каналы)"""
+    try:
+        if not self.ws_connection or not self.running:
+            logger.warning(f"⚠️ WebSocket не подключен, невозможно подписаться на {symbol}")
             return False
+        
+        # Конвертируем символ
+        symbol_raw = symbol.replace('/', '').upper()
+        
+        # ПРАВИЛЬНЫЕ КАНАЛЫ для фьючерсов
+        channels = [
+            f"contract@public.deals.v3.api@{symbol_raw}",        # Сделки на фьючерсах
+            f"contract@public.miniTicker.v3.api@{symbol_raw}",  # Мини-тикер фьючерсов
+            f"contract@public.ticker.v3.api@{symbol_raw}"       # Полный тикер
+        ]
+        
+        async with self.lock:
+            for channel in channels:
+                subscribe_msg = {
+                    "method": "SUBSCRIPTION",
+                    "params": [channel]
+                }
+                await self.ws_connection.send(json.dumps(subscribe_msg))
+                logger.info(f"✅ WebSocket подписка на {symbol} через {channel}")
+            
+            self.subscribed_symbols.add(symbol)
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка подписки на {symbol}: {e}")
+        return False
     
     async def _resubscribe_all(self):
         """Переподписка на все символы после переподключения"""
@@ -690,7 +686,23 @@ class FuturesDataFetcher:
             logger.info("✅ BingX подключен (в разработке)")
         else:
             logger.warning("⚠️ BingX временно отключен")
-    
+
+    async def check_is_futures(self, symbol: str) -> bool:
+    """Проверка, является ли пара фьючерсной"""
+    try:
+        symbol_raw = symbol.replace('/', '').upper()
+        url = f"https://api.mexc.com/api/v1/contract/detail/{symbol_raw}"
+        
+        response = await asyncio.to_thread(requests.get, url, timeout=5)
+        
+        if response.status_code == 200:
+            data = response.json()
+            return data.get('code') == 200 and data.get('data') is not None
+        
+        return False
+    except:
+        return False
+        
     async def _init_websocket(self):
         """Инициализация WebSocket"""
         self.websocket = WebSocketMonitor()
@@ -780,38 +792,43 @@ class FuturesDataFetcher:
             return None
     
     async def fetch_funding_rate(self, exchange_name: str, symbol: str) -> Optional[float]:
-        """Получение ставки фондирования с MEXC"""
-        try:
-            # Для MEXC используем правильный эндпоинт
-            symbol_raw = symbol.replace('/', '')
-            # Пробуем разные варианты эндпоинтов
-            urls = [
-                f"https://futures.mexc.com/api/v1/contract/funding_rate/{symbol_raw}",
-                f"https://contract.mexc.com/api/v1/contract/funding_rate/{symbol_raw}",
-                f"https://api.mexc.com/api/v3/fundingRate?symbol={symbol_raw}"
-            ]
+    """Получение ставки фондирования с MEXC (новый домен)"""
+    try:
+        # Конвертируем символ из BTC/USDT в BTCUSDT
+        symbol_raw = symbol.replace('/', '').upper()
+        
+        # ПРАВИЛЬНЫЙ ЭНДПОИНТ с новым доменом
+        url = f"https://api.mexc.com/api/v1/contract/funding_rate/{symbol_raw}"
+        
+        # Добавляем правильные заголовки
+        headers = {
+            'Content-Type': 'application/json',
+            'User-Agent': 'Mozilla/5.0'  # Добавляем User-Agent
+        }
+        
+        logger.info(f"🔍 Запрашиваю фандинг для {symbol}: {url}")
+        
+        response = await asyncio.to_thread(requests.get, url, timeout=5, headers=headers)
+        
+        if response.status_code == 200:
+            data = response.json()
+            logger.info(f"📊 Ответ фандинга для {symbol}: {data}")
             
-            for url in urls:
-                try:
-                    response = await asyncio.to_thread(requests.get, url, timeout=5)
-                    if response.status_code == 200:
-                        data = response.json()
-                        # Пробуем разные форматы ответа
-                        if isinstance(data, dict):
-                            if data.get('success') and data.get('data') is not None:
-                                return float(data['data'])
-                            elif data.get('fundingRate'):
-                                return float(data['fundingRate'])
-                            elif data.get('data', {}).get('fundingRate'):
-                                return float(data['data']['fundingRate'])
-                except:
-                    continue
-            
-            logger.debug(f"Фандинг для {symbol} не найден")
-            return 0.0
-        except Exception as e:
-            logger.debug(f"Ошибка получения фандинга для {symbol}: {e}")
-            return 0.0
+            # Пробуем разные форматы ответа
+            if isinstance(data, dict):
+                if data.get('code') == 200 and data.get('data') is not None:
+                    return float(data['data'])
+                elif data.get('success') and data.get('data') is not None:
+                    return float(data['data'])
+                elif data.get('fundingRate'):
+                    return float(data['fundingRate'])
+        
+        logger.debug(f"❌ Фандинг для {symbol} не найден, статус: {response.status_code}")
+        return 0.0
+        
+    except Exception as e:
+        logger.debug(f"Ошибка получения фандинга для {symbol}: {e}")
+        return 0.0
     
     async def fetch_ticker(self, exchange_name: str, symbol: str) -> Dict:
         """Получение тикера."""
@@ -1309,7 +1326,15 @@ class FuturesScannerBot:
                         
                         if not dataframes:
                             continue
-                        
+
+                        # После получения dataframes, перед анализом
+                        if dataframes and 'current' in dataframes:
+                            # Проверяем, что это фьючерс
+                            is_futures = await self.fetcher.check_is_futures(pair)
+                            if not is_futures:
+                                logger.debug(f"⏭️ {pair} не является фьючерсом, пропускаем")
+                                continue
+        
                         # Памп-дамп анализ
                         pump_events = []
                         if self.pump_dump and 'current' in dataframes:
@@ -1606,5 +1631,6 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
 
