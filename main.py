@@ -184,10 +184,10 @@ class BybitFetcher(BaseExchangeFetcher):
     async def fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 200) -> Optional[pd.DataFrame]:
         return None
 
-# ============== BINGX FUTURES С WEBSOCKET (РАБОЧАЯ ВЕРСИЯ) ==============
+# ============== BINGX FUTURES С WEBSOCKET (ФИНАЛЬНАЯ ВЕРСИЯ) ==============
 
 class BingxFetcher(BaseExchangeFetcher):
-    """Фетчер для BingX Futures с WebSocket через python-bingx"""
+    """Фетчер для BingX Futures с WebSocket поддержкой"""
     
     def __init__(self):
         super().__init__("BingX")
@@ -213,7 +213,7 @@ class BingxFetcher(BaseExchangeFetcher):
         logger.info("✅ BingX Futures инициализирован")
     
     async def _init_websocket(self):
-        """Инициализация WebSocket через python-bingx"""
+        """Инициализация WebSocket"""
         try:
             from bingX import BingX
             
@@ -228,33 +228,33 @@ class BingxFetcher(BaseExchangeFetcher):
             logger.error(f"❌ Ошибка инициализации WebSocket: {e}")
     
     async def _ws_listen(self):
-        """Прослушивание публичных WebSocket каналов"""
+        """Прослушивание WebSocket потока"""
         try:
-            from bingX.perpetual.v2 import PerpetualV2
+            # Получаем доступ к WebSocket через perpetual_v2.ws
+            ws = self.ws_client.perpetual_v2.ws
             
-            # Создаем клиент для публичных данных
-            client = PerpetualV2(api_key="", secret_key="")
-            
-            # Подписываемся на поток всех тикеров (публичный канал)
-            async for ticker in client.market.ws_tickers():
-                if ticker:
-                    symbol_raw = ticker.get('symbol', '')
-                    if symbol_raw and 'USDT' in symbol_raw:
-                        base = symbol_raw.replace('USDT', '').replace('-', '')
+            # Подписываемся на тикеры
+            async for ticker in ws.tickers():
+                if ticker and 'symbol' in ticker and 'lastPrice' in ticker:
+                    symbol_raw = ticker['symbol']  # Формат: BTC-USDT
+                    if 'USDT' in symbol_raw:
+                        base = symbol_raw.replace('-USDT', '')
                         symbol = f"{base}/USDT:USDT"
-                        price = float(ticker.get('lastPrice', 0))
+                        price = float(ticker['lastPrice'])
                         
-                        if price > 0:
-                            self.latest_prices[symbol] = {
-                                'price': price,
-                                'time': datetime.now().strftime('%H:%M:%S.%f')[:-3]
-                            }
-                            logger.debug(f"📈 WebSocket {symbol}: {price}")
-                            
+                        self.latest_prices[symbol] = {
+                            'price': price,
+                            'time': datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                        }
+                        
+                        logger.debug(f"📈 WebSocket {symbol}: {price}")
+                        
+        except AttributeError as e:
+            logger.error(f"❌ Ошибка доступа к WebSocket: {e}")
+            logger.info("💡 Попробуйте другую библиотеку: pip install bingx")
         except Exception as e:
             logger.error(f"❌ Ошибка в WebSocket потоке: {e}")
             await asyncio.sleep(5)
-            # Перезапускаем при ошибке
             if self.ws_enabled:
                 asyncio.create_task(self._ws_listen())
     
@@ -1242,6 +1242,7 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
 
 
