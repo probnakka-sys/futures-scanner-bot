@@ -9,3 +9,4 @@ aiohttp
 requests
 websockets
 python-bingx
+bingx-py
