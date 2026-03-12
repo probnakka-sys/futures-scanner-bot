@@ -1,9 +1,5 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""
-Конфигурационный файл с переключателями функций
-Все настройки бота в одном месте
-"""
 
 import os
 from dotenv import load_dotenv
@@ -12,17 +8,13 @@ load_dotenv()
 
 # ============== НАСТРОЙКИ БОТА ==============
 
-# --- Telegram ---
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
+UPDATE_INTERVAL = int(os.getenv('UPDATE_INTERVAL', 300))  # 5 минут
+MIN_CONFIDENCE = int(os.getenv('MIN_CONFIDENCE', 65))
+TIMEFRAME = os.getenv('TIMEFRAME', '15m')
+PAIRS_TO_SCAN = int(os.getenv('PAIRS_TO_SCAN', 50))
 
-# --- Основные параметры ---
-UPDATE_INTERVAL = int(os.getenv('UPDATE_INTERVAL', 300))  # 5 минут(300), 15 минут (900)
-MIN_CONFIDENCE = int(os.getenv('MIN_CONFIDENCE', 65))      # Мин. уверенность
-TIMEFRAME = os.getenv('TIMEFRAME', '15m')                  # Основной таймфрейм
-PAIRS_TO_SCAN = int(os.getenv('PAIRS_TO_SCAN', 200))        # Сколько пар сканировать
-
-# --- Реферальные ссылки ---
 REF_LINKS = {
     'MEXC': os.getenv('MEXC_REF_LINK', 'https://www.mexc.com'),
     'Bybit': os.getenv('BYBIT_REF_LINK', 'https://www.bybit.com'),
@@ -32,83 +24,65 @@ REF_LINKS = {
 # ============== ПЕРЕКЛЮЧАТЕЛИ ФУНКЦИЙ ==============
 
 FEATURES = {
-    # === БИРЖИ ===
     'exchanges': {
-        'mexc': True,      # MEXC основная биржа
-        'bybit': False,    # Bybit пока отключена
-        'bingx': False,    # BingX пока отключена
+        'bybit': {'enabled': True},   # Включаем Bybit
+        'bingx': {'enabled': True},   # Включаем BingX
+        'mexc': {'enabled': False},   # MEXC пока отключен
     },
     
-    # === ИСТОЧНИКИ ДАННЫХ ===
     'data_sources': {
-        'http': True,       # HTTP API для исторических данных
-        'websocket': True,  # WebSocket для реального времени
+        'http': True,
+        'websocket': False,
     },
     
-    # === ТАЙМФРЕЙМЫ ===
     'timeframes': {
         'current': TIMEFRAME,
-        'hourly': True,     # Часовой тренд
-        'daily': True,      # Дневной тренд
-        'weekly': True,     # Недельный тренд
+        'hourly': True,
+        'daily': True,
+        'weekly': True,
     },
     
-    # === ТЕХНИЧЕСКИЙ АНАЛИЗ ===
     'indicators': {
-        'rsi': True,        # Индекс относительной силы
-        'macd': True,       # MACD
-        'ema': True,        # Скользящие средние
-        'bollinger': True,  # Полосы Боллинджера
-        'atr': True,        # ATR для волатильности
-        'volume': True,     # Анализ объемов
+        'rsi': True,
+        'macd': True,
+        'ema': True,
+        'bollinger': True,
+        'atr': True,
+        'volume': True,
     },
     
-    # === РАСШИРЕННЫЙ АНАЛИЗ ===
     'advanced': {
-        'divergence': True,      # Дивергенции RSI/MACD
-        'btc_correlation': False, # Корреляция с BTC
-        'vwap': True,            # VWAP индикатор
-        'patterns': True,        # Свечные паттерны
-        'pump_dump': True,       # Памп-дамп анализ
-        'fibonacci': False,      # Уровни Фибоначчи
+        'divergence': True,
+        'btc_correlation': False,
+        'vwap': True,
+        'patterns': True,
+        'pump_dump': True,
+        'fibonacci': False,
     },
     
-    # === ЭКСПЕРИМЕНТАЛЬНЫЕ ===
-    'experimental': {
-        'cvd': False,           # Cumulative Volume Delta
-        'liquidations': False,  # Ликвидации
-        'fear_greed': False,    # Индекс страха и жадности
-        'orderbook': False,     # Анализ стакана
-    },
-    
-    # === ТЕСТИРОВАНИЕ ===
     'testing': {
-        'test_signal': True,    # Тестовый сигнал по BTC/USDT
-        'debug_mode': False,    # Режим отладки
+        'test_signal': True,
+        'debug_mode': False,
     }
 }
 
 # ============== НАСТРОЙКИ ОТОБРАЖЕНИЯ ==============
 
 DISPLAY_SETTINGS = {
-    # Источник цены
-    'show_price_source': True,    # Показывать (w) или (h)
+    'show_price_source': True,
+    'show_funding': True,
+    'show_volume': True,
+    'show_divergence': True,
+    'show_patterns': True,
+    'show_pump_dump': True,
+    'show_vwap': True,
+    'show_alignment': True,
     
-    # Что показывать в сигнале
-    'show_funding': True,           # Показывать фандинг
-    'show_volume': True,             # Показывать объем
-    'show_divergence': True,         # Показывать дивергенции
-    'show_patterns': True,           # Показывать свечные паттерны
-    'show_pump_dump': True,          # Показывать памп-дамп
-    'show_vwap': True,               # Показывать VWAP
-    'show_alignment': True,           # Показывать старшие таймфреймы
-    
-    # Кнопки
     'buttons': {
-        'copy': False,                 # Кнопка копирования
-        'trade': False,                # Кнопка торговли (реферальная)
-        'refresh': False,               # Кнопка обновления
-        'details': False,               # Кнопка деталей
+        'copy': True,
+        'trade': True,
+        'refresh': True,
+        'details': True,
     }
 }
 
@@ -127,8 +101,6 @@ INDICATOR_SETTINGS = {
     'atr_period': 14,
     'volume_sma_period': 20,
 }
-
-# ============== ВЕСА ИНДИКАТОРОВ ==============
 
 INDICATOR_WEIGHTS = {
     'rsi': 10,
@@ -150,9 +122,9 @@ INDICATOR_WEIGHTS = {
 
 PUMP_DUMP_SETTINGS = {
     'enabled': True,
-    'threshold': 5.0,           # % для определения пампа
-    'time_windows': [1, 3, 5, 10, 15, 30],  # минут для анализа
-    'history_minutes': 60,       # храним историю цен
+    'threshold': 7.0,
+    'time_windows': [1, 3, 5, 15],
+    'history_minutes': 30,
 }
 
 # ============== ТАЙМФРЕЙМЫ ==============
@@ -164,5 +136,4 @@ TIMEFRAMES = {
     'weekly': '1w' if FEATURES['timeframes']['weekly'] else None,
 }
 
-# Фильтруем None
 TIMEFRAMES = {k: v for k, v in TIMEFRAMES.items() if v is not None}
