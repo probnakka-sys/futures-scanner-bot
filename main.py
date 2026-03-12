@@ -131,227 +131,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-
-# ============== WEBSOCKET МЕНЕДЖЕР ДЛЯ BINGX (исправленный) ==============
-
-class BingXWebSocketManager:
-    """Менеджер WebSocket для получения цен в реальном времени с BingX"""
-    
-    def __init__(self, callback_function=None):
-        self.callback = callback_function
-        self.ws_connection = None
-        self.running = False
-        self.subscribed_symbols = set()
-        self.latest_prices = {}
-        self.reconnect_attempts = 0
-        self.max_reconnect_attempts = WEBSOCKET_SETTINGS.get('max_retries', 5)
-        self.lock = asyncio.Lock()
-        self.message_count = 0
-        self.ping_task = None
-        self.listen_key = None
-        self.ping_interval = WEBSOCKET_SETTINGS.get('ping_interval', 30)
-        
-    async def connect(self):
-        """Подключение к WebSocket BingX через правильный эндпоинт"""
-        try:
-            # Правильный URL из официальной документации 
-            uri = "wss://open-api-swap.bingx.com/swap-market"  # Для фьючерсов
-            
-            logger.info(f"🔌 Подключаюсь к WebSocket BingX: {uri}")
-            
-            # Добавляем правильные заголовки
-            headers = {
-                'User-Agent': 'Mozilla/5.0',
-                'Connection': 'Upgrade',
-                'Upgrade': 'websocket'
-            }
-            
-            self.ws_connection = await websockets.connect(
-                uri,
-                ping_interval=20,
-                ping_timeout=20,
-                max_size=2**20,
-                extra_headers=headers
-            )
-            self.running = True
-            self.reconnect_attempts = 0
-            logger.info("✅ WebSocket BingX подключен")
-            
-            # Отправляем ping сразу после подключения
-            await self._send_ping()
-            
-            asyncio.create_task(self._listen())
-            self.ping_task = asyncio.create_task(self._ping_loop())
-            
-            if self.subscribed_symbols:
-                await self._resubscribe_all()
-                
-        except Exception as e:
-            logger.error(f"❌ Ошибка подключения WebSocket BingX: {e}")
-            self.running = False
-            await self._handle_disconnect()
-    
-    async def _send_ping(self):
-        """Отправка ping сообщения"""
-        try:
-            if self.ws_connection and self.running:
-                ping_msg = json.dumps({"ping": int(time.time() * 1000)})
-                await self.ws_connection.send(ping_msg)
-                logger.debug("📤 Ping отправлен")
-        except Exception as e:
-            logger.error(f"❌ Ошибка отправки ping: {e}")
-    
-    async def _ping_loop(self):
-        """Периодическая отправка ping"""
-        while self.running:
-            try:
-                await asyncio.sleep(self.ping_interval)
-                await self._send_ping()
-            except Exception as e:
-                logger.error(f"❌ Ошибка в ping loop: {e}")
-                break
-    
-    async def _listen(self):
-        """Прослушивание входящих сообщений"""
-        while self.running:
-            try:
-                message = await asyncio.wait_for(self.ws_connection.recv(), timeout=30)
-                self.message_count += 1
-                await self._process_message(message)
-                
-            except asyncio.TimeoutError:
-                # Проверяем соединение
-                try:
-                    await self._send_ping()
-                except:
-                    await self._handle_disconnect()
-                    break
-                    
-            except websockets.exceptions.ConnectionClosed:
-                logger.warning("⚠️ WebSocket BingX соединение закрыто")
-                await self._handle_disconnect()
-                break
-                
-            except Exception as e:
-                logger.error(f"❌ Ошибка при получении сообщения: {e}")
-                await asyncio.sleep(1)
-    
-    async def _process_message(self, message: str):
-        """Обработка входящего сообщения"""
-        try:
-            data = json.loads(message)
-            
-            # Обработка pong ответа
-            if 'pong' in data:
-                logger.debug("📥 Pong получен")
-                return
-            
-            # Формат данных от BingX 
-            if 'data' in data:
-                ticker_data = data['data']
-                if 's' in ticker_data and 'c' in ticker_data:
-                    symbol_raw = ticker_data['s']
-                    # Конвертируем из BTC-USDT в BTC/USDT:USDT
-                    base = symbol_raw.split('-')[0]
-                    symbol = f"{base}/USDT:USDT"
-                    price = float(ticker_data['c'])
-                    timestamp = int(time.time() * 1000)
-                    
-                    async with self.lock:
-                        self.latest_prices[symbol] = {
-                            'price': price,
-                            'timestamp': timestamp,
-                            'time': datetime.now().strftime('%H:%M:%S.%f')[:-3]
-                        }
-                    
-                    if self.callback:
-                        await self.callback(symbol, price, timestamp)
-                        
-        except json.JSONDecodeError:
-            # Некоторые сообщения могут быть в другом формате
-            logger.debug(f"📨 Получено сообщение: {message[:100]}")
-        except Exception as e:
-            logger.error(f"❌ Ошибка обработки сообщения: {e}")
-    
-    async def subscribe(self, symbol: str) -> bool:
-        """Подписка на обновления цены"""
-        try:
-            if not self.ws_connection or not self.running:
-                logger.warning(f"⚠️ WebSocket не подключен, невозможно подписаться на {symbol}")
-                return False
-            
-            if len(self.subscribed_symbols) >= WEBSOCKET_SETTINGS.get('subscription_limit', 100):
-                logger.warning(f"⚠️ Достигнут лимит подписок")
-                return False
-            
-            # Конвертируем из BTC/USDT:USDT в BTC-USDT
-            symbol_raw = symbol.replace('/', '-').replace(':USDT', '')
-            
-            # Формат подписки для BingX 
-            subscribe_msg = {
-                "id": int(time.time() * 1000),
-                "reqType": "sub",
-                "dataType": f"{symbol_raw}@ticker"
-            }
-            
-            async with self.lock:
-                await self.ws_connection.send(json.dumps(subscribe_msg))
-                self.subscribed_symbols.add(symbol)
-                logger.info(f"✅ WebSocket подписка на {symbol}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"❌ Ошибка подписки на {symbol}: {e}")
-            return False
-    
-    async def _resubscribe_all(self):
-        """Переподписка на все символы после переподключения"""
-        if self.subscribed_symbols:
-            logger.info(f"🔄 Переподписываюсь на {len(self.subscribed_symbols)} символов...")
-            for symbol in self.subscribed_symbols.copy():
-                await self.subscribe(symbol)
-                await asyncio.sleep(0.1)
-    
-    async def _handle_disconnect(self):
-        """Обработка отключения с автоматическим переподключением"""
-        self.running = False
-        if self.ping_task:
-            self.ping_task.cancel()
-        
-        if self.ws_connection:
-            await self.ws_connection.close()
-        
-        if self.reconnect_attempts < self.max_reconnect_attempts:
-            self.reconnect_attempts += 1
-            wait_time = min(2 ** self.reconnect_attempts, 30)
-            logger.info(f"🔄 Попытка переподключения BingX {self.reconnect_attempts}/{self.max_reconnect_attempts} через {wait_time}с...")
-            await asyncio.sleep(wait_time)
-            await self.connect()
-        else:
-            logger.error("❌ Превышено количество попыток переподключения BingX")
-    
-    async def get_latest_price(self, symbol: str) -> Optional[Dict]:
-        """Получение последней цены из WebSocket"""
-        async with self.lock:
-            data = self.latest_prices.get(symbol)
-            if data:
-                return {
-                    'price': data['price'],
-                    'source': 'websocket',
-                    'time': data['time']
-                }
-        return None
-    
-    async def stop(self):
-        """Остановка WebSocket"""
-        self.running = False
-        if self.ping_task:
-            self.ping_task.cancel()
-        if self.ws_connection:
-            await self.ws_connection.close()
-        logger.info("🛑 WebSocket BingX остановлен")
-
-
 # ============== БАЗОВЫЙ КЛАСС ДЛЯ БИРЖ ==============
 
 class BaseExchangeFetcher:
@@ -405,11 +184,10 @@ class BybitFetcher(BaseExchangeFetcher):
     async def fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 200) -> Optional[pd.DataFrame]:
         return None
 
-
-# ============== BINGX FUTURES С WEBSOCKET ==============
+# ============== BINGX FUTURES С WEBSOCKET (исправленный) ==============
 
 class BingxFetcher(BaseExchangeFetcher):
-    """Фетчер для BingX Futures с WebSocket поддержкой"""
+    """Фетчер для BingX Futures с WebSocket поддержкой через готовую библиотеку"""
     
     def __init__(self):
         super().__init__("BingX")
@@ -422,8 +200,12 @@ class BingxFetcher(BaseExchangeFetcher):
                 'adjustForTimeDifference': True
             }
         })
-        self.websocket = None
+        
+        # Инициализация WebSocket через готовую библиотеку
+        self.ws_client = None
         self.ws_enabled = FEATURES['data_sources'].get('websocket', False)
+        self.latest_prices = {}
+        self.ws_task = None
         
         if self.ws_enabled:
             asyncio.create_task(self._init_websocket())
@@ -431,14 +213,45 @@ class BingxFetcher(BaseExchangeFetcher):
         logger.info("✅ BingX Futures инициализирован")
     
     async def _init_websocket(self):
-        """Инициализация WebSocket"""
-        self.websocket = BingXWebSocketManager(self._on_price_update)
-        await self.websocket.connect()
+        """Инициализация WebSocket через готовую библиотеку"""
+        try:
+            from bingX import BingX  # Импортируем готовую библиотеку
+            
+            self.ws_client = BingX(api_key="", secret_key="")  # Для публичных данных ключи не обязательны
+            logger.info("✅ WebSocket клиент BingX инициализирован")
+            
+            # Запускаем прослушивание в отдельной задаче
+            self.ws_task = asyncio.create_task(self._ws_listen())
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка инициализации WebSocket: {e}")
     
-    async def _on_price_update(self, symbol: str, price: float, timestamp: int):
-        """Callback при обновлении цены через WebSocket"""
-        # Здесь можно добавить логику для памп-дамп анализа
-        logger.debug(f"📈 WebSocket обновление {symbol}: {price}")
+    async def _ws_listen(self):
+        """Прослушивание WebSocket потока"""
+        try:
+            from bingX.perpetual.v2 import PerpetualV2
+            
+            # Подключаемся к потоку всех тикеров
+            async for ticker in PerpetualV2(api_key="", secret_key="").market.ws_all_tickers():
+                if ticker and 'symbol' in ticker and 'lastPrice' in ticker:
+                    symbol_raw = ticker['symbol']
+                    # Конвертируем из BTC-USDT в BTC/USDT:USDT
+                    base = symbol_raw.split('-')[0]
+                    symbol = f"{base}/USDT:USDT"
+                    price = float(ticker['lastPrice'])
+                    
+                    self.latest_prices[symbol] = {
+                        'price': price,
+                        'time': datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                    }
+                    
+                    logger.debug(f"📈 WebSocket обновление {symbol}: {price}")
+                    
+        except Exception as e:
+            logger.error(f"❌ Ошибка в WebSocket потоке: {e}")
+            await asyncio.sleep(5)
+            # Перезапускаем при ошибке
+            asyncio.create_task(self._ws_listen())
     
     async def fetch_all_pairs(self) -> List[str]:
         """Получение всех пар и подписка на WebSocket"""
@@ -450,9 +263,6 @@ class BingxFetcher(BaseExchangeFetcher):
                     market['active'] and 
                     market['type'] in ['swap', 'future']):
                     usdt_pairs.append(symbol)
-                    
-                    if self.websocket and self.ws_enabled:
-                        await self.websocket.subscribe(symbol)
             
             logger.info(f"📊 BingX Futures: загружено {len(usdt_pairs)} пар")
             return usdt_pairs
@@ -497,10 +307,12 @@ class BingxFetcher(BaseExchangeFetcher):
     
     async def get_price_with_source(self, symbol: str, http_price: float = None) -> Dict:
         """Получение цены с указанием источника (WebSocket или HTTP)"""
-        if self.websocket and self.ws_enabled:
-            ws_price = await self.websocket.get_latest_price(symbol)
-            if ws_price:
-                return ws_price
+        if symbol in self.latest_prices:
+            return {
+                'price': self.latest_prices[symbol]['price'],
+                'source': 'websocket',
+                'time': self.latest_prices[symbol]['time']
+            }
         
         return {
             'price': http_price,
@@ -511,10 +323,8 @@ class BingxFetcher(BaseExchangeFetcher):
     async def close(self):
         """Закрытие соединений"""
         await self.exchange.close()
-        if self.websocket:
-            await self.websocket.stop()
-
-
+        if self.ws_task:
+            self.ws_task.cancel()
 # ============== MEXC FUTURES (отключен) ==============
 
 class MexcFetcher(BaseExchangeFetcher):
@@ -529,7 +339,6 @@ class MexcFetcher(BaseExchangeFetcher):
     
     async def fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 200) -> Optional[pd.DataFrame]:
         return None
-
 
 # ============== ОСНОВНОЙ КЛАСС БОТА ==============
 
@@ -1423,6 +1232,7 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
 
 
