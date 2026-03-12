@@ -32,7 +32,7 @@ FEATURES = {
     
     'data_sources': {
         'http': True,
-        'websocket': True,              # Включаем WebSocket для BingX
+        'websocket': False,              # Включаем WebSocket для BingX
     },
     
     'timeframes': {
