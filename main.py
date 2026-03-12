@@ -229,29 +229,15 @@ class BingxFetcher(BaseExchangeFetcher):
     async def _ws_listen(self):
         """Прослушивание WebSocket потока"""
         try:
-            # ВАЖНО: watch_tickers() возвращает корутину, которую нужно await,
-            # а затем мы получаем список тикеров для итерации
+            # watch_orders - правильный метод из документации
             while True:
-                tickers = await self.ws_client.watch_tickers()
+                orders = await self.ws_client.watch_orders()
                 
-                # Обрабатываем каждый тикер в полученном списке
-                if tickers and isinstance(tickers, list):
-                    for ticker in tickers:
-                        if ticker and 'symbol' in ticker and 'last' in ticker:
-                            symbol_raw = ticker['symbol']
-                            if 'USDT' in symbol_raw:
-                                base = symbol_raw.replace('USDT', '')
-                                symbol = f"{base}/USDT:USDT"
-                                price = float(ticker['last'])
-                                
-                                self.latest_prices[symbol] = {
-                                    'price': price,
-                                    'time': datetime.now().strftime('%H:%M:%S.%f')[:-3]
-                                }
-                                
-                                logger.debug(f"📈 WebSocket {symbol}: {price}")
-                
-                # Небольшая пауза между обработками
+                # Обрабатываем полученные данные
+                if orders:
+                    logger.debug(f"📨 Получены данные: {orders}")
+                    # Здесь можно извлечь цены из ордеров
+                    
                 await asyncio.sleep(0.01)
                         
         except Exception as e:
@@ -1245,6 +1231,7 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
 
 
