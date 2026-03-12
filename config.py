@@ -25,14 +25,14 @@ REF_LINKS = {
 
 FEATURES = {
     'exchanges': {
-        'bybit': {'enabled': True},   # Включаем Bybit
-        'bingx': {'enabled': True},   # Включаем BingX
-        'mexc': {'enabled': False},   # MEXC пока отключен
+        'bybit': {'enabled': False},   # Bybit пока отключен из-за блокировки
+        'bingx': {'enabled': True},    # BingX работает отлично
+        'mexc': {'enabled': False},    # MEXC пока отключен
     },
     
     'data_sources': {
         'http': True,
-        'websocket': True,
+        'websocket': True,              # Включаем WebSocket для BingX
     },
     
     'timeframes': {
@@ -66,10 +66,20 @@ FEATURES = {
     }
 }
 
+# ============== НАСТРОЙКИ WEBSOCKET ==============
+
+WEBSOCKET_SETTINGS = {
+    'enabled': True,
+    'ping_interval': 30,      # секунд
+    'reconnect_delay': 5,
+    'max_retries': 5,
+    'subscription_limit': 100  # максимум подписок
+}
+
 # ============== НАСТРОЙКИ ОТОБРАЖЕНИЯ ==============
 
 DISPLAY_SETTINGS = {
-    'show_price_source': True,
+    'show_price_source': True,      # Показывать (w) для WebSocket
     'show_funding': True,
     'show_volume': True,
     'show_divergence': True,
@@ -125,15 +135,6 @@ PUMP_DUMP_SETTINGS = {
     'threshold': 7.0,
     'time_windows': [1, 3, 5, 15],
     'history_minutes': 30,
-}
-
-# ============== Настройки WebSocket ============== 
-
-WEBSOCKET_SETTINGS = {
-    'enabled': True,
-    'ping_interval': 30,  # секунд
-    'reconnect_delay': 5,
-    'max_retries': 5
 }
 
 # ============== ТАЙМФРЕЙМЫ ==============
