@@ -10,14 +10,15 @@ load_dotenv()
 
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
-UPDATE_INTERVAL = int(os.getenv('UPDATE_INTERVAL', 300))  # 5 минут
-MIN_CONFIDENCE = int(os.getenv('MIN_CONFIDENCE', 65))
+UPDATE_INTERVAL = int(os.getenv('UPDATE_INTERVAL', 900))  # 15 минут для основного анализа
+PUMP_SCAN_INTERVAL = int(os.getenv('PUMP_SCAN_INTERVAL', 120))  # 2 минуты для памп-сканера
+MIN_CONFIDENCE = int(os.getenv('MIN_CONFIDENCE', 55))  # Минимальная уверенность для сигнала
 TIMEFRAME = os.getenv('TIMEFRAME', '15m')
 PAIRS_TO_SCAN = int(os.getenv('PAIRS_TO_SCAN', 50))
 
 # Реферальные ссылки
 REF_LINKS = {
-    'BingX': os.getenv('BINGX_REF_LINK', 'https://bingx.com/invite/'),
+    'BingX': 'https://bingxdao.com/invite/ZTR83C/',
     'Bybit': os.getenv('BYBIT_REF_LINK', 'https://www.bybit.com'),
     'MEXC': os.getenv('MEXC_REF_LINK', 'https://www.mexc.com')
 }
@@ -58,13 +59,13 @@ FEATURES = {
         'vwap': True,
         'patterns': True,
         'pump_dump': True,
-        'fibonacci': True,
+        'fibonacci': False,
         'imbalance': True,
         'liquidity': True,
     },
     
     'testing': {
-        'test_signal': True,
+        'test_signal': False,
         'debug_mode': False,
     }
 }
@@ -72,7 +73,7 @@ FEATURES = {
 # ============== НАСТРОЙКИ ОТОБРАЖЕНИЯ ==============
 
 DISPLAY_SETTINGS = {
-    'show_price_source': True,
+    'show_price_source': False,
     'show_funding': True,
     'show_volume': True,
     'show_divergence': True,
@@ -82,7 +83,7 @@ DISPLAY_SETTINGS = {
     'show_alignment': True,
     'show_imbalance': True,
     'show_liquidity': True,
-    'show_exchange_link': True,
+    'show_exchange_link': True,  # Ссылка в тексте
     
     'buttons': {
         'copy': True,
@@ -130,7 +131,7 @@ INDICATOR_WEIGHTS = {
 
 PUMP_DUMP_SETTINGS = {
     'enabled': True,
-    'threshold': 5.0,
+    'threshold': 5.0,  # % для срабатывания
     'time_windows': [5, 15, 30, 60],
     'history_minutes': 120,
 }
