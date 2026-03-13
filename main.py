@@ -40,9 +40,10 @@ from config import (
     INDICATOR_SETTINGS,
     INDICATOR_WEIGHTS,
     PUMP_DUMP_SETTINGS,
+    IMBALANCE_SETTINGS,
+    LIQUIDITY_SETTINGS,
     PAIRS_TO_SCAN,
-    DISPLAY_SETTINGS,
-    WEBSOCKET_SETTINGS
+    DISPLAY_SETTINGS
 )
 
 # Временно отключаем проверку SSL для теста
@@ -130,546 +131,6 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
-
-
-# ============== WEBSOCKET МЕНЕДЖЕР ДЛЯ BINGX ==============
-
-class BingXWebSocketManager:
-    """Менеджер WebSocket для получения цен в реальном времени с BingX"""
-    
-    def __init__(self, callback_function=None):
-        self.callback = callback_function
-        self.ws_connection = None
-        self.running = False
-        self.subscribed_symbols = set()
-        self.latest_prices = {}
-        self.reconnect_attempts = 0
-        self.max_reconnect_attempts = WEBSOCKET_SETTINGS.get('max_retries', 5)
-        self.lock = asyncio.Lock()
-        self.message_count = 0
-        self.ping_task = None
-        self.listen_key = None
-        self.ping_interval = WEBSOCKET_SETTINGS.get('ping_interval', 30)
-        
-    async def connect(self):
-        """Подключение к WebSocket BingX через правильный эндпоинт"""
-        try:
-            uri = "wss://open-api-swap.bingx.com/swap-market"
-            
-            logger.info(f"🔌 Подключаюсь к WebSocket BingX: {uri}")
-            
-            headers = {
-                'User-Agent': 'Mozilla/5.0',
-                'Connection': 'Upgrade',
-                'Upgrade': 'websocket'
-            }
-            
-            self.ws_connection = await websockets.connect(
-                uri,
-                ping_interval=20,
-                ping_timeout=20,
-                max_size=2**20,
-                extra_headers=headers
-            )
-            self.running = True
-            self.reconnect_attempts = 0
-            logger.info("✅ WebSocket BingX подключен")
-            
-            await self._send_ping()
-            
-            asyncio.create_task(self._listen())
-            self.ping_task = asyncio.create_task(self._ping_loop())
-            
-            if self.subscribed_symbols:
-                await self._resubscribe_all()
-                
-        except Exception as e:
-            logger.error(f"❌ Ошибка подключения WebSocket BingX: {e}")
-            self.running = False
-            await self._handle_disconnect()
-    
-    async def _send_ping(self):
-        try:
-            if self.ws_connection and self.running:
-                ping_msg = json.dumps({"ping": int(time.time() * 1000)})
-                await self.ws_connection.send(ping_msg)
-                logger.debug("📤 Ping отправлен")
-        except Exception as e:
-            logger.error(f"❌ Ошибка отправки ping: {e}")
-    
-    async def _ping_loop(self):
-        while self.running:
-            try:
-                await asyncio.sleep(self.ping_interval)
-                await self._send_ping()
-            except Exception as e:
-                logger.error(f"❌ Ошибка в ping loop: {e}")
-                break
-    
-    async def _listen(self):
-        while self.running:
-            try:
-                message = await asyncio.wait_for(self.ws_connection.recv(), timeout=30)
-                self.message_count += 1
-                await self._process_message(message)
-                
-            except asyncio.TimeoutError:
-                try:
-                    await self._send_ping()
-                except:
-                    await self._handle_disconnect()
-                    break
-                    
-            except websockets.exceptions.ConnectionClosed:
-                logger.warning("⚠️ WebSocket BingX соединение закрыто")
-                await self._handle_disconnect()
-                break
-                
-            except Exception as e:
-                logger.error(f"❌ Ошибка при получении сообщения: {e}")
-                await asyncio.sleep(1)
-    
-    async def _process_message(self, message: str):
-        try:
-            data = json.loads(message)
-            
-            if 'pong' in data:
-                logger.debug("📥 Pong получен")
-                return
-            
-            if 'data' in data:
-                ticker_data = data['data']
-                if 's' in ticker_data and 'c' in ticker_data:
-                    symbol_raw = ticker_data['s']
-                    base = symbol_raw.split('-')[0]
-                    symbol = f"{base}/USDT:USDT"
-                    price = float(ticker_data['c'])
-                    timestamp = int(time.time() * 1000)
-                    
-                    async with self.lock:
-                        self.latest_prices[symbol] = {
-                            'price': price,
-                            'timestamp': timestamp,
-                            'time': datetime.now().strftime('%H:%M:%S.%f')[:-3]
-                        }
-                    
-                    if self.callback:
-                        await self.callback(symbol, price, timestamp)
-                        
-        except json.JSONDecodeError:
-            logger.debug(f"📨 Получено сообщение: {message[:100]}")
-        except Exception as e:
-            logger.error(f"❌ Ошибка обработки сообщения: {e}")
-    
-    async def subscribe(self, symbol: str) -> bool:
-        try:
-            if not self.ws_connection or not self.running:
-                logger.warning(f"⚠️ WebSocket не подключен, невозможно подписаться на {symbol}")
-                return False
-            
-            if len(self.subscribed_symbols) >= WEBSOCKET_SETTINGS.get('subscription_limit', 100):
-                logger.warning(f"⚠️ Достигнут лимит подписок")
-                return False
-            
-            symbol_raw = symbol.replace('/', '-').replace(':USDT', '')
-            
-            subscribe_msg = {
-                "id": int(time.time() * 1000),
-                "reqType": "sub",
-                "dataType": f"{symbol_raw}@ticker"
-            }
-            
-            async with self.lock:
-                await self.ws_connection.send(json.dumps(subscribe_msg))
-                self.subscribed_symbols.add(symbol)
-                logger.info(f"✅ WebSocket подписка на {symbol}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"❌ Ошибка подписки на {symbol}: {e}")
-            return False
-    
-    async def _resubscribe_all(self):
-        if self.subscribed_symbols:
-            logger.info(f"🔄 Переподписываюсь на {len(self.subscribed_symbols)} символов...")
-            for symbol in self.subscribed_symbols.copy():
-                await self.subscribe(symbol)
-                await asyncio.sleep(0.1)
-    
-    async def _handle_disconnect(self):
-        self.running = False
-        if self.ping_task:
-            self.ping_task.cancel()
-        
-        if self.ws_connection:
-            await self.ws_connection.close()
-        
-        if self.reconnect_attempts < self.max_reconnect_attempts:
-            self.reconnect_attempts += 1
-            wait_time = min(2 ** self.reconnect_attempts, 30)
-            logger.info(f"🔄 Попытка переподключения BingX {self.reconnect_attempts}/{self.max_reconnect_attempts} через {wait_time}с...")
-            await asyncio.sleep(wait_time)
-            await self.connect()
-        else:
-            logger.error("❌ Превышено количество попыток переподключения BingX")
-    
-    async def get_latest_price(self, symbol: str) -> Optional[Dict]:
-        async with self.lock:
-            data = self.latest_prices.get(symbol)
-            if data:
-                return {
-                    'price': data['price'],
-                    'source': 'websocket',
-                    'time': data['time']
-                }
-        return None
-    
-    async def stop(self):
-        self.running = False
-        if self.ping_task:
-            self.ping_task.cancel()
-        if self.ws_connection:
-            await self.ws_connection.close()
-        logger.info("🛑 WebSocket BingX остановлен")
-
-
-# ============== БАЗОВЫЙ КЛАСС ДЛЯ БИРЖ ==============
-
-class BaseExchangeFetcher:
-    """Базовый класс для всех бирж"""
-    
-    def __init__(self, name: str):
-        self.name = name
-        self.available_pairs = []
-    
-    async def fetch_all_pairs(self) -> List[str]:
-        """Получение списка всех пар"""
-        raise NotImplementedError
-    
-    async def fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 200) -> Optional[pd.DataFrame]:
-        """Получение свечных данных"""
-        raise NotImplementedError
-    
-    async def fetch_funding_rate(self, symbol: str) -> Optional[float]:
-        """Получение ставки фондирования"""
-        return 0.0
-    
-    async def fetch_ticker(self, symbol: str) -> Dict:
-        """Получение тикера"""
-        return {}
-    
-    async def get_price_with_source(self, symbol: str, http_price: float = None) -> Dict:
-        """Получение цены с источником"""
-        return {
-            'price': http_price,
-            'source': 'http',
-            'time': datetime.now().strftime('%H:%M:%S')
-        }
-    
-    async def close(self):
-        """Закрытие соединений"""
-        pass
-
-
-# ============== BYBIT FUTURES (отключен) ==============
-
-class BybitFetcher(BaseExchangeFetcher):
-    """Фетчер для Bybit Futures (временно отключен из-за блокировки)"""
-    
-    def __init__(self):
-        super().__init__("Bybit")
-        logger.warning("⚠️ Bybit временно отключен из-за геоблокировки")
-    
-    async def fetch_all_pairs(self) -> List[str]:
-        return []
-    
-    async def fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 200) -> Optional[pd.DataFrame]:
-        return None
-
-
-# ============== BINGX FUTURES С WEBSOCKET ==============
-
-class BingxFetcher(BaseExchangeFetcher):
-    """Фетчер для BingX Futures с WebSocket поддержкой"""
-    
-    def __init__(self):
-        super().__init__("BingX")
-        self.exchange = ccxt.bingx({
-            'apiKey': os.getenv('BINGX_API_KEY'),
-            'secret': os.getenv('BINGX_SECRET_KEY'),
-            'enableRateLimit': True,
-            'options': {
-                'defaultType': 'swap',
-                'adjustForTimeDifference': True
-            }
-        })
-        
-        self.websocket = None
-        self.ws_enabled = FEATURES['data_sources'].get('websocket', False)
-        
-        if self.ws_enabled:
-            asyncio.create_task(self._init_websocket())
-        
-        logger.info("✅ BingX Futures инициализирован")
-    
-    async def _init_websocket(self):
-        self.websocket = BingXWebSocketManager()
-        await self.websocket.connect()
-    
-    async def fetch_all_pairs(self) -> List[str]:
-        try:
-            markets = await self.exchange.load_markets()
-            usdt_pairs = []
-            for symbol, market in markets.items():
-                if (market['quote'] == 'USDT' and 
-                    market['active'] and 
-                    market['type'] in ['swap', 'future']):
-                    usdt_pairs.append(symbol)
-                    
-                    if self.websocket and self.ws_enabled:
-                        await self.websocket.subscribe(symbol)
-            
-            logger.info(f"📊 BingX Futures: загружено {len(usdt_pairs)} пар")
-            return usdt_pairs
-        except Exception as e:
-            logger.error(f"❌ BingX ошибка: {e}")
-            return []
-    
-    async def fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 200) -> Optional[pd.DataFrame]:
-        try:
-            ohlcv = await self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
-            if not ohlcv or len(ohlcv) < 20:
-                return None
-            
-            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-            df.set_index('timestamp', inplace=True)
-            return df
-        except Exception as e:
-            logger.error(f"Ошибка BingX {symbol}: {e}")
-            return None
-    
-    async def fetch_funding_rate(self, symbol: str) -> Optional[float]:
-        try:
-            funding = await self.exchange.fetch_funding_rate(symbol)
-            return funding['fundingRate'] if funding else 0.0
-        except:
-            return 0.0
-    
-    async def fetch_ticker(self, symbol: str) -> Dict:
-        try:
-            ticker = await self.exchange.fetch_ticker(symbol)
-            return {
-                'volume_24h': ticker.get('quoteVolume'),
-                'price_change_24h': ticker.get('percentage'),
-                'last': ticker.get('last')
-            }
-        except:
-            return {}
-    
-    async def get_price_with_source(self, symbol: str, http_price: float = None) -> Dict:
-        if self.websocket and self.ws_enabled:
-            ws_price = await self.websocket.get_latest_price(symbol)
-            if ws_price:
-                return ws_price
-        
-        return {
-            'price': http_price,
-            'source': 'http',
-            'time': datetime.now().strftime('%H:%M:%S')
-        }
-    
-    async def close(self):
-        await self.exchange.close()
-        if self.websocket:
-            await self.websocket.stop()
-
-
-# ============== MEXC FUTURES (отключен) ==============
-
-class MexcFetcher(BaseExchangeFetcher):
-    """Фетчер для MEXC Futures (временно отключен)"""
-    
-    def __init__(self):
-        super().__init__("MEXC")
-        logger.warning("⚠️ MEXC временно отключен")
-    
-    async def fetch_all_pairs(self) -> List[str]:
-        return []
-    
-    async def fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 200) -> Optional[pd.DataFrame]:
-        return None
-
-
-# ============== ПРОФЕССИОНАЛЬНЫЙ АНАЛИЗАТОР УРОВНЕЙ ==============
-
-class LevelAnalyzer:
-    """Анализатор рыночных уровней"""
-    
-    def __init__(self):
-        self.levels_history = {}
-        self.price_history = {}
-        self.breakout_confirmed = {}
-        self.last_signals = {}
-        
-    async def add_price(self, symbol: str, price: float, volume: float, timestamp: int):
-        if symbol not in self.price_history:
-            self.price_history[symbol] = []
-            
-        self.price_history[symbol].append((timestamp, price, volume))
-        
-        cutoff = timestamp - (24 * 60 * 60 * 1000)
-        self.price_history[symbol] = [
-            x for x in self.price_history[symbol] if x[0] > cutoff
-        ]
-        
-        events = await self._check_levels(symbol, price, volume, timestamp)
-        return events
-    
-    async def _check_levels(self, symbol: str, price: float, volume: float, timestamp: int) -> List[Dict]:
-        if symbol not in self.levels_history:
-            self.levels_history[symbol] = {}
-        
-        last_signal = self.last_signals.get(symbol, 0)
-        if timestamp - last_signal < 300000:
-            return []
-        
-        events = []
-        coin = symbol.split('/')[0]
-        
-        test_levels = {
-            round(price * 1.02, -2): {'strength': 30, 'type': 'resistance'},
-            round(price * 0.98, -2): {'strength': 30, 'type': 'support'},
-            round(price * 1.05, -2): {'strength': 25, 'type': 'resistance'},
-            round(price * 0.95, -2): {'strength': 25, 'type': 'support'}
-        }
-        
-        for level_price, level_info in test_levels.items():
-            distance = abs(price - level_price) / level_price * 100
-            
-            if distance <= 0.5:
-                event = await self._handle_level_touch(
-                    symbol, coin, price, volume, timestamp, level_price, level_info
-                )
-                if event:
-                    events.append(event)
-                    
-            elif 1.0 <= distance <= 3.0:
-                event = await self._check_breakout(
-                    symbol, coin, price, timestamp, level_price, level_info
-                )
-                if event:
-                    events.append(event)
-        
-        if events:
-            self.last_signals[symbol] = timestamp
-            
-        return events
-    
-    async def _handle_level_touch(self, symbol: str, coin: str, price: float, volume: float, 
-                                  timestamp: int, level_price: float, level_info: Dict) -> Optional[Dict]:
-        
-        if level_price not in self.levels_history[symbol]:
-            self.levels_history[symbol][level_price] = {
-                'touches': [],
-                'strength': level_info['strength'],
-                'type': level_info['type']
-            }
-        
-        level_data = self.levels_history[symbol][level_price]
-        
-        level_data['touches'].append({
-            'timestamp': timestamp,
-            'price': price,
-            'volume': volume
-        })
-        
-        level_data['touches'] = level_data['touches'][-5:]
-        
-        return await self._analyze_level_interaction(
-            symbol, coin, price, volume, timestamp, level_price, level_data
-        )
-    
-    async def _analyze_level_interaction(self, symbol: str, coin: str, price: float, volume: float,
-                                        timestamp: int, level_price: float, level_data: Dict) -> Optional[Dict]:
-        
-        touches = level_data['touches']
-        strength = level_data['strength']
-        level_type = level_data['type']
-        
-        event = {
-            'symbol': symbol,
-            'coin': coin,
-            'level_price': level_price,
-            'current_price': price,
-            'strength': strength,
-            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        }
-        
-        if len(touches) == 1:
-            event['type'] = 'LEVEL_TOUCH'
-            event['direction'] = 'NEUTRAL'
-            event['confidence'] = strength
-            event['description'] = f"Касание уровня {level_price:.2f}"
-            return event
-            
-        elif len(touches) >= 2:
-            if level_type == 'support':
-                event['type'] = 'STRONG_SUPPORT'
-                event['direction'] = 'LONG'
-                event['confidence'] = min(strength + 20 + (len(touches) * 5), 95)
-                event['description'] = f"Сильная поддержка {level_price:.2f} ({len(touches)} касаний)"
-            else:
-                event['type'] = 'STRONG_RESISTANCE'
-                event['direction'] = 'SHORT'
-                event['confidence'] = min(strength + 20 + (len(touches) * 5), 95)
-                event['description'] = f"Сильное сопротивление {level_price:.2f} ({len(touches)} касаний)"
-            return event
-        
-        return None
-    
-    async def _check_breakout(self, symbol: str, coin: str, price: float, timestamp: int,
-                             level_price: float, level_info: Dict) -> Optional[Dict]:
-        
-        if symbol not in self.breakout_confirmed:
-            self.breakout_confirmed[symbol] = {}
-        
-        if level_info['type'] == 'resistance' and price > level_price * 1.01:
-            event = {
-                'symbol': symbol,
-                'coin': coin,
-                'type': 'BREAKOUT',
-                'direction': 'LONG',
-                'level_price': level_price,
-                'current_price': price,
-                'strength': level_info['strength'] + 30,
-                'confidence': level_info['strength'] + 30,
-                'description': f"Пробой сопротивления {level_price:.2f}",
-                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            }
-            self.breakout_confirmed[symbol][level_price] = timestamp
-            return event
-            
-        elif level_info['type'] == 'support' and price < level_price * 0.99:
-            event = {
-                'symbol': symbol,
-                'coin': coin,
-                'type': 'BREAKOUT',
-                'direction': 'SHORT',
-                'level_price': level_price,
-                'current_price': price,
-                'strength': level_info['strength'] + 30,
-                'confidence': level_info['strength'] + 30,
-                'description': f"Пробой поддержки {level_price:.2f}",
-                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            }
-            self.breakout_confirmed[symbol][level_price] = timestamp
-            return event
-        
-        return None
-    
-    def get_cooldown(self) -> int:
-        return 300
 
 
 # ============== АНАЛИЗАТОР ДИВЕРГЕНЦИЙ ==============
@@ -773,7 +234,6 @@ class DivergenceAnalyzer:
         }
         
         unique_signals = set()
-        
         if rsi_div['bullish']:
             unique_signals.add(rsi_div['description'])
         if rsi_div['bearish']:
@@ -785,6 +245,442 @@ class DivergenceAnalyzer:
         
         result['signals'] = list(unique_signals)
         return result
+
+
+# ============== АНАЛИЗАТОР ИМБАЛАНСОВ ==============
+
+class ImbalanceAnalyzer:
+    """Анализатор дисбаланса спроса и предложения (имбалансов)"""
+    
+    def __init__(self, settings: Dict = None):
+        self.settings = settings or IMBALANCE_SETTINGS
+        self.threshold_buy = self.settings.get('threshold_buy', 0.3)
+        self.threshold_sell = self.settings.get('threshold_sell', -0.3)
+        self.stack_threshold = self.settings.get('stack_threshold', 3)
+        self.lookback_bars = self.settings.get('lookback_bars', 20)
+        self.weight_higher_tf = self.settings.get('weight_higher_tf', 1.5)
+        
+    def calculate_imbalance(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Расчет имбаланса на основе свечных данных
+        """
+        # Аппроксимация buy/sell volume (в реальности нужно из стакана)
+        df['buy_volume'] = np.where(
+            df['close'] > df['open'],
+            df['volume'] * 0.7,
+            df['volume'] * 0.3
+        )
+        
+        df['sell_volume'] = df['volume'] - df['buy_volume']
+        
+        # Расчет имбаланса
+        df['imbalance'] = (df['buy_volume'] - df['sell_volume']) / df['volume']
+        
+        # Нормализованный имбаланс от -1 до 1
+        df['imbalance_strength'] = df['imbalance'].abs() * 100
+        
+        # Сглаженный имбаланс
+        df['imbalance_sma'] = df['imbalance'].rolling(window=14).mean()
+        
+        # Определяем типы имбалансов
+        df['imbalance_type'] = 'neutral'
+        df.loc[df['imbalance'] > self.threshold_buy, 'imbalance_type'] = 'strong_buy'
+        df.loc[df['imbalance'] > self.threshold_buy * 2, 'imbalance_type'] = 'extreme_buy'
+        df.loc[df['imbalance'] < self.threshold_sell, 'imbalance_type'] = 'strong_sell'
+        df.loc[df['imbalance'] < self.threshold_sell * 2, 'imbalance_type'] = 'extreme_sell'
+        
+        return df
+    
+    def detect_imbalance_stacks(self, df: pd.DataFrame) -> List[Dict]:
+        """Обнаружение стеков имбалансов (несколько подряд)"""
+        stacks = []
+        
+        for i in range(max(0, len(df) - self.lookback_bars), len(df)):
+            window = df.iloc[max(0, i-self.lookback_bars):i]
+            
+            # Считаем подряд идущие имбалансы одного типа
+            buy_streak = 0
+            sell_streak = 0
+            max_buy_streak = 0
+            max_sell_streak = 0
+            
+            for _, row in window.iterrows():
+                if row['imbalance'] > self.threshold_buy:
+                    buy_streak += 1
+                    sell_streak = 0
+                    max_buy_streak = max(max_buy_streak, buy_streak)
+                elif row['imbalance'] < self.threshold_sell:
+                    sell_streak += 1
+                    buy_streak = 0
+                    max_sell_streak = max(max_sell_streak, sell_streak)
+                else:
+                    buy_streak = 0
+                    sell_streak = 0
+            
+            if max_buy_streak >= self.stack_threshold:
+                stacks.append({
+                    'type': 'buy_stack',
+                    'strength': max_buy_streak * 10,
+                    'count': max_buy_streak,
+                    'description': f"Стек бычьих имбалансов ({max_buy_streak} свечей подряд)"
+                })
+            
+            if max_sell_streak >= self.stack_threshold:
+                stacks.append({
+                    'type': 'sell_stack',
+                    'strength': max_sell_streak * 10,
+                    'count': max_sell_streak,
+                    'description': f"Стек медвежьих имбалансов ({max_sell_streak} свечей подряд)"
+                })
+        
+        return stacks
+    
+    def analyze(self, dataframes: Dict[str, pd.DataFrame]) -> Dict:
+        """Полный анализ имбалансов на всех таймфреймах"""
+        result = {
+            'has_imbalance': False,
+            'signals': [],
+            'strength': 0,
+            'alignment': {}
+        }
+        
+        for tf_name, df in dataframes.items():
+            if df is None or df.empty:
+                continue
+            
+            df_with_imb = self.calculate_imbalance(df)
+            last = df_with_imb.iloc[-1]
+            
+            if abs(last['imbalance']) > self.threshold_buy:
+                result['has_imbalance'] = True
+                imb_type = "бычий" if last['imbalance'] > 0 else "медвежий"
+                strength = abs(last['imbalance']) * 100
+                
+                # Бонус для старших таймфреймов
+                if tf_name in ['daily', 'weekly']:
+                    strength *= self.weight_higher_tf
+                
+                signal = {
+                    'timeframe': tf_name,
+                    'type': imb_type,
+                    'strength': min(strength, 100),
+                    'description': f"{imb_type.capitalize()} имбаланс на {tf_name}: {strength:.1f}%"
+                }
+                result['signals'].append(signal['description'])
+                result['strength'] = max(result['strength'], signal['strength'])
+                result['alignment'][tf_name] = imb_type
+        
+        # Проверяем согласованность
+        if len(result['alignment']) >= 2:
+            types = list(result['alignment'].values())
+            if all(t == types[0] for t in types):
+                result['has_imbalance'] = True
+                result['strength'] = min(result['strength'] + 20, 100)
+                result['signals'].append(f"✅ Согласованные имбалансы на всех ТФ: {types[0]}")
+        
+        # Стеки имбалансов на старших ТФ
+        for tf_name in ['daily', 'weekly']:
+            if tf_name in dataframes:
+                stacks = self.detect_imbalance_stacks(dataframes[tf_name])
+                for stack in stacks:
+                    result['has_imbalance'] = True
+                    result['signals'].append(stack['description'])
+                    result['strength'] = max(result['strength'], stack['strength'])
+        
+        return result
+
+
+# ============== АНАЛИЗАТОР ЛИКВИДНОСТИ ==============
+
+class LiquidityAnalyzer:
+    """Анализ зон ликвидности и сборов стоп-лоссов"""
+    
+    def __init__(self, settings: Dict = None):
+        self.settings = settings or LIQUIDITY_SETTINGS
+        self.lookback_bars = self.settings.get('lookback_bars', 100)
+        self.sweep_threshold = self.settings.get('sweep_retrace_threshold', 1.0)
+        self.consolidation_threshold = self.settings.get('consolidation_threshold', 0.5)
+        self.zone_distance = self.settings.get('zone_distance', 1.0)
+        self.swing_levels = {}
+        self.liquidity_zones = {}
+        self.sweep_history = {}
+    
+    def find_swing_levels(self, df: pd.DataFrame) -> Dict:
+        """Поиск свинг-хаев и свинг-лоев"""
+        recent = df.tail(self.lookback_bars)
+        
+        swing_highs = []
+        swing_lows = []
+        
+        for i in range(10, len(recent) - 10):
+            # Локальный максимум
+            if (recent['high'].iloc[i] > recent['high'].iloc[i-5:i].max() and 
+                recent['high'].iloc[i] > recent['high'].iloc[i+1:i+6].max()):
+                swing_highs.append({
+                    'price': recent['high'].iloc[i],
+                    'time': recent.index[i],
+                    'strength': self._calculate_strength(recent, i)
+                })
+            
+            # Локальный минимум
+            if (recent['low'].iloc[i] < recent['low'].iloc[i-5:i].min() and 
+                recent['low'].iloc[i] < recent['low'].iloc[i+1:i+6].min()):
+                swing_lows.append({
+                    'price': recent['low'].iloc[i],
+                    'time': recent.index[i],
+                    'strength': self._calculate_strength(recent, i)
+                })
+        
+        return {
+            'swing_highs': swing_highs[-10:],
+            'swing_lows': swing_lows[-10:],
+            'current_price': recent['close'].iloc[-1]
+        }
+    
+    def _calculate_strength(self, df: pd.DataFrame, index: int) -> int:
+        """Расчет силы уровня"""
+        strength = 30
+        volume = df['volume'].iloc[index]
+        avg_volume = df['volume'].rolling(20).mean().iloc[index]
+        
+        if volume > avg_volume * 1.5:
+            strength += 20
+        if volume > avg_volume * 2:
+            strength += 30
+        
+        return min(strength, 100)
+    
+    def detect_sweeps(self, symbol: str, df: pd.DataFrame) -> List[Dict]:
+        """Обнаружение сборов ликвидности"""
+        sweeps = []
+        levels = self.find_swing_levels(df)
+        current_price = df['close'].iloc[-1]
+        
+        # Сбор ликвидности шортистов (пробой хая и возврат)
+        for high in levels['swing_highs']:
+            if high['price'] < current_price * 1.02:  # цена рядом с уровнем
+                # Проверяем, был ли пробой
+                penetrated = any(df['high'].iloc[-10:] > high['price'])
+                retraced = current_price < high['price'] * 1.005
+                
+                if penetrated and retraced:
+                    sweeps.append({
+                        'type': 'bearish_sweep',
+                        'level': high['price'],
+                        'strength': high['strength'],
+                        'description': f"Сбор ликвидности шортистов на {high['price']:.2f}"
+                    })
+        
+        # Сбор ликвидности лонгистов (пробой лоя и возврат)
+        for low in levels['swing_lows']:
+            if low['price'] > current_price * 0.98:
+                penetrated = any(df['low'].iloc[-10:] < low['price'])
+                retraced = current_price > low['price'] * 0.995
+                
+                if penetrated and retraced:
+                    sweeps.append({
+                        'type': 'bullish_sweep',
+                        'level': low['price'],
+                        'strength': low['strength'],
+                        'description': f"Сбор ликвидности лонгистов на {low['price']:.2f}"
+                    })
+        
+        return sweeps
+    
+    def find_liquidity_zones(self, df: pd.DataFrame) -> List[Dict]:
+        """Поиск зон накопленной ликвидности"""
+        zones = []
+        recent = df.tail(100)
+        
+        for i in range(20, len(recent) - 20):
+            window = recent.iloc[i-20:i+20]
+            price_range = window['high'].max() - window['low'].min()
+            avg_range = window['atr'].mean() if 'atr' in window.columns else price_range
+            
+            # Зона консолидации
+            if price_range < avg_range * self.consolidation_threshold:
+                zone_price = window['close'].mean()
+                touches = sum(1 for _, row in window.iterrows() 
+                            if abs(row['close'] - zone_price) / zone_price < 0.005)
+                
+                zones.append({
+                    'price': zone_price,
+                    'touches': touches,
+                    'strength': min(30 + touches * 10, 100),
+                    'description': f"Зона накопления {zone_price:.2f} ({touches} касаний)"
+                })
+        
+        return zones[-5:]
+    
+    def analyze(self, symbol: str, df: pd.DataFrame) -> Dict:
+        """Полный анализ ликвидности"""
+        result = {
+            'has_signal': False,
+            'signals': [],
+            'strength': 0,
+            'sweeps': [],
+            'zones': []
+        }
+        
+        # Сборы ликвидности
+        sweeps = self.detect_sweeps(symbol, df)
+        if sweeps:
+            result['has_signal'] = True
+            result['sweeps'] = sweeps
+            for sweep in sweeps:
+                result['signals'].append(sweep['description'])
+                result['strength'] = max(result['strength'], sweep['strength'])
+        
+        # Зоны ликвидности
+        zones = self.find_liquidity_zones(df)
+        if zones:
+            result['zones'] = zones
+            current_price = df['close'].iloc[-1]
+            
+            for zone in zones:
+                distance = abs(current_price - zone['price']) / zone['price'] * 100
+                if distance < self.zone_distance:
+                    result['has_signal'] = True
+                    result['signals'].append(f"⚠️ Цена в зоне ликвидности {zone['price']:.2f}")
+                    result['strength'] = max(result['strength'], zone['strength'])
+        
+        return result
+
+
+# ============== БАЗОВЫЙ КЛАСС ДЛЯ БИРЖ ==============
+
+class BaseExchangeFetcher:
+    def __init__(self, name: str):
+        self.name = name
+        self.available_pairs = []
+    
+    async def fetch_all_pairs(self) -> List[str]:
+        raise NotImplementedError
+    
+    async def fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 200) -> Optional[pd.DataFrame]:
+        raise NotImplementedError
+    
+    async def fetch_funding_rate(self, symbol: str) -> Optional[float]:
+        return 0.0
+    
+    async def fetch_ticker(self, symbol: str) -> Dict:
+        return {}
+    
+    async def fetch_contract_info(self, symbol: str) -> Dict:
+        return {
+            'max_leverage': 100,
+            'min_amount': 5.0,
+            'max_amount': 2_000_000,
+            'contract_size': 0.001
+        }
+    
+    async def fetch_open_interest(self, symbol: str) -> Optional[float]:
+        return None
+    
+    async def fetch_liquidations(self, symbol: str) -> Dict:
+        return {'long': 0, 'short': 0}
+    
+    async def fetch_order_book(self, symbol: str) -> Dict:
+        return {'bid_ask_ratio': 1.0}
+    
+    async def get_price_with_source(self, symbol: str, http_price: float = None) -> Dict:
+        return {
+            'price': http_price,
+            'source': 'http',
+            'time': datetime.now().strftime('%H:%M:%S')
+        }
+    
+    async def close(self):
+        pass
+
+
+# ============== BINGX FUTURES ==============
+
+class BingxFetcher(BaseExchangeFetcher):
+    def __init__(self):
+        super().__init__("BingX")
+        self.exchange = ccxt.bingx({
+            'apiKey': os.getenv('BINGX_API_KEY'),
+            'secret': os.getenv('BINGX_SECRET_KEY'),
+            'enableRateLimit': True,
+            'options': {
+                'defaultType': 'swap',
+                'adjustForTimeDifference': True
+            }
+        })
+        logger.info("✅ BingX Futures инициализирован")
+    
+    async def fetch_all_pairs(self) -> List[str]:
+        try:
+            markets = await self.exchange.load_markets()
+            usdt_pairs = []
+            for symbol, market in markets.items():
+                if (market['quote'] == 'USDT' and 
+                    market['active'] and 
+                    market['type'] in ['swap', 'future']):
+                    usdt_pairs.append(symbol)
+            
+            logger.info(f"📊 BingX Futures: загружено {len(usdt_pairs)} пар")
+            return usdt_pairs
+        except Exception as e:
+            logger.error(f"❌ BingX ошибка: {e}")
+            return []
+    
+    async def fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 200) -> Optional[pd.DataFrame]:
+        try:
+            ohlcv = await self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+            if not ohlcv or len(ohlcv) < 20:
+                return None
+            
+            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            df.set_index('timestamp', inplace=True)
+            return df
+        except Exception as e:
+            logger.error(f"Ошибка BingX {symbol}: {e}")
+            return None
+    
+    async def fetch_funding_rate(self, symbol: str) -> Optional[float]:
+        try:
+            funding = await self.exchange.fetch_funding_rate(symbol)
+            return funding['fundingRate'] if funding else 0.0
+        except:
+            return 0.0
+    
+    async def fetch_ticker(self, symbol: str) -> Dict:
+        try:
+            ticker = await self.exchange.fetch_ticker(symbol)
+            return {
+                'volume_24h': ticker.get('quoteVolume'),
+                'price_change_24h': ticker.get('percentage'),
+                'last': ticker.get('last')
+            }
+        except:
+            return {}
+    
+    async def fetch_contract_info(self, symbol: str) -> Dict:
+        try:
+            markets = await self.exchange.load_markets()
+            market = markets.get(symbol, {})
+            
+            return {
+                'max_leverage': market.get('limits', {}).get('leverage', {}).get('max', 100),
+                'min_amount': market.get('limits', {}).get('amount', {}).get('min', 5.0),
+                'max_amount': market.get('limits', {}).get('amount', {}).get('max', 2_000_000),
+                'contract_size': market.get('contractSize', 0.001)
+            }
+        except:
+            return super().fetch_contract_info(symbol)
+    
+    async def fetch_open_interest(self, symbol: str) -> Optional[float]:
+        try:
+            oi = await self.exchange.fetch_open_interest(symbol)
+            return oi.get('openInterestAmount', 0)
+        except:
+            return None
+    
+    async def close(self):
+        await self.exchange.close()
 
 
 # ============== МУЛЬТИТАЙМФРЕЙМ АНАЛИЗАТОР ==============
@@ -870,14 +766,18 @@ class MultiTimeframeAnalyzer:
     def generate_signal(self, dataframes: Dict[str, pd.DataFrame], metadata: Dict, symbol: str, exchange: str) -> Optional[Dict]:
         if 'current' not in dataframes or dataframes['current'].empty:
             return None
+        
         df = dataframes['current']
         last = df.iloc[-1]
         prev = df.iloc[-2] if len(df) > 1 else last
+        
         alignment = self.analyze_timeframe_alignment(dataframes)
+        
         confidence = 50
         reasons = []
         direction = 'NEUTRAL'
         
+        # RSI
         if pd.notna(last['rsi']):
             if last['rsi'] < INDICATOR_SETTINGS['rsi_oversold']:
                 reasons.append(f"RSI перепродан ({last['rsi']:.1f})")
@@ -886,6 +786,7 @@ class MultiTimeframeAnalyzer:
                 reasons.append(f"RSI перекуплен ({last['rsi']:.1f})")
                 confidence += INDICATOR_WEIGHTS['rsi']
         
+        # MACD
         if pd.notna(last['MACD_12_26_9']) and pd.notna(last['MACDs_12_26_9']):
             if last['MACD_12_26_9'] > last['MACDs_12_26_9'] and prev['MACD_12_26_9'] <= prev['MACDs_12_26_9']:
                 reasons.append("Бычье пересечение MACD")
@@ -894,6 +795,7 @@ class MultiTimeframeAnalyzer:
                 reasons.append("Медвежье пересечение MACD")
                 confidence += INDICATOR_WEIGHTS['macd']
         
+        # EMA
         if last['ema_9'] > last['ema_21'] and prev['ema_9'] <= prev['ema_21']:
             reasons.append("Бычье пересечение EMA (9/21)")
             confidence += INDICATOR_WEIGHTS['ema_cross']
@@ -901,10 +803,12 @@ class MultiTimeframeAnalyzer:
             reasons.append("Медвежье пересечение EMA (9/21)")
             confidence += INDICATOR_WEIGHTS['ema_cross']
         
+        # Объем
         if last['volume_ratio'] > 1.5:
             reasons.append(f"Объем x{last['volume_ratio']:.1f} от нормы")
             confidence += INDICATOR_WEIGHTS['volume']
         
+        # VWAP
         if FEATURES['advanced']['vwap'] and 'vwap' in df.columns:
             if last['close'] > last['vwap']:
                 reasons.append(f"Цена выше VWAP ({last['vwap']:.2f})")
@@ -913,6 +817,7 @@ class MultiTimeframeAnalyzer:
                 reasons.append(f"Цена ниже VWAP ({last['vwap']:.2f})")
                 confidence += 10
         
+        # Сигналы от старших таймфреймов
         for signal in alignment['signals']:
             reasons.append(f"📊 {signal}")
             if "НЕДЕЛЬНЫЙ" in signal:
@@ -920,10 +825,12 @@ class MultiTimeframeAnalyzer:
             elif "Дневной" in signal:
                 confidence += INDICATOR_WEIGHTS['daily_trend']
         
+        # Согласованность трендов
         if alignment['trend_alignment'] > 70:
             reasons.append(f"✅ Тренды согласованы ({alignment['trend_alignment']:.0f}%)")
             confidence += INDICATOR_WEIGHTS['trend_alignment']
         
+        # Фандинг
         funding = metadata.get('funding_rate')
         if funding is not None and funding != 0:
             funding_pct = funding * 100
@@ -936,6 +843,7 @@ class MultiTimeframeAnalyzer:
                 if confidence > 60:
                     direction = 'LONG 📈'
         
+        # Изменение цены
         price_change = metadata.get('price_change_24h')
         if price_change and abs(price_change) > 5:
             if price_change > 5:
@@ -943,6 +851,7 @@ class MultiTimeframeAnalyzer:
             elif price_change < -5:
                 reasons.append(f"📉 Падение за 24ч: {price_change:.1f}%")
         
+        # Определение направления
         bullish_keywords = ['перепродан', 'Бычье', 'восходящий', 'негативный фандинг', 'выше VWAP']
         bearish_keywords = ['перекуплен', 'Медвежье', 'нисходящий', 'позитивный фандинг', 'ниже VWAP']
         bullish = sum(1 for r in reasons if any(k in r for k in bullish_keywords))
@@ -965,6 +874,7 @@ class MultiTimeframeAnalyzer:
         atr = last['atr'] if pd.notna(last['atr']) else (last['high'] - last['low']) * 0.3
         current_price = last['close']
         targets = {}
+        
         if direction != 'NEUTRAL':
             if 'LONG' in direction:
                 targets['target_1'] = round(current_price + atr * 1.5, 2)
@@ -975,6 +885,7 @@ class MultiTimeframeAnalyzer:
                 targets['target_2'] = round(current_price - atr * 3.0, 2)
                 targets['stop_loss'] = round(current_price + atr * 1.0, 2)
         
+        # Мощность сигнала
         signal_power = "⚡️"
         if signal_strength >= 90:
             signal_power = "🔥🔥🔥 ОЧЕНЬ СИЛЬНЫЙ"
@@ -1005,34 +916,34 @@ class MultiTimeframeAnalyzer:
 # ============== ОСНОВНОЙ КЛАСС БОТА ==============
 
 class MultiExchangeScannerBot:
-    """Бот для сканирования нескольких бирж"""
-    
     def __init__(self):
         self.fetchers = {}
         self.analyzer = MultiTimeframeAnalyzer()
         self.telegram_bot = Bot(token=TELEGRAM_TOKEN)
-        self.scanned_pairs = set()
-        self.last_signals = {}  # Для хранения последних сигналов по монетам
+        self.last_signals = {}
         
-        # Инициализация фетчеров согласно настройкам
         if FEATURES['exchanges'].get('bingx', {}).get('enabled', False):
             self.fetchers['BingX'] = BingxFetcher()
-        
-        # Инициализация анализаторов
-        if FEATURES['advanced']['pump_dump']:
-            self.level_analyzer = LevelAnalyzer()
-            logger.info("✅ Анализатор уровней инициализирован")
-        else:
-            self.level_analyzer = None
         
         if FEATURES['advanced']['divergence']:
             self.divergence = DivergenceAnalyzer()
             logger.info("✅ Анализатор дивергенций инициализирован")
         else:
             self.divergence = None
+        
+        if FEATURES['advanced']['imbalance']:
+            self.imbalance = ImbalanceAnalyzer(IMBALANCE_SETTINGS)
+            logger.info("✅ Анализатор имбалансов инициализирован")
+        else:
+            self.imbalance = None
+        
+        if FEATURES['advanced']['liquidity']:
+            self.liquidity = LiquidityAnalyzer(LIQUIDITY_SETTINGS)
+            logger.info("✅ Анализатор ликвидности инициализирован")
+        else:
+            self.liquidity = None
     
     def extract_coin(self, symbol: str) -> str:
-        """Извлечение чистой монеты из символа"""
         if ':USDT' in symbol:
             return symbol.split('/')[0]
         elif '/' in symbol:
@@ -1040,66 +951,59 @@ class MultiExchangeScannerBot:
         else:
             return symbol.replace('USDT', '')
     
-    def format_funding(self, rate: float) -> str:
-        if rate is None or rate == 0:
-            return "Нет данных"
-        color = "🟢" if rate > 0 else "🔴" if rate < 0 else "⚪"
-        return f"{color} {rate*100:.4f}%"
-    
-    def format_volume(self, volume: float) -> str:
-        if volume is None:
-            return "N/A"
-        if volume > 1_000_000:
-            return f"${volume/1_000_000:.1f}M"
-        elif volume > 1_000:
-            return f"${volume/1_000:.1f}K"
+    def format_compact(self, num: float) -> str:
+        if num > 1_000_000:
+            return f"{num/1_000_000:.1f}M"
+        elif num > 1_000:
+            return f"{num/1_000:.1f}K"
         else:
-            return f"${volume:.1f}"
+            return f"{num:.0f}"
     
-    def format_message(self, signal: Dict, price_source: Dict = None, pump_only: bool = False) -> Tuple[str, InlineKeyboardMarkup]:
-        emoji_map = {
-            'LONG 📈': '🟢',
-            'SHORT 📉': '🔴',
-            'Разворот LONG 📈': '🟢🔄',
-            'Разворот SHORT 📉': '🔴🔄',
-            'NEUTRAL': '⚪'
-        }
-        emoji = emoji_map.get(signal['direction'], '🤖')
+    def format_message(self, signal: Dict, price_source: Dict = None, 
+                       contract_info: Dict = None, pump_percent: float = None) -> Tuple[str, InlineKeyboardMarkup]:
         
+        dir_emoji = '🟢' if 'LONG' in signal['direction'] else '🔴' if 'SHORT' in signal['direction'] else '⚪'
         coin = self.extract_coin(signal['symbol'])
-        
-        # Форматируем цену (сокращаем до 2 знаков)
         price_formatted = f"{signal['price']:.2f}"
         
-        price_display = f"`{price_formatted}`"
-        if DISPLAY_SETTINGS['show_price_source'] and price_source:
-            source_text = "(w)" if price_source['source'] == 'websocket' else "(h)"
-            price_display = f"`{price_formatted}` {source_text}"
+        pump_text = ""
+        if pump_percent:
+            pump_type = "PUMP" if pump_percent > 0 else "DUMP"
+            pump_text = f"{pump_type} {pump_percent:+.1f}% "
         
-        # Компактный формат сигнала
+        exchange_link = REF_LINKS.get(signal['exchange'], '#')
+        
+        # Параметры в одну строку с кликабельной биржей
+        if DISPLAY_SETTINGS['show_exchange_link']:
+            params_text = f"└ <a href='{exchange_link}'>{signal['exchange']}</a>"
+        else:
+            params_text = f"└ {signal['exchange']}"
+        
+        if contract_info:
+            max_lev = contract_info.get('max_leverage', 100)
+            min_amt = contract_info.get('min_amount', 5)
+            max_amt = contract_info.get('max_amount', 2_000_000)
+            params_text += f" {max_lev}x / {min_amt:.0f}$ / {self.format_compact(max_amt)}"
+        
+        if signal.get('volume_24h'):
+            params_text += f" / {self.format_compact(signal['volume_24h'])}"
+        
+        if signal.get('funding_rate'):
+            funding = signal['funding_rate'] * 100
+            color = "🟢" if funding > 0 else "🔴" if funding < 0 else "⚪"
+            params_text += f" / {color} {funding:.3f}%"
+        
         lines = [
-            f"{emoji} *СИГНАЛ {signal['exchange']}*",
-            f"└ `{coin}` {signal['signal_power']}\n",
+            f"{dir_emoji} `{coin}` {pump_text}{signal['signal_power']}",
+            params_text + "\n",
             f"📊 *Направление:* {signal['direction']}",
-            f"🎯 *Цена:* {price_display}\n"
+            f"🕓 *Таймфрейм:* {TIMEFRAME}",
+            f"💰 *Цена:* `{price_formatted}`\n",
+            f"🎯 *Цели:* {signal.get('target_1', '')} | {signal.get('target_2', '')} | SL {signal.get('stop_loss', '')}\n"
         ]
         
-        # Цели одной строкой
-        if 'target_1' in signal:
-            lines.append(f"🎯 *Цели:* {signal['target_1']} | {signal['target_2']} | SL {signal['stop_loss']}\n")
-        
-        # Импульсный анализ (если есть)
-        if signal.get('level_events'):
-            event = signal['level_events'][0]  # Берем первое событие
-            move_emoji = "🚀" if event.get('change_percent', 0) > 0 else "📉"
-            change = event.get('change_percent', 0)
-            lines.append(f"⚡ {move_emoji} {abs(change):.1f}% | {event['description']}\n")
-        
-        # Причины (кратко)
         if signal['reasons']:
             lines.append(f"💡 *Причины:* {', '.join(signal['reasons'][:3])}")
-        
-        lines.append(f"\n⏱️ {datetime.now().strftime('%d.%m %H:%M')}")
         
         # Клавиатура
         keyboard = []
@@ -1108,9 +1012,8 @@ class MultiExchangeScannerBot:
             keyboard.append([InlineKeyboardButton(f"📋 Скопировать {coin}", callback_data=f"copy_{coin}")])
         
         if DISPLAY_SETTINGS['buttons']['trade']:
-            exch = signal['exchange']
-            if exch in REF_LINKS:
-                keyboard.append([InlineKeyboardButton(f"🚀 Торговать на {exch}", url=REF_LINKS[exch])])
+            if signal['exchange'] in REF_LINKS:
+                keyboard.append([InlineKeyboardButton(f"🚀 Торговать на {signal['exchange']}", url=REF_LINKS[signal['exchange']])])
         
         action_row = []
         if DISPLAY_SETTINGS['buttons']['refresh']:
@@ -1123,103 +1026,99 @@ class MultiExchangeScannerBot:
         
         return "\n".join(lines), InlineKeyboardMarkup(keyboard)
     
-    async def refresh_signal(self, fetcher, symbol: str, coin: str) -> Optional[Dict]:
-        """Обновление сигнала по монете"""
+    async def get_detailed_analysis(self, fetcher, symbol: str, coin: str, signal_time: str = None) -> Tuple[str, InlineKeyboardMarkup]:
         try:
             dataframes = {}
             for tf_name, tf_value in TIMEFRAMES.items():
-                limit = 200 if tf_name == 'current' else 100
+                limit = 500 if tf_name == 'current' else 200
                 df = await fetcher.fetch_ohlcv(symbol, tf_value, limit)
                 if df is not None and not df.empty:
                     df = self.analyzer.calculate_indicators(df)
                     dataframes[tf_name] = df
             
             if not dataframes:
-                return None
+                return f"❌ Нет данных для {coin}", None
             
-            funding = await fetcher.fetch_funding_rate(symbol)
+            contract_info = await fetcher.fetch_contract_info(symbol)
+            open_interest = await fetcher.fetch_open_interest(symbol)
             ticker = await fetcher.fetch_ticker(symbol)
-            
-            metadata = {
-                'funding_rate': funding,
-                'volume_24h': ticker.get('volume_24h'),
-                'price_change_24h': ticker.get('price_change_24h')
-            }
-            
-            signal = self.analyzer.generate_signal(dataframes, metadata, symbol, "BingX")
-            
-            if signal and self.level_analyzer and 'current' in dataframes:
-                df = dataframes['current']
-                price = df['close'].iloc[-1]
-                timestamp = int(df.index[-1].timestamp() * 1000)
-                volume = df['volume'].iloc[-1]
-                
-                events = await self.level_analyzer.add_price(symbol, price, volume, timestamp)
-                if events:
-                    signal['level_events'] = events
-            
-            return signal
-        except Exception as e:
-            logger.error(f"Ошибка обновления сигнала {symbol}: {e}")
-            return None
-    
-    async def get_detailed_analysis(self, fetcher, symbol: str, coin: str) -> str:
-        """Получение детального анализа по монете"""
-        try:
-            dataframes = {}
-            for tf_name, tf_value in TIMEFRAMES.items():
-                limit = 200 if tf_name == 'current' else 100
-                df = await fetcher.fetch_ohlcv(symbol, tf_value, limit)
-                if df is not None and not df.empty:
-                    df = self.analyzer.calculate_indicators(df)
-                    dataframes[tf_name] = df
-            
-            if not dataframes:
-                return f"❌ Нет данных для {coin}"
+            funding = await fetcher.fetch_funding_rate(symbol)
             
             df_current = dataframes['current']
             last = df_current.iloc[-1]
             
             lines = []
             lines.append(f"📊 *ДЕТАЛЬНЫЙ АНАЛИЗ {coin}*")
-            lines.append(f"⏱️ Время: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}\n")
+            if signal_time:
+                lines.append(f"⏱️ Время сигнала: `{signal_time}`")
+            lines.append(f"⏱️ Время обновления: `{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}`\n")
             
-            # Технические индикаторы
-            lines.append("📈 *ТЕХНИЧЕСКИЕ ИНДИКАТОРЫ (15m):*")
-            rsi_status = "ПЕРЕПРОДАН" if last['rsi'] < 30 else "ПЕРЕКУПЛЕН" if last['rsi'] > 70 else "НЕЙТРАЛЬНЫЙ"
-            lines.append(f"└ RSI(14): {last['rsi']:.1f} ({rsi_status})")
+            # Параметры контракта
+            lines.append("⚡️ *ПАРАМЕТРЫ КОНТРАКТА:*")
+            lines.append(f"└ Макс. плечо: `{contract_info.get('max_leverage', 100)}x`")
+            lines.append(f"└ Мин. вход: `{contract_info.get('min_amount', 5):.2f} USDT`")
+            lines.append(f"└ Макс. вход: `{self.format_compact(contract_info.get('max_amount', 2_000_000))} USDT`")
             
-            macd_status = "Бычье" if last['MACD_12_26_9'] > last['MACDs_12_26_9'] else "Медвежье"
-            lines.append(f"└ MACD: {macd_status} пересечение")
+            # Торговые данные
+            lines.append("\n📈 *ТОРГОВЫЕ ДАННЫЕ:*")
+            if ticker:
+                lines.append(f"└ Объем 24ч: `{self.format_compact(ticker.get('volume_24h', 0))} USDT`")
+                if ticker.get('price_change_24h'):
+                    change = ticker['price_change_24h']
+                    emoji = "📈" if change > 0 else "📉"
+                    lines.append(f"└ Изменение 24ч: {emoji} `{change:+.2f}%`")
             
-            ema_status = "Бычье" if last['ema_9'] > last['ema_21'] else "Медвежье"
-            lines.append(f"└ EMA 9/21: {last['ema_9']:.2f} / {last['ema_21']:.2f} ({ema_status})")
+            if open_interest:
+                lines.append(f"└ Открытый интерес: `{self.format_compact(open_interest)} USDT`")
             
-            bb_position = "Нижняя" if last['close'] < last['BBM_20_2.0'] else "Верхняя" if last['close'] > last['BBM_20_2.0'] else "Средняя"
-            lines.append(f"└ Bollinger: {bb_position} полоса")
-            lines.append(f"└ ATR: {last['atr']:.2f}\n")
+            if funding:
+                funding_pct = funding * 100
+                color = "🟢" if funding_pct > 0 else "🔴" if funding_pct < 0 else "⚪"
+                lines.append(f"└ Ставка фондирования: `{color} {funding_pct:.4f}%`")
             
-            # Старшие таймфреймы
-            lines.append("📊 *СТАРШИЕ ТАЙМФРЕЙМЫ:*")
-            if 'hourly' in dataframes:
-                df_h = dataframes['hourly'].iloc[-1]
-                trend_h = "ВОСХОДЯЩИЙ 📈" if df_h['ema_9'] > df_h['ema_21'] else "НИСХОДЯЩИЙ 📉"
-                lines.append(f"└ 1h: {trend_h}")
-            if 'daily' in dataframes:
-                df_d = dataframes['daily'].iloc[-1]
-                trend_d = "ВОСХОДЯЩИЙ 📈" if df_d['close'] > df_d['ema_200'] else "НИСХОДЯЩИЙ 📉"
-                ema200_status = "выше EMA 200" if df_d['close'] > df_d['ema_200'] else "ниже EMA 200"
-                lines.append(f"└ 1d: {trend_d} ({ema200_status})")
-            if 'weekly' in dataframes:
-                df_w = dataframes['weekly'].iloc[-1]
-                trend_w = "ВОСХОДЯЩИЙ 📈" if df_w['close'] > df_w['ema_200'] else "НИСХОДЯЩИЙ 📉"
-                lines.append(f"└ 1w: {trend_w}\n")
+            # Технический анализ
+            lines.append("\n📊 *ТЕХНИЧЕСКИЙ АНАЛИЗ:*")
+            lines.append(f"└ RSI(14): `{last['rsi']:.1f}`")
+            lines.append(f"└ MACD: `{last['MACD_12_26_9']:.2f}` | Сигнал: `{last['MACDs_12_26_9']:.2f}`")
+            lines.append(f"└ EMA 9/21: `{last['ema_9']:.2f}` / `{last['ema_21']:.2f}`")
+            lines.append(f"└ ATR: `{last['atr']:.2f}`")
+            lines.append(f"└ Объемный коэффициент: `x{last['volume_ratio']:.2f}`")
             
-            return "\n".join(lines)
+            # Имбалансы
+            if self.imbalance and FEATURES['advanced']['imbalance']:
+                imb = self.imbalance.analyze(dataframes)
+                if imb['has_imbalance']:
+                    lines.append("\n⚖️ *ИМБАЛАНСЫ:*")
+                    for sig in imb['signals'][:3]:
+                        lines.append(f"└ {sig}")
+            
+            # Ликвидность
+            if self.liquidity and FEATURES['advanced']['liquidity']:
+                liq = self.liquidity.analyze(symbol, df_current)
+                if liq['has_signal']:
+                    lines.append("\n📊 *ЛИКВИДНОСТЬ:*")
+                    for sig in liq['signals'][:3]:
+                        lines.append(f"└ {sig}")
+            
+            # Дивергенции
+            if self.divergence and FEATURES['advanced']['divergence']:
+                div = self.divergence.analyze(df_current, '15m')
+                if div['has_divergence']:
+                    lines.append("\n🔄 *ДИВЕРГЕНЦИИ:*")
+                    for d in div['signals']:
+                        lines.append(f"└ {d}")
+            
+            # Клавиатура
+            keyboard = [
+                [InlineKeyboardButton("🔝 Вернуться к сигналу", callback_data=f"back_{coin}")],
+                [InlineKeyboardButton("🔄 Обновить детали", callback_data=f"refresh_details_{coin}")]
+            ]
+            
+            return "\n".join(lines), InlineKeyboardMarkup(keyboard)
             
         except Exception as e:
             logger.error(f"Ошибка детального анализа {symbol}: {e}")
-            return f"❌ Ошибка анализа: {e}"
+            return f"❌ Ошибка анализа: {e}", None
     
     async def scan_exchange(self, name: str, fetcher: BaseExchangeFetcher) -> List[Dict]:
         logger.info(f"🔍 Сканирую {name}...")
@@ -1258,17 +1157,23 @@ class MultiExchangeScannerBot:
                     
                     signal = self.analyzer.generate_signal(dataframes, metadata, pair, name)
                     
-                    if signal and self.level_analyzer and 'current' in dataframes:
-                        df = dataframes['current']
-                        price = df['close'].iloc[-1]
-                        timestamp = int(df.index[-1].timestamp() * 1000)
-                        volume = df['volume'].iloc[-1]
-                        
-                        events = await self.level_analyzer.add_price(pair, price, volume, timestamp)
-                        if events:
-                            signal['level_events'] = events
+                    if not signal:
+                        continue
                     
-                    if signal and signal['confidence'] >= MIN_CONFIDENCE:
+                    # Добавляем дополнительные анализы
+                    if self.imbalance and FEATURES['advanced']['imbalance']:
+                        imb = self.imbalance.analyze(dataframes)
+                        if imb['has_imbalance']:
+                            signal['imbalance'] = imb
+                            signal['confidence'] = min(signal['confidence'] + imb['strength'] / 10, 100)
+                    
+                    if self.liquidity and FEATURES['advanced']['liquidity']:
+                        liq = self.liquidity.analyze(pair, dataframes['current'])
+                        if liq['has_signal']:
+                            signal['liquidity'] = liq
+                            signal['confidence'] = min(signal['confidence'] + liq['strength'] / 10, 100)
+                    
+                    if signal['confidence'] >= MIN_CONFIDENCE:
                         signals.append(signal)
                         logger.info(f"✅ {name} {pair} - {signal['direction']} ({signal['confidence']}%)")
                     
@@ -1313,7 +1218,6 @@ class MultiExchangeScannerBot:
         if pump_only and not signal.get('pump_dump'):
             return
         
-        # Сохраняем сигнал для кнопок
         coin = self.extract_coin(signal['symbol'])
         self.last_signals[coin] = {
             'symbol': signal['symbol'],
@@ -1321,25 +1225,28 @@ class MultiExchangeScannerBot:
             'time': datetime.now()
         }
         
-        price_source = None
-        if 'BingX' in self.fetchers and signal['exchange'] == 'BingX':
-            price_source = await self.fetchers['BingX'].get_price_with_source(signal['symbol'], signal['price'])
-            if price_source['source'] == 'websocket':
-                signal['price'] = price_source['price']
+        contract_info = None
+        for fetcher in self.fetchers.values():
+            if fetcher.name == signal['exchange']:
+                contract_info = await fetcher.fetch_contract_info(signal['symbol'])
+                break
         
-        msg, keyboard = self.format_message(signal, price_source, pump_only)
+        pump_percent = None
+        if signal.get('pump_dump'):
+            pump_percent = signal['pump_dump'][0]['change_percent'] if signal['pump_dump'] else None
+        
+        msg, keyboard = self.format_message(signal, None, contract_info, pump_percent)
+        
         await self.telegram_bot.send_message(
             chat_id=TELEGRAM_CHAT_ID,
             text=msg,
-            parse_mode='Markdown',
+            parse_mode='HTML',
             reply_markup=keyboard
         )
-        signal_type = "ПАМП/ДАМП" if pump_only else ""
-        logger.info(f"✅ Отправлен сигнал {signal_type}: {signal['symbol']}")
+        logger.info(f"✅ Отправлен сигнал: {signal['symbol']}")
     
     async def scheduled(self):
         logger.info(f"🕐 Запуск мульти-биржевого анализа")
-        
         signals = await self.scan_all()
         
         if signals:
@@ -1383,19 +1290,14 @@ class TelegramHandler:
     
     async def start(self, update, context):
         active_exchanges = ", ".join(self.bot.fetchers.keys())
-        ws_status = "✅ Включен" if FEATURES['data_sources']['websocket'] else "❌ Отключен"
         await update.message.reply_text(
             f"🤖 *Мульти-биржевой фьючерсный сканер*\n\n"
             f"📊 Активные биржи: {active_exchanges}\n"
-            f"⚡ WebSocket: {ws_status}\n"
-            f"📈 Мультитаймфрейм (15m/1h/1d/1w)\n"
-            f"🔥 Анализ уровней\n"
-            f"📈 Дивергенции RSI/MACD\n"
-            f"📊 VWAP институциональный уровень\n"
-            f"🕯 Свечные паттерны\n\n"
+            f"📈 Анализ: RSI, MACD, EMA, VWAP\n"
+            f"🔥 Имбалансы, ликвидность, дивергенции\n\n"
             f"Команды:\n"
             f"/scan - Сканировать\n"
-            f"/pump - Только памп-дамп сигналы\n"
+            f"/pump - Только сигналы у уровней\n"
             f"/status - Статус\n"
             f"/help - Помощь",
             parse_mode='Markdown'
@@ -1413,12 +1315,12 @@ class TelegramHandler:
             await msg.edit_text("❌ Сигналов не найдено")
     
     async def pump_only(self, update, context):
-        msg = await update.message.reply_text("🔍 Ищу памп-дамп сигналы...")
+        msg = await update.message.reply_text("🔍 Ищу сигналы у уровней...")
         signals = await self.bot.scan_all()
-        pump_signals = [s for s in signals if s.get('level_events')]
+        pump_signals = [s for s in signals if s.get('pump_dump')]
         
         if pump_signals:
-            await msg.edit_text(f"✅ Найдено {len(pump_signals)} сигналов у уровней")
+            await msg.edit_text(f"✅ Найдено {len(pump_signals)} сигналов")
             for signal in pump_signals[:5]:
                 await self.bot.send_signal(signal, pump_only=True)
                 await asyncio.sleep(2)
@@ -1427,17 +1329,13 @@ class TelegramHandler:
     
     async def status(self, update, context):
         text = "*📡 Статус:*\n\n"
-        
         for name in self.bot.fetchers.keys():
             text += f"✅ {name} Futures: активен\n"
         
-        text += f"\n⚡ WebSocket: {'✅ активен' if FEATURES['data_sources']['websocket'] else '❌ отключен'}\n"
-        
         text += f"\n📊 *Функции:*\n"
-        text += f"✓ Анализ уровней: {'вкл' if FEATURES['advanced']['pump_dump'] else 'выкл'}\n"
         text += f"✓ Дивергенции: {'вкл' if FEATURES['advanced']['divergence'] else 'выкл'}\n"
-        text += f"✓ VWAP: {'вкл' if FEATURES['advanced']['vwap'] else 'выкл'}\n"
-        text += f"✓ Паттерны: {'вкл' if FEATURES['advanced']['patterns'] else 'выкл'}"
+        text += f"✓ Имбалансы: {'вкл' if FEATURES['advanced']['imbalance'] else 'выкл'}\n"
+        text += f"✓ Ликвидность: {'вкл' if FEATURES['advanced']['liquidity'] else 'выкл'}"
         
         await update.message.reply_text(text, parse_mode='Markdown')
     
@@ -1445,18 +1343,14 @@ class TelegramHandler:
         await update.message.reply_text(
             "*Помощь*\n\n"
             "📊 *Анализ:*\n"
-            "• RSI, MACD, EMA\n"
-            "• Объемы, VWAP\n"
+            "• RSI, MACD, EMA, VWAP\n"
             "• Дивергенции\n"
-            "• Анализ уровней (поддержка/сопротивление)\n"
-            "• Свечные паттерны\n\n"
+            "• Имбалансы спроса/предложения\n"
+            "• Ликвидность и сборы стопов\n\n"
             "⚙️ *Команды:*\n"
             "/scan - все сигналы\n"
             "/pump - только сигналы у уровней\n"
-            "/status - состояние бота\n\n"
-            "⚙️ *Кнопки:*\n"
-            "🔄 Обновить - обновить сигнал\n"
-            "📊 Детали - подробный анализ",
+            "/status - состояние бота",
             parse_mode='Markdown'
         )
     
@@ -1473,70 +1367,55 @@ class TelegramHandler:
         
         elif data.startswith("refresh_"):
             coin = data.replace("refresh_", "")
-            
             await query.edit_message_text(f"🔄 Обновляю сигнал по {coin}...")
             
-            # Ищем сохраненный сигнал
             if coin in self.bot.last_signals:
                 symbol = self.bot.last_signals[coin]['symbol']
-                
-                for name, fetcher in self.bot.fetchers.items():
-                    if name == "BingX":
-                        signal = await self.bot.refresh_signal(fetcher, symbol, coin)
-                        if signal:
-                            price_source = await fetcher.get_price_with_source(symbol, signal['price'])
-                            msg, keyboard = self.bot.format_message(signal, price_source, pump_only=False)
-                            await query.message.reply_text(
-                                f"🔄 *ОБНОВЛЕННЫЙ СИГНАЛ*\n\n{msg}",
-                                parse_mode='Markdown',
-                                reply_markup=keyboard
-                            )
-                            await query.message.delete()
-                        else:
-                            await query.edit_message_text(f"❌ Не удалось обновить сигнал для {coin}")
+                for fetcher in self.bot.fetchers.values():
+                    signal = await self.bot.analyzer.generate_signal_from_fetcher(fetcher, symbol)
+                    if signal:
+                        self.bot.last_signals[coin]['signal'] = signal
+                        self.bot.last_signals[coin]['time'] = datetime.now()
+                        msg, keyboard = self.bot.format_message(signal)
+                        await query.message.reply_text(
+                            f"🔄 *ОБНОВЛЕННЫЙ СИГНАЛ*\n\n{msg}",
+                            parse_mode='HTML',
+                            reply_markup=keyboard
+                        )
+                        await query.message.delete()
                         break
             else:
                 await query.edit_message_text(f"❌ Нет данных для {coin}")
         
         elif data.startswith("details_"):
             coin = data.replace("details_", "")
-            
             await query.edit_message_text(f"📊 Загружаю детальный анализ по {coin}...")
             
             if coin in self.bot.last_signals:
                 symbol = self.bot.last_signals[coin]['symbol']
+                signal_time = self.bot.last_signals[coin]['time'].strftime('%Y-%m-%d %H:%M:%S')
                 
-                for name, fetcher in self.bot.fetchers.items():
-                    if name == "BingX":
-                        detailed = await self.bot.get_detailed_analysis(fetcher, symbol, coin)
-                        
-                        keyboard = [[InlineKeyboardButton("🔝 Вернуться к сигналу", callback_data=f"back_{coin}")]]
-                        
-                        await query.message.reply_text(
-                            detailed,
-                            parse_mode='Markdown',
-                            reply_markup=InlineKeyboardMarkup(keyboard)
-                        )
-                        # Восстанавливаем исходное сообщение
-                        original = self.bot.last_signals[coin]['signal']
-                        price_source = await fetcher.get_price_with_source(symbol, original['price'])
-                        msg, orig_keyboard = self.bot.format_message(original, price_source, pump_only=False)
-                        await query.edit_message_text(msg, parse_mode='Markdown', reply_markup=orig_keyboard)
-                        break
+                for fetcher in self.bot.fetchers.values():
+                    detailed, keyboard = await self.bot.get_detailed_analysis(fetcher, symbol, coin, signal_time)
+                    await query.message.reply_text(
+                        detailed,
+                        parse_mode='Markdown',
+                        reply_markup=keyboard
+                    )
+                    
+                    original = self.bot.last_signals[coin]['signal']
+                    msg, orig_keyboard = self.bot.format_message(original)
+                    await query.edit_message_text(msg, parse_mode='HTML', reply_markup=orig_keyboard)
+                    break
             else:
                 await query.edit_message_text(f"❌ Нет данных для {coin}")
         
         elif data.startswith("back_"):
             coin = data.replace("back_", "")
-            
             if coin in self.bot.last_signals:
                 signal = self.bot.last_signals[coin]['signal']
-                for name, fetcher in self.bot.fetchers.items():
-                    if name == "BingX":
-                        price_source = await fetcher.get_price_with_source(signal['symbol'], signal['price'])
-                        msg, keyboard = self.bot.format_message(signal, price_source, pump_only=False)
-                        await query.edit_message_text(msg, parse_mode='Markdown', reply_markup=keyboard)
-                        break
+                msg, keyboard = self.bot.format_message(signal)
+                await query.edit_message_text(msg, parse_mode='HTML', reply_markup=keyboard)
     
     def run(self):
         self.app.run_polling()
