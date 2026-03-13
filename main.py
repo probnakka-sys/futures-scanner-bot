@@ -544,13 +544,16 @@ class BingxFetcher(BaseExchangeFetcher):
             df.set_index('timestamp', inplace=True)
             return df
         except Exception as e:
-            logger.error(f"Ошибка BingX {symbol}: {e}")
+            if "404" not in str(e):
+                logger.error(f"Ошибка BingX {symbol}: {e}")
             return None
     
     async def fetch_funding_rate(self, symbol: str) -> Optional[float]:
         try:
             funding = await self.exchange.fetch_funding_rate(symbol)
-            return funding['fundingRate'] if funding else 0.0
+            if funding and 'fundingRate' in funding:
+                return funding['fundingRate']
+            return 0.0
         except:
             return 0.0
     
@@ -570,13 +573,31 @@ class BingxFetcher(BaseExchangeFetcher):
             markets = await self.exchange.load_markets()
             market = markets.get(symbol, {})
             limits = market.get('limits', {})
+            
+            max_leverage = 100
+            min_amount = 5.0
+            max_amount = 2_000_000
+            
+            if limits.get('leverage'):
+                max_leverage = limits['leverage'].get('max', 100)
+            if limits.get('amount'):
+                min_amount = limits['amount'].get('min', 5.0)
+                max_amount = limits['amount'].get('max', 2_000_000)
+            
             return {
-                'max_leverage': limits.get('leverage', {}).get('max', 100),
-                'min_amount': limits.get('amount', {}).get('min', 5.0),
-                'max_amount': limits.get('amount', {}).get('max', 2_000_000)
+                'max_leverage': max_leverage,
+                'min_amount': min_amount,
+                'max_amount': max_amount,
+                'has_data': True
             }
-        except:
-            return super().fetch_contract_info(symbol)
+        except Exception as e:
+            logger.debug(f"Нет данных контракта для {symbol}, использую стандартные")
+            return {
+                'max_leverage': 100,
+                'min_amount': 5.0,
+                'max_amount': 2_000_000,
+                'has_data': False
+            }
     
     async def close(self):
         await self.exchange.close()
@@ -941,15 +962,15 @@ class FastPumpScanner:
     def format_pump_message(self, signal: Dict, contract_info: Dict = None) -> Tuple[str, InlineKeyboardMarkup]:
         coin = signal['symbol'].split('/')[0].replace('USDT', '')
         
-        line1 = f"🚀 `{coin}` {signal['signal_type']} {signal['pump_dump'][0]['change_percent']:+.1f}% {signal['signal_power']}"
+        line1 = f"🚀 {coin} {signal['signal_type']} {signal['pump_dump'][0]['change_percent']:+.1f}% {signal['signal_power']}"
         
         if contract_info:
             max_lev = contract_info.get('max_leverage', 100)
-            min_amt = contract_info.get('min_amount', 5)
+            min_amt = contract_info.get('min_amount', 5.0)
             max_amt = contract_info.get('max_amount', 2_000_000)
             
             volume_str = ""
-            if signal.get('volume_24h') and signal['volume_24h'] is not None:
+            if signal.get('volume_24h') and signal['volume_24h'] is not None and signal['volume_24h'] > 0:
                 vol = signal['volume_24h']
                 if vol > 1_000_000:
                     volume_str = f" / {vol/1_000_000:.1f}M"
@@ -957,10 +978,12 @@ class FastPumpScanner:
                     volume_str = f" / {vol/1_000:.1f}K"
                 else:
                     volume_str = f" / {vol:.0f}"
+            else:
+                volume_str = " / N/A"
             
             line2 = f"📌 {max_lev}x / {min_amt:.0f}$ / {self._format_compact(max_amt)}{volume_str} / ⚪ 0.000%"
         else:
-            line2 = "📌 Данные контракта недоступны"
+            line2 = "📌 100x / 5$ / 2.0M / N/A / ⚪ 0.000%"
         
         exchange_link = REF_LINKS.get(signal['exchange'], '#')
         line3 = f"💲 Trade: <a href='{exchange_link}'>{signal['exchange']}</a>"
@@ -1016,7 +1039,7 @@ class FastPumpScanner:
         keyboard = []
         row1 = []
         if DISPLAY_SETTINGS['buttons']['copy']:
-            row1.append(InlineKeyboardButton(f"📋 Скопировать {coin}", callback_data=f"copy_{coin}"))
+            row1.append(InlineKeyboardButton(f"📋 Копировать {coin}", callback_data=f"copy_{coin}"))
         if DISPLAY_SETTINGS['buttons']['trade']:
             row1.append(InlineKeyboardButton(f"🚀 Торговать на {signal['exchange']}", url=REF_LINKS.get(signal['exchange'], '#')))
         if row1:
@@ -1081,32 +1104,34 @@ class MultiExchangeScannerBot:
             coin = self.extract_coin(signal['symbol'])
             pump_text = ""
         
-        line1 = f"{main_emoji} `{coin}`{pump_text} {signal['signal_power']}"
+        line1 = f"{main_emoji} {coin}{pump_text} {signal['signal_power']}"
         
         if contract_info:
             max_lev = contract_info.get('max_leverage', 100)
-            min_amt = contract_info.get('min_amount', 5)
+            min_amt = contract_info.get('min_amount', 5.0)
             max_amt = contract_info.get('max_amount', 2_000_000)
             
-            volume_str = ""
-            if signal.get('volume_24h') and signal['volume_24h'] is not None:
+            line2 = f"📌 {max_lev}x / {min_amt:.0f}$ / {self.format_compact(max_amt)}"
+            
+            if signal.get('volume_24h') and signal['volume_24h'] is not None and signal['volume_24h'] > 0:
                 volume = signal['volume_24h']
                 if volume > 1_000_000:
-                    volume_str = f" / {volume/1_000_000:.1f}M"
+                    line2 += f" / {volume/1_000_000:.1f}M"
                 elif volume > 1_000:
-                    volume_str = f" / {volume/1_000:.1f}K"
+                    line2 += f" / {volume/1_000:.1f}K"
                 else:
-                    volume_str = f" / {volume:.0f}"
+                    line2 += f" / {volume:.0f}"
+            else:
+                line2 += f" / N/A"
             
-            funding_str = ""
-            if signal.get('funding_rate') is not None and abs(signal['funding_rate'] * 100) > 0.001:
-                funding = signal['funding_rate'] * 100
-                funding_emoji = "🟢" if funding > 0 else "🔴" if funding < 0 else "⚪"
-                funding_str = f" / {funding_emoji} {funding:.3f}%"
-            
-            line2 = f"📌 {max_lev}x / {min_amt:.0f}$ / {self.format_compact(max_amt)}{volume_str}{funding_str}"
+            funding_rate = signal.get('funding_rate', 0)
+            if funding_rate is None:
+                funding_rate = 0.0
+            funding = funding_rate * 100
+            funding_emoji = "🟢" if funding > 0 else "🔴" if funding < 0 else "⚪"
+            line2 += f" / {funding_emoji} {funding:.3f}%"
         else:
-            line2 = "📌 Данные контракта недоступны"
+            line2 = f"📌 100x / 5$ / 2.0M / N/A / ⚪ 0.000%"
         
         exchange_link = REF_LINKS.get(signal['exchange'], '#')
         line3 = f"💲 Trade: <a href='{exchange_link}'>{signal['exchange']}</a>"
@@ -1170,7 +1195,7 @@ class MultiExchangeScannerBot:
         keyboard = []
         row1 = []
         if DISPLAY_SETTINGS['buttons']['copy']:
-            row1.append(InlineKeyboardButton(f"📋 Скопировать {coin}", callback_data=f"copy_{coin}"))
+            row1.append(InlineKeyboardButton(f"📋 Копировать {coin}", callback_data=f"copy_{coin}"))
         if DISPLAY_SETTINGS['buttons']['trade']:
             row1.append(InlineKeyboardButton(f"🚀 Торговать на {signal['exchange']}", url=REF_LINKS.get(signal['exchange'], '#')))
         if row1:
@@ -1257,7 +1282,7 @@ class MultiExchangeScannerBot:
         all_signals.sort(key=lambda x: x['signal_strength'], reverse=True)
         logger.info(f"🎯 ВСЕГО СИГНАЛОВ: {len(all_signals)}")
         
-        return all_signals[:15]  # Отправляем топ-15
+        return all_signals[:15]
     
     async def fast_pump_scan(self) -> List[Dict]:
         if not FEATURES['advanced']['pump_dump']:
@@ -1373,6 +1398,39 @@ class MultiExchangeScannerBot:
         except Exception as e:
             logger.error(f"❌ Ошибка отправки пампа: {e}")
     
+    async def get_detailed_analysis(self, fetcher, symbol: str, coin: str, signal_time: str = None) -> Tuple[str, InlineKeyboardMarkup]:
+        try:
+            lines = []
+            lines.append(f"📊 *ДЕТАЛЬНЫЙ АНАЛИЗ {coin}*")
+            if signal_time:
+                lines.append(f"⏱️ Время сигнала: `{signal_time}`")
+            lines.append(f"⏱️ Текущее время: `{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}`\n")
+            
+            contract_info = await fetcher.fetch_contract_info(symbol)
+            lines.append("⚡️ *ПАРАМЕТРЫ КОНТРАКТА:*")
+            lines.append(f"└ Макс. плечо: `{contract_info.get('max_leverage', 100)}x`")
+            lines.append(f"└ Мин. вход: `{contract_info.get('min_amount', 5):.2f} USDT`")
+            lines.append(f"└ Макс. вход: `{self.format_compact(contract_info.get('max_amount', 2_000_000))} USDT`")
+            
+            if coin in self.last_signals:
+                signal = self.last_signals[coin]['signal']
+                lines.append("\n📊 *ТЕХНИЧЕСКИЙ АНАЛИЗ:*")
+                for reason in signal['reasons']:
+                    clean_reason = reason.replace("📊 ", "").replace("✅ ", "").replace("🔄 ", "")
+                    lines.append(f"└ {clean_reason}")
+            
+            detailed = "\n".join(lines)
+            
+            keyboard = InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔝 Вернуться к сигналу", callback_data=f"back_{coin}")
+            ]])
+            
+            return detailed, keyboard
+            
+        except Exception as e:
+            logger.error(f"Ошибка детального анализа {symbol}: {e}")
+            return f"❌ Ошибка анализа: {e}", None
+    
     async def run(self):
         logger.info("🤖 Мульти-биржевой бот запущен")
         logger.info(f"📊 Основной анализ: каждые {UPDATE_INTERVAL//60} мин")
@@ -1469,7 +1527,11 @@ class TelegramHandler:
         
         if data.startswith("copy_"):
             coin = data.replace("copy_", "")
-            await query.message.reply_text(f"`{coin}`", parse_mode='Markdown')
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=f"`{coin}`",
+                parse_mode='Markdown'
+            )
             await query.answer(f"✅ {coin} скопирован")
         
         elif data.startswith("refresh_"):
@@ -1492,8 +1554,8 @@ class TelegramHandler:
                 
                 msg, keyboard = self.bot.format_message(signal, contract_info, pump_percent)
                 await query.edit_message_text(
-                    msg, 
-                    parse_mode='HTML', 
+                    text=msg,
+                    parse_mode='HTML',
                     reply_markup=keyboard
                 )
                 await query.answer("🔄 Сигнал обновлен")
@@ -1511,39 +1573,29 @@ class TelegramHandler:
                 
                 for fetcher in self.bot.fetchers.values():
                     if fetcher.name == signal['exchange']:
-                        lines = []
-                        lines.append(f"📊 *ДЕТАЛЬНЫЙ АНАЛИЗ {coin}*")
-                        lines.append(f"⏱️ Время сигнала: `{signal_time}`")
-                        lines.append(f"⏱️ Текущее время: `{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}`\n")
+                        detailed, keyboard = await self.bot.get_detailed_analysis(
+                            fetcher, 
+                            signal['symbol'], 
+                            coin, 
+                            signal_time
+                        )
                         
-                        lines.append("⚡️ *ПАРАМЕТРЫ КОНТРАКТА:*")
-                        contract_info = await fetcher.fetch_contract_info(signal['symbol'])
-                        lines.append(f"└ Макс. плечо: `{contract_info.get('max_leverage', 100)}x`")
-                        lines.append(f"└ Мин. вход: `{contract_info.get('min_amount', 5):.2f} USDT`")
-                        
-                        lines.append("\n📊 *ТЕХНИЧЕСКИЙ АНАЛИЗ:*")
-                        for reason in signal['reasons']:
-                            lines.append(f"└ {reason}")
-                        
-                        detailed = "\n".join(lines)
-                        keyboard = InlineKeyboardMarkup([[
-                            InlineKeyboardButton("🔝 Вернуться к сигналу", callback_data=f"back_{coin}")
-                        ]])
-                        
-                        await query.message.reply_text(
-                            detailed,
+                        await context.bot.send_message(
+                            chat_id=update.effective_chat.id,
+                            text=detailed,
                             parse_mode='Markdown',
                             reply_markup=keyboard
                         )
                         
+                        contract_info = await fetcher.fetch_contract_info(signal['symbol'])
                         pump_percent = None
                         if signal.get('pump_dump') and len(signal['pump_dump']) > 0:
                             pump_percent = signal['pump_dump'][0].get('change_percent')
                         
                         msg, orig_keyboard = self.bot.format_message(signal, contract_info, pump_percent)
                         await query.edit_message_text(
-                            msg, 
-                            parse_mode='HTML', 
+                            text=msg,
+                            parse_mode='HTML',
                             reply_markup=orig_keyboard
                         )
                         await query.answer("📊 Детали загружены")
@@ -1568,8 +1620,8 @@ class TelegramHandler:
                 
                 msg, keyboard = self.bot.format_message(signal, contract_info, pump_percent)
                 await query.edit_message_text(
-                    msg, 
-                    parse_mode='HTML', 
+                    text=msg,
+                    parse_mode='HTML',
                     reply_markup=keyboard
                 )
                 await query.answer("↩️ Возврат к сигналу")
