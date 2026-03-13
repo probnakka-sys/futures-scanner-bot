@@ -9,3 +9,4 @@ aiohttp
 requests
 websockets
 python-bingx>=1.0.0
+matplotlib>=3.5.0
