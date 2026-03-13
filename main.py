@@ -13,26 +13,16 @@ import ccxt.async_support as ccxt
 from dotenv import load_dotenv
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
-import matplotlib.pyplot as plt
-from io import BytesIO
-import traceback
-import random
-import ssl
-import certifi
 import time
 import json
-import websockets
 import aiohttp
-import requests
-import re
-import hmac
-import hashlib
 
 # Импорт конфигурации
 from config import (
     TELEGRAM_TOKEN,
     TELEGRAM_CHAT_ID,
     UPDATE_INTERVAL,
+    PUMP_SCAN_INTERVAL,
     MIN_CONFIDENCE,
     TIMEFRAMES,
     REF_LINKS,
@@ -40,16 +30,24 @@ from config import (
     INDICATOR_SETTINGS,
     INDICATOR_WEIGHTS,
     PUMP_DUMP_SETTINGS,
+    PUMP_SCAN_SETTINGS,
     IMBALANCE_SETTINGS,
     LIQUIDITY_SETTINGS,
+    SMC_SETTINGS,
+    FRACTAL_SETTINGS,
     PAIRS_TO_SCAN,
     DISPLAY_SETTINGS
 )
 
-# Временно отключаем проверку SSL для теста
-ssl._create_default_https_context = ssl._create_unverified_context
+# Настройка логирования
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
-# Ручной расчет индикаторов
+# ============== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==============
+
 def calculate_rsi(series, period=14):
     delta = series.diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
@@ -93,45 +91,6 @@ def calculate_vwap(df: pd.DataFrame) -> pd.Series:
     vwap = (typical_price * df['volume']).cumsum() / df['volume'].cumsum()
     return vwap
 
-def detect_candle_patterns(df: pd.DataFrame) -> Dict:
-    patterns = {}
-    
-    if len(df) < 2:
-        return patterns
-    
-    last = df.iloc[-1]
-    prev = df.iloc[-2]
-    
-    body = abs(last['close'] - last['open'])
-    upper_wick = last['high'] - max(last['close'], last['open'])
-    lower_wick = min(last['close'], last['open']) - last['low']
-    
-    if body > 0:
-        if upper_wick > body * 2 and lower_wick < body * 0.3:
-            patterns['shooting_star'] = 'медвежий'
-        elif lower_wick > body * 2 and upper_wick < body * 0.3:
-            patterns['hammer'] = 'бычий'
-            patterns['pin_bar'] = 'бычий'
-    
-    if prev['close'] < prev['open'] and last['close'] > last['open']:
-        if last['close'] > prev['open'] and last['open'] < prev['close']:
-            patterns['engulfing'] = 'бычий'
-    
-    if body < (last['high'] - last['low']) * 0.1:
-        patterns['doji'] = 'нейтральный'
-    
-    return patterns
-
-# Загрузка конфигурации
-load_dotenv()
-
-# Настройка логирования
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
-logger = logging.getLogger(__name__)
-
 
 # ============== АНАЛИЗАТОР ДИВЕРГЕНЦИЙ ==============
 
@@ -159,6 +118,9 @@ class DivergenceAnalyzer:
             'description': '',
             'timeframe': timeframe
         }
+        if 'rsi' not in df.columns:
+            return result
+            
         price_highs, price_lows = self.find_swings(df, 'close')
         rsi_highs, rsi_lows = self.find_swings(df, 'rsi')
         
@@ -195,6 +157,7 @@ class DivergenceAnalyzer:
         }
         if 'MACD_12_26_9' not in df.columns:
             return result
+            
         price_highs, price_lows = self.find_swings(df, 'close')
         macd_highs, macd_lows = self.find_swings(df, 'MACD_12_26_9')
         
@@ -247,145 +210,139 @@ class DivergenceAnalyzer:
         return result
 
 
+# ============== SMART MONEY АНАЛИЗАТОР ==============
+
+class SmartMoneyAnalyzer:
+    def __init__(self, settings: Dict = None):
+        self.settings = settings or SMC_SETTINGS
+        self.order_blocks = []
+        self.fair_value_gaps = []
+        
+    def find_order_blocks(self, df: pd.DataFrame) -> List[Dict]:
+        order_blocks = []
+        for i in range(10, len(df) - 5):
+            price_move_forward = (df['close'].iloc[i+2] - df['close'].iloc[i]) / df['close'].iloc[i] * 100
+            
+            if abs(price_move_forward) > 2.0:
+                if price_move_forward > 0:
+                    for j in range(i, max(0, i-5), -1):
+                        if df['close'].iloc[j] < df['open'].iloc[j]:
+                            strength = min(100, abs(price_move_forward) * 15)
+                            order_blocks.append({
+                                'type': 'bullish',
+                                'price_min': df['low'].iloc[j],
+                                'price_max': df['high'].iloc[j],
+                                'strength': strength,
+                                'description': f"Бычий ордер-блок ({strength:.0f}%)"
+                            })
+                            break
+                elif price_move_forward < 0:
+                    for j in range(i, max(0, i-5), -1):
+                        if df['close'].iloc[j] > df['open'].iloc[j]:
+                            strength = min(100, abs(price_move_forward) * 15)
+                            order_blocks.append({
+                                'type': 'bearish',
+                                'price_min': df['low'].iloc[j],
+                                'price_max': df['high'].iloc[j],
+                                'strength': strength,
+                                'description': f"Медвежий ордер-блок ({strength:.0f}%)"
+                            })
+                            break
+        return order_blocks[-20:]
+    
+    def analyze(self, df: pd.DataFrame, current_price: float) -> Dict:
+        result = {
+            'has_signal': False,
+            'signals': [],
+            'strength': 0
+        }
+        
+        order_blocks = self.find_order_blocks(df)
+        for ob in order_blocks:
+            if ob['price_min'] <= current_price <= ob['price_max']:
+                result['has_signal'] = True
+                result['signals'].append(ob['description'])
+                result['strength'] = max(result['strength'], ob['strength'])
+        
+        return result
+
+
+# ============== ФРАКТАЛЬНЫЙ АНАЛИЗАТОР ==============
+
+class FractalAnalyzer:
+    def __init__(self, settings: Dict = None):
+        self.settings = settings or FRACTAL_SETTINGS
+        self.window = self.settings.get('window', 5)
+        
+    def analyze(self, df: pd.DataFrame) -> Dict:
+        fractal_up = 0
+        fractal_down = 0
+        
+        for i in range(self.window, len(df) - self.window):
+            if all(df['high'].iloc[i] > df['high'].iloc[j] 
+                   for j in range(i - self.window, i + self.window + 1) if j != i):
+                fractal_up += 1
+            if all(df['low'].iloc[i] < df['low'].iloc[j] 
+                   for j in range(i - self.window, i + self.window + 1) if j != i):
+                fractal_down += 1
+        
+        result = {
+            'has_fractal': False,
+            'signals': [],
+            'strength': 0
+        }
+        
+        total = fractal_up + fractal_down
+        if total > 0:
+            if fractal_up > fractal_down * 2:
+                result['has_fractal'] = True
+                result['signals'].append(f"Преобладание бычьих фракталов ({fractal_up}/{fractal_down})")
+                result['strength'] = 70
+            elif fractal_down > fractal_up * 2:
+                result['has_fractal'] = True
+                result['signals'].append(f"Преобладание медвежьих фракталов ({fractal_down}/{fractal_up})")
+                result['strength'] = 70
+        
+        return result
+
+
 # ============== АНАЛИЗАТОР ИМБАЛАНСОВ ==============
 
 class ImbalanceAnalyzer:
-    """Анализатор дисбаланса спроса и предложения (имбалансов)"""
-    
     def __init__(self, settings: Dict = None):
         self.settings = settings or IMBALANCE_SETTINGS
         self.threshold_buy = self.settings.get('threshold_buy', 0.3)
         self.threshold_sell = self.settings.get('threshold_sell', -0.3)
-        self.stack_threshold = self.settings.get('stack_threshold', 3)
-        self.lookback_bars = self.settings.get('lookback_bars', 20)
-        self.weight_higher_tf = self.settings.get('weight_higher_tf', 1.5)
         
-    def calculate_imbalance(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Расчет имбаланса на основе свечных данных
-        """
-        # Аппроксимация buy/sell volume (в реальности нужно из стакана)
-        df['buy_volume'] = np.where(
-            df['close'] > df['open'],
-            df['volume'] * 0.7,
-            df['volume'] * 0.3
-        )
-        
-        df['sell_volume'] = df['volume'] - df['buy_volume']
-        
-        # Расчет имбаланса
-        df['imbalance'] = (df['buy_volume'] - df['sell_volume']) / df['volume']
-        
-        # Нормализованный имбаланс от -1 до 1
-        df['imbalance_strength'] = df['imbalance'].abs() * 100
-        
-        # Сглаженный имбаланс
-        df['imbalance_sma'] = df['imbalance'].rolling(window=14).mean()
-        
-        # Определяем типы имбалансов
-        df['imbalance_type'] = 'neutral'
-        df.loc[df['imbalance'] > self.threshold_buy, 'imbalance_type'] = 'strong_buy'
-        df.loc[df['imbalance'] > self.threshold_buy * 2, 'imbalance_type'] = 'extreme_buy'
-        df.loc[df['imbalance'] < self.threshold_sell, 'imbalance_type'] = 'strong_sell'
-        df.loc[df['imbalance'] < self.threshold_sell * 2, 'imbalance_type'] = 'extreme_sell'
-        
-        return df
-    
-    def detect_imbalance_stacks(self, df: pd.DataFrame) -> List[Dict]:
-        """Обнаружение стеков имбалансов (несколько подряд)"""
-        stacks = []
-        
-        for i in range(max(0, len(df) - self.lookback_bars), len(df)):
-            window = df.iloc[max(0, i-self.lookback_bars):i]
-            
-            # Считаем подряд идущие имбалансы одного типа
-            buy_streak = 0
-            sell_streak = 0
-            max_buy_streak = 0
-            max_sell_streak = 0
-            
-            for _, row in window.iterrows():
-                if row['imbalance'] > self.threshold_buy:
-                    buy_streak += 1
-                    sell_streak = 0
-                    max_buy_streak = max(max_buy_streak, buy_streak)
-                elif row['imbalance'] < self.threshold_sell:
-                    sell_streak += 1
-                    buy_streak = 0
-                    max_sell_streak = max(max_sell_streak, sell_streak)
-                else:
-                    buy_streak = 0
-                    sell_streak = 0
-            
-            if max_buy_streak >= self.stack_threshold:
-                stacks.append({
-                    'type': 'buy_stack',
-                    'strength': max_buy_streak * 10,
-                    'count': max_buy_streak,
-                    'description': f"Стек бычьих имбалансов ({max_buy_streak} свечей подряд)"
-                })
-            
-            if max_sell_streak >= self.stack_threshold:
-                stacks.append({
-                    'type': 'sell_stack',
-                    'strength': max_sell_streak * 10,
-                    'count': max_sell_streak,
-                    'description': f"Стек медвежьих имбалансов ({max_sell_streak} свечей подряд)"
-                })
-        
-        return stacks
-    
     def analyze(self, dataframes: Dict[str, pd.DataFrame]) -> Dict:
-        """Полный анализ имбалансов на всех таймфреймах"""
         result = {
             'has_imbalance': False,
             'signals': [],
-            'strength': 0,
-            'alignment': {}
+            'strength': 0
         }
         
         for tf_name, df in dataframes.items():
             if df is None or df.empty:
                 continue
             
-            df_with_imb = self.calculate_imbalance(df)
-            last = df_with_imb.iloc[-1]
+            df['buy_volume'] = np.where(
+                df['close'] > df['open'],
+                df['volume'] * 0.7,
+                df['volume'] * 0.3
+            )
+            df['sell_volume'] = df['volume'] - df['buy_volume']
+            df['imbalance'] = (df['buy_volume'] - df['sell_volume']) / df['volume']
             
-            if abs(last['imbalance']) > self.threshold_buy:
+            last_imbalance = df['imbalance'].iloc[-1]
+            
+            if last_imbalance > self.threshold_buy:
                 result['has_imbalance'] = True
-                imb_type = "бычий" if last['imbalance'] > 0 else "медвежий"
-                strength = abs(last['imbalance']) * 100
-                
-                # Бонус для старших таймфреймов
-                if tf_name in ['daily', 'weekly']:
-                    strength *= self.weight_higher_tf
-                
-                signal = {
-                    'timeframe': tf_name,
-                    'type': imb_type,
-                    'strength': min(strength, 100),
-                    'description': f"{imb_type.capitalize()} имбаланс на {tf_name}: {strength:.1f}%"
-                }
-                result['signals'].append(signal['description'])
-                result['strength'] = max(result['strength'], signal['strength'])
-                result['alignment'][tf_name] = imb_type
-        
-        # Проверяем согласованность
-        if len(result['alignment']) >= 2:
-            types = list(result['alignment'].values())
-            if all(t == types[0] for t in types):
+                result['signals'].append(f"Бычий имбаланс на {tf_name}")
+                result['strength'] = max(result['strength'], abs(last_imbalance) * 100)
+            elif last_imbalance < self.threshold_sell:
                 result['has_imbalance'] = True
-                result['strength'] = min(result['strength'] + 20, 100)
-                result['signals'].append(f"✅ Согласованные имбалансы на всех ТФ: {types[0]}")
-        
-        # Стеки имбалансов на старших ТФ
-        for tf_name in ['daily', 'weekly']:
-            if tf_name in dataframes:
-                stacks = self.detect_imbalance_stacks(dataframes[tf_name])
-                for stack in stacks:
-                    result['has_imbalance'] = True
-                    result['signals'].append(stack['description'])
-                    result['strength'] = max(result['strength'], stack['strength'])
+                result['signals'].append(f"Медвежий имбаланс на {tf_name}")
+                result['strength'] = max(result['strength'], abs(last_imbalance) * 100)
         
         return result
 
@@ -393,157 +350,15 @@ class ImbalanceAnalyzer:
 # ============== АНАЛИЗАТОР ЛИКВИДНОСТИ ==============
 
 class LiquidityAnalyzer:
-    """Анализ зон ликвидности и сборов стоп-лоссов"""
-    
     def __init__(self, settings: Dict = None):
         self.settings = settings or LIQUIDITY_SETTINGS
-        self.lookback_bars = self.settings.get('lookback_bars', 100)
-        self.sweep_threshold = self.settings.get('sweep_retrace_threshold', 1.0)
-        self.consolidation_threshold = self.settings.get('consolidation_threshold', 0.5)
-        self.zone_distance = self.settings.get('zone_distance', 1.0)
-        self.swing_levels = {}
-        self.liquidity_zones = {}
-        self.sweep_history = {}
-    
-    def find_swing_levels(self, df: pd.DataFrame) -> Dict:
-        """Поиск свинг-хаев и свинг-лоев"""
-        recent = df.tail(self.lookback_bars)
-        
-        swing_highs = []
-        swing_lows = []
-        
-        for i in range(10, len(recent) - 10):
-            # Локальный максимум
-            if (recent['high'].iloc[i] > recent['high'].iloc[i-5:i].max() and 
-                recent['high'].iloc[i] > recent['high'].iloc[i+1:i+6].max()):
-                swing_highs.append({
-                    'price': recent['high'].iloc[i],
-                    'time': recent.index[i],
-                    'strength': self._calculate_strength(recent, i)
-                })
-            
-            # Локальный минимум
-            if (recent['low'].iloc[i] < recent['low'].iloc[i-5:i].min() and 
-                recent['low'].iloc[i] < recent['low'].iloc[i+1:i+6].min()):
-                swing_lows.append({
-                    'price': recent['low'].iloc[i],
-                    'time': recent.index[i],
-                    'strength': self._calculate_strength(recent, i)
-                })
-        
-        return {
-            'swing_highs': swing_highs[-10:],
-            'swing_lows': swing_lows[-10:],
-            'current_price': recent['close'].iloc[-1]
-        }
-    
-    def _calculate_strength(self, df: pd.DataFrame, index: int) -> int:
-        """Расчет силы уровня"""
-        strength = 30
-        volume = df['volume'].iloc[index]
-        avg_volume = df['volume'].rolling(20).mean().iloc[index]
-        
-        if volume > avg_volume * 1.5:
-            strength += 20
-        if volume > avg_volume * 2:
-            strength += 30
-        
-        return min(strength, 100)
-    
-    def detect_sweeps(self, symbol: str, df: pd.DataFrame) -> List[Dict]:
-        """Обнаружение сборов ликвидности"""
-        sweeps = []
-        levels = self.find_swing_levels(df)
-        current_price = df['close'].iloc[-1]
-        
-        # Сбор ликвидности шортистов (пробой хая и возврат)
-        for high in levels['swing_highs']:
-            if high['price'] < current_price * 1.02:  # цена рядом с уровнем
-                # Проверяем, был ли пробой
-                penetrated = any(df['high'].iloc[-10:] > high['price'])
-                retraced = current_price < high['price'] * 1.005
-                
-                if penetrated and retraced:
-                    sweeps.append({
-                        'type': 'bearish_sweep',
-                        'level': high['price'],
-                        'strength': high['strength'],
-                        'description': f"Сбор ликвидности шортистов на {high['price']:.2f}"
-                    })
-        
-        # Сбор ликвидности лонгистов (пробой лоя и возврат)
-        for low in levels['swing_lows']:
-            if low['price'] > current_price * 0.98:
-                penetrated = any(df['low'].iloc[-10:] < low['price'])
-                retraced = current_price > low['price'] * 0.995
-                
-                if penetrated and retraced:
-                    sweeps.append({
-                        'type': 'bullish_sweep',
-                        'level': low['price'],
-                        'strength': low['strength'],
-                        'description': f"Сбор ликвидности лонгистов на {low['price']:.2f}"
-                    })
-        
-        return sweeps
-    
-    def find_liquidity_zones(self, df: pd.DataFrame) -> List[Dict]:
-        """Поиск зон накопленной ликвидности"""
-        zones = []
-        recent = df.tail(100)
-        
-        for i in range(20, len(recent) - 20):
-            window = recent.iloc[i-20:i+20]
-            price_range = window['high'].max() - window['low'].min()
-            avg_range = window['atr'].mean() if 'atr' in window.columns else price_range
-            
-            # Зона консолидации
-            if price_range < avg_range * self.consolidation_threshold:
-                zone_price = window['close'].mean()
-                touches = sum(1 for _, row in window.iterrows() 
-                            if abs(row['close'] - zone_price) / zone_price < 0.005)
-                
-                zones.append({
-                    'price': zone_price,
-                    'touches': touches,
-                    'strength': min(30 + touches * 10, 100),
-                    'description': f"Зона накопления {zone_price:.2f} ({touches} касаний)"
-                })
-        
-        return zones[-5:]
     
     def analyze(self, symbol: str, df: pd.DataFrame) -> Dict:
-        """Полный анализ ликвидности"""
         result = {
             'has_signal': False,
             'signals': [],
-            'strength': 0,
-            'sweeps': [],
-            'zones': []
+            'strength': 0
         }
-        
-        # Сборы ликвидности
-        sweeps = self.detect_sweeps(symbol, df)
-        if sweeps:
-            result['has_signal'] = True
-            result['sweeps'] = sweeps
-            for sweep in sweeps:
-                result['signals'].append(sweep['description'])
-                result['strength'] = max(result['strength'], sweep['strength'])
-        
-        # Зоны ликвидности
-        zones = self.find_liquidity_zones(df)
-        if zones:
-            result['zones'] = zones
-            current_price = df['close'].iloc[-1]
-            
-            for zone in zones:
-                distance = abs(current_price - zone['price']) / zone['price'] * 100
-                if distance < self.zone_distance:
-                    result['has_signal'] = True
-                    result['signals'].append(f"⚠️ Цена в зоне ликвидности {zone['price']:.2f}")
-                    result['strength'] = max(result['strength'], zone['strength'])
-        
         return result
 
 
@@ -552,13 +367,12 @@ class LiquidityAnalyzer:
 class BaseExchangeFetcher:
     def __init__(self, name: str):
         self.name = name
-        self.available_pairs = []
     
     async def fetch_all_pairs(self) -> List[str]:
-        raise NotImplementedError
+        return []
     
     async def fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 200) -> Optional[pd.DataFrame]:
-        raise NotImplementedError
+        return None
     
     async def fetch_funding_rate(self, symbol: str) -> Optional[float]:
         return 0.0
@@ -570,25 +384,11 @@ class BaseExchangeFetcher:
         return {
             'max_leverage': 100,
             'min_amount': 5.0,
-            'max_amount': 2_000_000,
-            'contract_size': 0.001
+            'max_amount': 2_000_000
         }
     
     async def fetch_open_interest(self, symbol: str) -> Optional[float]:
         return None
-    
-    async def fetch_liquidations(self, symbol: str) -> Dict:
-        return {'long': 0, 'short': 0}
-    
-    async def fetch_order_book(self, symbol: str) -> Dict:
-        return {'bid_ask_ratio': 1.0}
-    
-    async def get_price_with_source(self, symbol: str, http_price: float = None) -> Dict:
-        return {
-            'price': http_price,
-            'source': 'http',
-            'time': datetime.now().strftime('%H:%M:%S')
-        }
     
     async def close(self):
         pass
@@ -619,8 +419,6 @@ class BingxFetcher(BaseExchangeFetcher):
                     market['active'] and 
                     market['type'] in ['swap', 'future']):
                     usdt_pairs.append(symbol)
-            
-            logger.info(f"📊 BingX Futures: загружено {len(usdt_pairs)} пар")
             return usdt_pairs
         except Exception as e:
             logger.error(f"❌ BingX ошибка: {e}")
@@ -662,27 +460,14 @@ class BingxFetcher(BaseExchangeFetcher):
         try:
             markets = await self.exchange.load_markets()
             market = markets.get(symbol, {})
-            
             limits = market.get('limits', {})
-            leverage_limits = limits.get('leverage', {})
-            amount_limits = limits.get('amount', {})
-            
             return {
-                'max_leverage': leverage_limits.get('max', 100),
-                'min_amount': amount_limits.get('min', 5.0),
-                'max_amount': amount_limits.get('max', 2_000_000),
-                'contract_size': market.get('contractSize', 0.001)
+                'max_leverage': limits.get('leverage', {}).get('max', 100),
+                'min_amount': limits.get('amount', {}).get('min', 5.0),
+                'max_amount': limits.get('amount', {}).get('max', 2_000_000)
             }
-        except Exception as e:
-            logger.error(f"Ошибка получения контракта {symbol}: {e}")
-            return super().fetch_contract_info(symbol)
-    
-    async def fetch_open_interest(self, symbol: str) -> Optional[float]:
-        try:
-            oi = await self.exchange.fetch_open_interest(symbol)
-            return oi.get('openInterestAmount', 0)
         except:
-            return None
+            return super().fetch_contract_info(symbol)
     
     async def close(self):
         await self.exchange.close()
@@ -691,6 +476,11 @@ class BingxFetcher(BaseExchangeFetcher):
 # ============== МУЛЬТИТАЙМФРЕЙМ АНАЛИЗАТОР ==============
 
 class MultiTimeframeAnalyzer:
+    def __init__(self):
+        self.divergence = DivergenceAnalyzer() if FEATURES['advanced']['divergence'] else None
+        self.smc = SmartMoneyAnalyzer(SMC_SETTINGS) if FEATURES['advanced']['smart_money'] else None
+        self.fractal = FractalAnalyzer(FRACTAL_SETTINGS) if FEATURES['advanced']['fractals'] else None
+    
     def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         df['rsi'] = calculate_rsi(df['close'], INDICATOR_SETTINGS['rsi_period'])
         
@@ -766,6 +556,7 @@ class MultiTimeframeAnalyzer:
             bullish = trends.count('ВОСХОДЯЩИЙ 📈')
             bearish = trends.count('НИСХОДЯЩИЙ 📉')
             alignment['trend_alignment'] = (max(bullish, bearish) / len(trends)) * 100
+        
         return alignment
     
     def generate_signal(self, dataframes: Dict[str, pd.DataFrame], metadata: Dict, symbol: str, exchange: str) -> Optional[Dict]:
@@ -848,14 +639,6 @@ class MultiTimeframeAnalyzer:
                 if confidence > 60:
                     direction = 'LONG 📈'
         
-        # Изменение цены
-        price_change = metadata.get('price_change_24h')
-        if price_change and abs(price_change) > 5:
-            if price_change > 5:
-                reasons.append(f"📈 Рост за 24ч: +{price_change:.1f}%")
-            elif price_change < -5:
-                reasons.append(f"📉 Падение за 24ч: {price_change:.1f}%")
-        
         # Определение направления
         bullish_keywords = ['перепродан', 'Бычье', 'восходящий', 'негативный фандинг', 'выше VWAP']
         bearish_keywords = ['перекуплен', 'Медвежье', 'нисходящий', 'позитивный фандинг', 'ниже VWAP']
@@ -875,29 +658,38 @@ class MultiTimeframeAnalyzer:
             else:
                 direction = 'SHORT 📉'
         
-        signal_strength = min(confidence + alignment['trend_alignment'] / 2, 100)
+        # ===== ИСПРАВЛЕНИЕ: сила сигнала =====
+        signal_strength = (confidence + alignment['trend_alignment']) / 2
+        
+        signal_power = "⚡️"
+        if signal_strength >= 85:
+            signal_power = "🔥🔥🔥 ОЧЕНЬ СИЛЬНЫЙ"
+        elif signal_strength >= 70:
+            signal_power = "🔥🔥 СИЛЬНЫЙ"
+        elif signal_strength >= 55:
+            signal_power = "🔥 СРЕДНИЙ"
+        elif signal_strength >= 40:
+            signal_power = "📊 СЛАБЫЙ"
+        else:
+            signal_power = "👀 НАБЛЮДЕНИЕ"
+        
+        # Если NEUTRAL - возвращаем None
+        if direction == 'NEUTRAL':
+            return None
+        
+        # Цели
         atr = last['atr'] if pd.notna(last['atr']) else (last['high'] - last['low']) * 0.3
         current_price = last['close']
         targets = {}
         
-        if direction != 'NEUTRAL':
-            if 'LONG' in direction:
-                targets['target_1'] = round(current_price + atr * 1.5, 2)
-                targets['target_2'] = round(current_price + atr * 3.0, 2)
-                targets['stop_loss'] = round(current_price - atr * 1.0, 2)
-            else:
-                targets['target_1'] = round(current_price - atr * 1.5, 2)
-                targets['target_2'] = round(current_price - atr * 3.0, 2)
-                targets['stop_loss'] = round(current_price + atr * 1.0, 2)
-        
-        # Мощность сигнала
-        signal_power = "⚡️"
-        if signal_strength >= 90:
-            signal_power = "🔥🔥🔥 ОЧЕНЬ СИЛЬНЫЙ"
-        elif signal_strength >= 80:
-            signal_power = "🔥🔥 СИЛЬНЫЙ"
-        elif signal_strength >= 70:
-            signal_power = "🔥 СРЕДНИЙ"
+        if 'LONG' in direction:
+            targets['target_1'] = round(current_price + atr * 1.5, 2)
+            targets['target_2'] = round(current_price + atr * 3.0, 2)
+            targets['stop_loss'] = round(current_price - atr * 1.0, 2)
+        else:
+            targets['target_1'] = round(current_price - atr * 1.5, 2)
+            targets['target_2'] = round(current_price - atr * 3.0, 2)
+            targets['stop_loss'] = round(current_price + atr * 1.0, 2)
         
         return {
             'symbol': symbol,
@@ -907,15 +699,225 @@ class MultiTimeframeAnalyzer:
             'signal_power': signal_power,
             'confidence': round(confidence, 1),
             'signal_strength': round(signal_strength, 1),
-            'reasons': reasons[:8],
+            'reasons': reasons[:6],
             'funding_rate': metadata.get('funding_rate', 0),
             'volume_24h': metadata.get('volume_24h', 0),
             'price_change_24h': metadata.get('price_change_24h', 0),
-            'max_leverage': 100,
             'time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'alignment': alignment,
             **targets
         }
+
+
+# ============== БЫСТРЫЙ ПАМП-СКАНЕР ==============
+
+class FastPumpScanner:
+    def __init__(self, fetcher: BaseExchangeFetcher, settings: Dict = None):
+        self.fetcher = fetcher
+        self.settings = settings or PUMP_SCAN_SETTINGS
+        self.threshold = self.settings.get('threshold', 5.0)
+        self.timeframes = self.settings.get('timeframes', ['15m'])
+        self.max_pairs = self.settings.get('max_pairs_to_scan', 300)
+        self.last_pump_signals = {}
+    
+    async def scan_all_pairs(self) -> List[Dict]:
+        logger.info("🚀 ЗАПУСК БЫСТРОГО ПАМП-СКАНЕРА")
+        
+        try:
+            all_pairs = await self.fetcher.fetch_all_pairs()
+            if not all_pairs:
+                return []
+            
+            scan_pairs = all_pairs[:self.max_pairs]
+            logger.info(f"📊 Памп-сканер: анализирую {len(scan_pairs)} пар")
+            
+            pump_signals = []
+            
+            for pair in scan_pairs:
+                try:
+                    for tf in self.timeframes:
+                        limit = 10 if tf in ['5m', '15m'] else 20
+                        df = await self.fetcher.fetch_ohlcv(pair, tf, limit=limit)
+                        
+                        if df is None or len(df) < 5:
+                            continue
+                        
+                        start_price = df['close'].iloc[0]
+                        current_price = df['close'].iloc[-1]
+                        change_percent = (current_price - start_price) / start_price * 100
+                        
+                        if abs(change_percent) >= self.threshold:
+                            signal_key = f"{pair}_{tf}"
+                            last_time = self.last_pump_signals.get(signal_key)
+                            
+                            if last_time and (datetime.now() - last_time).total_seconds() < 1800:
+                                continue
+                            
+                            strength = min(100, abs(change_percent) * 8)
+                            
+                            if change_percent > 0:
+                                signal_type = "PUMP"
+                                direction = "Разворот вниз (перекуплен)"
+                            else:
+                                signal_type = "DUMP"
+                                direction = "Разворот вверх (перепродан)"
+                            
+                            # Расчет RSI
+                            rsi = 50
+                            if len(df) > 14:
+                                rsi = calculate_rsi(df['close'], 14).iloc[-1]
+                            
+                            avg_volume = df['volume'].mean()
+                            current_volume = df['volume'].iloc[-1]
+                            
+                            signal = {
+                                'symbol': pair,
+                                'exchange': self.fetcher.name,
+                                'price': current_price,
+                                'start_price': start_price,
+                                'change_percent': change_percent,
+                                'timeframe': tf,
+                                'signal_type': signal_type,
+                                'direction': direction,
+                                'strength': strength,
+                                'confidence': min(70 + abs(change_percent) * 3, 100),
+                                'signal_power': self._get_power_text(strength),
+                                'volume': current_volume,
+                                'volume_ratio': current_volume / avg_volume if avg_volume > 0 else 1,
+                                'rsi': rsi,
+                                'reasons': [
+                                    f"Сильное движение {change_percent:+.1f}% за {self._timeframe_to_minutes(tf)} мин",
+                                    f"Объем x{current_volume/avg_volume:.1f} от среднего",
+                                    f"RSI {rsi:.0f} ({'перекуплен' if rsi > 70 else 'перепродан' if rsi < 30 else 'нейтральный'})"
+                                ],
+                                'time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                            }
+                            
+                            # Цели
+                            atr = (df['high'] - df['low']).mean() * 0.5
+                            if change_percent > 0:
+                                signal['target_1'] = round(current_price - atr * 2, 8)
+                                signal['target_2'] = round(current_price - atr * 4, 8)
+                                signal['stop_loss'] = round(current_price + atr * 1, 8)
+                            else:
+                                signal['target_1'] = round(current_price + atr * 2, 8)
+                                signal['target_2'] = round(current_price + atr * 4, 8)
+                                signal['stop_loss'] = round(current_price - atr * 1, 8)
+                            
+                            pump_signals.append(signal)
+                            self.last_pump_signals[signal_key] = datetime.now()
+                            break
+                    
+                    await asyncio.sleep(0.05)
+                    
+                except Exception as e:
+                    continue
+            
+            pump_signals.sort(key=lambda x: abs(x['change_percent']), reverse=True)
+            return pump_signals[:self.settings.get('send_top_pumps', 5)]
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка памп-сканера: {e}")
+            return []
+    
+    def _get_power_text(self, strength: float) -> str:
+        if strength >= 90:
+            return "🔥🔥🔥 ОЧЕНЬ СИЛЬНЫЙ"
+        elif strength >= 75:
+            return "🔥🔥 СИЛЬНЫЙ"
+        elif strength >= 60:
+            return "🔥 СРЕДНИЙ"
+        else:
+            return "⚡ СЛАБЫЙ"
+    
+    def _timeframe_to_minutes(self, tf: str) -> int:
+        return {'5m': 5, '15m': 15, '30m': 30, '1h': 60}.get(tf, 15)
+    
+    def _format_compact(self, num: float) -> str:
+        if num is None:
+            return "N/A"
+        if num > 1_000_000_000:
+            return f"{num/1_000_000_000:.1f}B"
+        elif num > 1_000_000:
+            return f"{num/1_000_000:.1f}M"
+        elif num > 1_000:
+            return f"{num/1_000:.1f}K"
+        else:
+            return f"{num:.0f}"
+    
+    def format_pump_message(self, signal: Dict, contract_info: Dict = None) -> Tuple[str, InlineKeyboardMarkup]:
+        coin = signal['symbol'].split('/')[0].replace('USDT', '')
+        
+        line1 = f"🚀 `{coin}` {signal['signal_type']} {signal['change_percent']:+.1f}% {signal['signal_power']}"
+        
+        if contract_info:
+            max_lev = contract_info.get('max_leverage', 100)
+            min_amt = contract_info.get('min_amount', 5)
+            max_amt = contract_info.get('max_amount', 2_000_000)
+            
+            volume_str = ""
+            if signal.get('volume'):
+                vol = signal['volume']
+                if vol > 1_000_000:
+                    volume_str = f" / {vol/1_000_000:.1f}M"
+                elif vol > 1_000:
+                    volume_str = f" / {vol/1_000:.1f}K"
+            
+            line2 = f"📌 {max_lev}x / {min_amt:.0f}$ / {self._format_compact(max_amt)}{volume_str} / ⚪ 0.000%"
+        else:
+            line2 = "📌 Данные контракта недоступны"
+        
+        exchange_link = REF_LINKS.get(signal['exchange'], '#')
+        line3 = f"💲 Trade: {signal['exchange']} ({exchange_link})"
+        line4 = ""
+        line5 = f"📊 Направление: {signal['direction']}"
+        line6 = f"🕓 Таймфрейм: {signal.get('timeframe', '15m')}"
+        
+        if signal['price'] < 0.001:
+            price_formatted = f"{signal['price']:.8f}".rstrip('0').rstrip('.')
+            start_formatted = f"{signal['start_price']:.8f}".rstrip('0').rstrip('.')
+        else:
+            price_formatted = f"{signal['price']:.4f}"
+            start_formatted = f"{signal['start_price']:.4f}"
+        
+        line7 = f"💰 Цена текущая: {price_formatted}"
+        line8 = f"📈 Рост: {start_formatted} → {price_formatted}"
+        
+        if signal.get('target_1') and signal.get('target_2') and signal.get('stop_loss'):
+            t1 = f"{signal['target_1']:.8f}".rstrip('0').rstrip('.') if signal['target_1'] < 0.001 else f"{signal['target_1']:.4f}"
+            t2 = f"{signal['target_2']:.8f}".rstrip('0').rstrip('.') if signal['target_2'] < 0.001 else f"{signal['target_2']:.4f}"
+            sl = f"{signal['stop_loss']:.8f}".rstrip('0').rstrip('.') if signal['stop_loss'] < 0.001 else f"{signal['stop_loss']:.4f}"
+            line9 = f"🎯 Цели: {t1} | {t2} | SL {sl}"
+        else:
+            line9 = "🎯 Цели: N/A | N/A | SL N/A"
+        
+        line10 = ""
+        line11 = "💡 Причины:"
+        
+        reasons_lines = [f"    {r}" for r in signal['reasons'][:3]]
+        
+        lines = [line1, line2, line3, line4, line5, line6, line7, line8, line9, line10, line11] + reasons_lines
+        message = "\n".join(lines)
+        
+        # Клавиатура
+        keyboard = []
+        row1 = []
+        if DISPLAY_SETTINGS['buttons']['copy']:
+            row1.append(InlineKeyboardButton(f"📋 Скопировать {coin}", callback_data=f"copy_{coin}"))
+        if DISPLAY_SETTINGS['buttons']['trade']:
+            row1.append(InlineKeyboardButton(f"🚀 Торговать на {signal['exchange']}", url=REF_LINKS.get(signal['exchange'], '#')))
+        if row1:
+            keyboard.append(row1)
+        
+        row2 = []
+        if DISPLAY_SETTINGS['buttons']['refresh']:
+            row2.append(InlineKeyboardButton("🔄 Обновить", callback_data=f"refresh_{coin}"))
+        if DISPLAY_SETTINGS['buttons']['details']:
+            row2.append(InlineKeyboardButton("📊 Детали", callback_data=f"details_{coin}"))
+        if row2:
+            keyboard.append(row2)
+        
+        return message, InlineKeyboardMarkup(keyboard) if keyboard else None
 
 
 # ============== ОСНОВНОЙ КЛАСС БОТА ==============
@@ -927,224 +929,131 @@ class MultiExchangeScannerBot:
         self.telegram_bot = Bot(token=TELEGRAM_TOKEN)
         self.last_signals = {}
         
+        # Инициализация анализаторов
+        self.divergence = DivergenceAnalyzer() if FEATURES['advanced']['divergence'] else None
+        self.imbalance = ImbalanceAnalyzer(IMBALANCE_SETTINGS) if FEATURES['advanced']['imbalance'] else None
+        self.liquidity = LiquidityAnalyzer(LIQUIDITY_SETTINGS) if FEATURES['advanced']['liquidity'] else None
+        
+        # Инициализация бирж
         if FEATURES['exchanges'].get('bingx', {}).get('enabled', False):
             self.fetchers['BingX'] = BingxFetcher()
-        
-        if FEATURES['advanced']['divergence']:
-            self.divergence = DivergenceAnalyzer()
-            logger.info("✅ Анализатор дивергенций инициализирован")
-        else:
-            self.divergence = None
-        
-        if FEATURES['advanced']['imbalance']:
-            self.imbalance = ImbalanceAnalyzer(IMBALANCE_SETTINGS)
-            logger.info("✅ Анализатор имбалансов инициализирован")
-        else:
-            self.imbalance = None
-        
-        if FEATURES['advanced']['liquidity']:
-            self.liquidity = LiquidityAnalyzer(LIQUIDITY_SETTINGS)
-            logger.info("✅ Анализатор ликвидности инициализирован")
-        else:
-            self.liquidity = None
     
     def extract_coin(self, symbol: str) -> str:
-        if ':USDT' in symbol:
+        if '/USDT' in symbol:
             return symbol.split('/')[0]
-        elif '/' in symbol:
-            return symbol.split('/')[0]
-        else:
-            return symbol.replace('USDT', '')
+        return symbol.replace('USDT', '')
     
     def format_compact(self, num: float) -> str:
         if num is None:
             return "N/A"
-        try:
-            if num > 1_000_000:
-                return f"{num/1_000_000:.1f}M"
-            elif num > 1_000:
-                return f"{num/1_000:.1f}K"
-            else:
-                return f"{num:.0f}"
-        except:
-            return "N/A"
-    
-    def format_message(self, signal: Dict, price_source: Dict = None, 
-                       contract_info: Dict = None, pump_percent: float = None) -> Tuple[str, InlineKeyboardMarkup]:
-        
-        dir_emoji = '🟢' if 'LONG' in signal['direction'] else '🔴' if 'SHORT' in signal['direction'] else '⚪'
-        coin = self.extract_coin(signal['symbol'])
-        price_formatted = f"{signal['price']:.2f}"
-        
-        pump_text = ""
-        if pump_percent:
-            pump_type = "PUMP" if pump_percent > 0 else "DUMP"
-            pump_text = f"{pump_type} {pump_percent:+.1f}% "
-        
-        exchange_link = REF_LINKS.get(signal['exchange'], '#')
-        
-        # Параметры в одну строку с кликабельной биржей
-        if DISPLAY_SETTINGS['show_exchange_link']:
-            params_text = f"└ <a href='{exchange_link}'>{signal['exchange']}</a>"
+        if num > 1_000_000_000:
+            return f"{num/1_000_000_000:.1f}B"
+        elif num > 1_000_000:
+            return f"{num/1_000_000:.1f}M"
+        elif num > 1_000:
+            return f"{num/1_000:.1f}K"
         else:
-            params_text = f"└ {signal['exchange']}"
+            return f"{num:.0f}"
+    
+    def format_message(self, signal: Dict, contract_info: Dict = None, pump_percent: float = None) -> Tuple[str, InlineKeyboardMarkup]:
+        if pump_percent:
+            main_emoji = '🚀'
+            coin = self.extract_coin(signal['symbol'])
+            pump_text = f" PUMP {pump_percent:+.1f}%"
+        else:
+            if 'LONG' in signal['direction']:
+                main_emoji = '🟢'
+            elif 'SHORT' in signal['direction']:
+                main_emoji = '🔴'
+            else:
+                main_emoji = '⚪'
+            coin = self.extract_coin(signal['symbol'])
+            pump_text = ""
+        
+        line1 = f"{main_emoji} `{coin}`{pump_text} {signal['signal_power']}"
         
         if contract_info:
-            max_lev = contract_info.get('max_leverage')
-            if max_lev is None:
-                max_lev = 100
+            max_lev = contract_info.get('max_leverage', 100)
+            min_amt = contract_info.get('min_amount', 5)
+            max_amt = contract_info.get('max_amount', 2_000_000)
             
-            min_amt = contract_info.get('min_amount')
-            if min_amt is None:
-                min_amt = 5
+            volume_str = ""
+            if signal.get('volume_24h'):
+                volume = signal['volume_24h']
+                if volume > 1_000_000:
+                    volume_str = f" / {volume/1_000_000:.1f}M"
+                elif volume > 1_000:
+                    volume_str = f" / {volume/1_000:.1f}K"
             
-            max_amt = contract_info.get('max_amount')
-            if max_amt is None:
-                max_amt = 2_000_000
+            funding_str = ""
+            if signal.get('funding_rate'):
+                funding = signal['funding_rate'] * 100
+                funding_emoji = "🟢" if funding > 0 else "🔴" if funding < 0 else "⚪"
+                funding_str = f" / {funding_emoji} {funding:.3f}%"
             
-            params_text += f" {max_lev}x / {min_amt:.0f}$ / {self.format_compact(max_amt)}"
+            line2 = f"📌 {max_lev}x / {min_amt:.0f}$ / {self.format_compact(max_amt)}{volume_str}{funding_str}"
+        else:
+            line2 = "📌 Данные контракта недоступны"
         
-        if signal.get('volume_24h'):
-            volume = signal['volume_24h']
-            if volume is not None:
-                params_text += f" / {self.format_compact(volume)}"
+        exchange_link = REF_LINKS.get(signal['exchange'], '#')
+        line3 = f"💲 Trade: {signal['exchange']} ({exchange_link})"
+        line4 = ""
+        line5 = f"📊 Направление: {signal['direction']}"
+        line6 = f"🕓 Таймфрейм: {TIMEFRAMES.get('current', '15m')}"
         
-        if signal.get('funding_rate'):
-            funding = signal['funding_rate']
-            if funding is not None:
-                funding_pct = funding * 100
-                color = "🟢" if funding_pct > 0 else "🔴" if funding_pct < 0 else "⚪"
-                params_text += f" / {color} {funding_pct:.3f}%"
+        if signal['price'] < 0.001:
+            price_formatted = f"{signal['price']:.8f}".rstrip('0').rstrip('.')
+        else:
+            price_formatted = f"{signal['price']:.2f}"
+        line7 = f"💰 Цена текущая: {price_formatted}"
         
-        lines = [
-            f"{dir_emoji} `{coin}` {pump_text}{signal['signal_power']}",
-            params_text + "\n",
-            f"📊 *Направление:* {signal['direction']}",
-            f"🕓 *Таймфрейм:* {TIMEFRAMES.get('current', '15m')}",
-            f"💰 *Цена:* `{price_formatted}`\n",
-            f"🎯 *Цели:* {signal.get('target_1', '')} | {signal.get('target_2', '')} | SL {signal.get('stop_loss', '')}\n"
-        ]
+        line8 = ""
+        if pump_percent and signal.get('pump_dump') and len(signal['pump_dump']) > 0:
+            pump_data = signal['pump_dump'][0]
+            start_price = pump_data.get('start_price', signal['price'] / (1 + pump_percent/100))
+            if start_price < 0.001:
+                start_formatted = f"{start_price:.8f}".rstrip('0').rstrip('.')
+            else:
+                start_formatted = f"{start_price:.2f}"
+            line8 = f"📈 Рост: {start_formatted} → {price_formatted}"
         
-        if signal['reasons']:
-            lines.append(f"💡 *Причины:* {', '.join(signal['reasons'][:3])}")
+        if signal.get('target_1') and signal.get('target_2') and signal.get('stop_loss'):
+            line9 = f"🎯 Цели: {signal['target_1']} | {signal['target_2']} | SL {signal['stop_loss']}"
+        else:
+            line9 = "🎯 Цели: N/A | N/A | SL N/A"
+        
+        line10 = ""
+        line11 = "💡 Причины:"
+        
+        reasons_lines = [f"    {r}" for r in signal['reasons'][:4]]
+        
+        lines = [line1, line2, line3, line4, line5, line6, line7]
+        if line8:
+            lines.append(line8)
+        lines.extend([line9, line10, line11])
+        lines.extend(reasons_lines)
+        
+        message = "\n".join(lines)
         
         # Клавиатура
         keyboard = []
-        
+        row1 = []
         if DISPLAY_SETTINGS['buttons']['copy']:
-            keyboard.append([InlineKeyboardButton(f"📋 Скопировать {coin}", callback_data=f"copy_{coin}")])
-        
+            row1.append(InlineKeyboardButton(f"📋 Скопировать {coin}", callback_data=f"copy_{coin}"))
         if DISPLAY_SETTINGS['buttons']['trade']:
-            if signal['exchange'] in REF_LINKS:
-                keyboard.append([InlineKeyboardButton(f"🚀 Торговать на {signal['exchange']}", url=REF_LINKS[signal['exchange']])])
+            row1.append(InlineKeyboardButton(f"🚀 Торговать на {signal['exchange']}", url=REF_LINKS.get(signal['exchange'], '#')))
+        if row1:
+            keyboard.append(row1)
         
-        action_row = []
+        row2 = []
         if DISPLAY_SETTINGS['buttons']['refresh']:
-            action_row.append(InlineKeyboardButton("🔄 Обновить", callback_data=f"refresh_{coin}"))
+            row2.append(InlineKeyboardButton("🔄 Обновить", callback_data=f"refresh_{coin}"))
         if DISPLAY_SETTINGS['buttons']['details']:
-            action_row.append(InlineKeyboardButton("📊 Детали", callback_data=f"details_{coin}"))
+            row2.append(InlineKeyboardButton("📊 Детали", callback_data=f"details_{coin}"))
+        if row2:
+            keyboard.append(row2)
         
-        if action_row:
-            keyboard.append(action_row)
-        
-        return "\n".join(lines), InlineKeyboardMarkup(keyboard)
-    
-    async def get_detailed_analysis(self, fetcher, symbol: str, coin: str, signal_time: str = None) -> Tuple[str, InlineKeyboardMarkup]:
-        try:
-            dataframes = {}
-            for tf_name, tf_value in TIMEFRAMES.items():
-                limit = 500 if tf_name == 'current' else 200
-                df = await fetcher.fetch_ohlcv(symbol, tf_value, limit)
-                if df is not None and not df.empty:
-                    df = self.analyzer.calculate_indicators(df)
-                    dataframes[tf_name] = df
-            
-            if not dataframes:
-                return f"❌ Нет данных для {coin}", None
-            
-            contract_info = await fetcher.fetch_contract_info(symbol)
-            open_interest = await fetcher.fetch_open_interest(symbol)
-            ticker = await fetcher.fetch_ticker(symbol)
-            funding = await fetcher.fetch_funding_rate(symbol)
-            
-            df_current = dataframes['current']
-            last = df_current.iloc[-1]
-            
-            lines = []
-            lines.append(f"📊 *ДЕТАЛЬНЫЙ АНАЛИЗ {coin}*")
-            if signal_time:
-                lines.append(f"⏱️ Время сигнала: `{signal_time}`")
-            lines.append(f"⏱️ Время обновления: `{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}`\n")
-            
-            # Параметры контракта
-            lines.append("⚡️ *ПАРАМЕТРЫ КОНТРАКТА:*")
-            lines.append(f"└ Макс. плечо: `{contract_info.get('max_leverage', 100)}x`")
-            lines.append(f"└ Мин. вход: `{contract_info.get('min_amount', 5):.2f} USDT`")
-            lines.append(f"└ Макс. вход: `{self.format_compact(contract_info.get('max_amount', 2_000_000))} USDT`")
-            
-            # Торговые данные
-            lines.append("\n📈 *ТОРГОВЫЕ ДАННЫЕ:*")
-            if ticker:
-                volume = ticker.get('volume_24h')
-                if volume is not None:
-                    lines.append(f"└ Объем 24ч: `{self.format_compact(volume)} USDT`")
-                
-                price_change = ticker.get('price_change_24h')
-                if price_change is not None:
-                    emoji = "📈" if price_change > 0 else "📉"
-                    lines.append(f"└ Изменение 24ч: {emoji} `{price_change:+.2f}%`")
-            
-            if open_interest:
-                lines.append(f"└ Открытый интерес: `{self.format_compact(open_interest)} USDT`")
-            
-            if funding:
-                funding_pct = funding * 100
-                color = "🟢" if funding_pct > 0 else "🔴" if funding_pct < 0 else "⚪"
-                lines.append(f"└ Ставка фондирования: `{color} {funding_pct:.4f}%`")
-            
-            # Технический анализ
-            lines.append("\n📊 *ТЕХНИЧЕСКИЙ АНАЛИЗ:*")
-            lines.append(f"└ RSI(14): `{last['rsi']:.1f}`")
-            lines.append(f"└ MACD: `{last['MACD_12_26_9']:.2f}` | Сигнал: `{last['MACDs_12_26_9']:.2f}`")
-            lines.append(f"└ EMA 9/21: `{last['ema_9']:.2f}` / `{last['ema_21']:.2f}`")
-            lines.append(f"└ ATR: `{last['atr']:.2f}`")
-            lines.append(f"└ Объемный коэффициент: `x{last['volume_ratio']:.2f}`")
-            
-            # Имбалансы
-            if self.imbalance and FEATURES['advanced']['imbalance']:
-                imb = self.imbalance.analyze(dataframes)
-                if imb['has_imbalance']:
-                    lines.append("\n⚖️ *ИМБАЛАНСЫ:*")
-                    for sig in imb['signals'][:3]:
-                        lines.append(f"└ {sig}")
-            
-            # Ликвидность
-            if self.liquidity and FEATURES['advanced']['liquidity']:
-                liq = self.liquidity.analyze(symbol, df_current)
-                if liq['has_signal']:
-                    lines.append("\n📊 *ЛИКВИДНОСТЬ:*")
-                    for sig in liq['signals'][:3]:
-                        lines.append(f"└ {sig}")
-            
-            # Дивергенции
-            if self.divergence and FEATURES['advanced']['divergence']:
-                div = self.divergence.analyze(df_current, '15m')
-                if div['has_divergence']:
-                    lines.append("\n🔄 *ДИВЕРГЕНЦИИ:*")
-                    for d in div['signals']:
-                        lines.append(f"└ {d}")
-            
-            # Клавиатура
-            keyboard = [
-                [InlineKeyboardButton("🔝 Вернуться к сигналу", callback_data=f"back_{coin}")],
-                [InlineKeyboardButton("🔄 Обновить детали", callback_data=f"refresh_details_{coin}")]
-            ]
-            
-            return "\n".join(lines), InlineKeyboardMarkup(keyboard)
-            
-        except Exception as e:
-            logger.error(f"Ошибка детального анализа {symbol}: {e}")
-            return f"❌ Ошибка анализа: {e}", None
+        return message, InlineKeyboardMarkup(keyboard) if keyboard else None
     
     async def scan_exchange(self, name: str, fetcher: BaseExchangeFetcher) -> List[Dict]:
         logger.info(f"🔍 Сканирую {name}...")
@@ -1153,11 +1062,9 @@ class MultiExchangeScannerBot:
         try:
             pairs = await fetcher.fetch_all_pairs()
             if not pairs:
-                logger.warning(f"⚠️ {name}: нет пар для анализа")
                 return []
             
             scan_count = min(PAIRS_TO_SCAN, len(pairs))
-            logger.info(f"📊 {name}: анализирую {scan_count} пар из {len(pairs)}")
             
             for i, pair in enumerate(pairs[:PAIRS_TO_SCAN]):
                 try:
@@ -1178,7 +1085,7 @@ class MultiExchangeScannerBot:
                     metadata = {
                         'funding_rate': funding,
                         'volume_24h': ticker.get('volume_24h'),
-                        'price_change_24h': ticker.get('price_change_24h')
+                        'price_change_24h': ticker.get('percentage')
                     }
                     
                     signal = self.analyzer.generate_signal(dataframes, metadata, pair, name)
@@ -1186,18 +1093,9 @@ class MultiExchangeScannerBot:
                     if not signal:
                         continue
                     
-                    # Добавляем дополнительные анализы
-                    if self.imbalance and FEATURES['advanced']['imbalance']:
-                        imb = self.imbalance.analyze(dataframes)
-                        if imb['has_imbalance']:
-                            signal['imbalance'] = imb
-                            signal['confidence'] = min(signal['confidence'] + imb['strength'] / 10, 100)
-                    
-                    if self.liquidity and FEATURES['advanced']['liquidity']:
-                        liq = self.liquidity.analyze(pair, dataframes['current'])
-                        if liq['has_signal']:
-                            signal['liquidity'] = liq
-                            signal['confidence'] = min(signal['confidence'] + liq['strength'] / 10, 100)
+                    # Пропускаем NEUTRAL
+                    if 'NEUTRAL' in signal['direction']:
+                        continue
                     
                     if signal['confidence'] >= MIN_CONFIDENCE:
                         signals.append(signal)
@@ -1206,10 +1104,9 @@ class MultiExchangeScannerBot:
                     if (i + 1) % 10 == 0:
                         logger.info(f"📊 Прогресс {name}: {i + 1}/{scan_count}")
                     
-                    await asyncio.sleep(0.3)
+                    await asyncio.sleep(0.2)
                     
                 except Exception as e:
-                    logger.error(f"Ошибка анализа {name} {pair}: {e}")
                     continue
                     
         except Exception as e:
@@ -1219,35 +1116,45 @@ class MultiExchangeScannerBot:
     
     async def scan_all(self) -> List[Dict]:
         logger.info("="*50)
-        logger.info("🚀 НАЧАЛО МУЛЬТИ-БИРЖЕВОГО СКАНИРОВАНИЯ")
+        logger.info("🚀 НАЧАЛО ОСНОВНОГО СКАНИРОВАНИЯ")
         logger.info("="*50)
         
         all_signals = []
-        
         for name, fetcher in self.fetchers.items():
-            try:
-                signals = await self.scan_exchange(name, fetcher)
-                all_signals.extend(signals)
-            except Exception as e:
-                logger.error(f"❌ Критическая ошибка {name}: {e}")
-                continue
+            signals = await self.scan_exchange(name, fetcher)
+            all_signals.extend(signals)
         
         all_signals.sort(key=lambda x: x['signal_strength'], reverse=True)
-        
-        logger.info("="*50)
-        logger.info(f"🎯 ВСЕГО НАЙДЕНО СИГНАЛОВ: {len(all_signals)}")
-        logger.info("="*50)
+        logger.info(f"🎯 ВСЕГО СИГНАЛОВ: {len(all_signals)}")
         
         return all_signals
     
-    async def send_signal(self, signal: Dict, pump_only: bool = False):
-        """Отправка сигнала"""
+    async def fast_pump_scan(self) -> List[Dict]:
+        if not FEATURES['advanced']['pump_dump']:
+            return []
         
+        pump_signals = []
+        for name, fetcher in self.fetchers.items():
+            scanner = FastPumpScanner(fetcher, PUMP_SCAN_SETTINGS)
+            signals = await scanner.scan_all_pairs()
+            
+            for signal in signals:
+                contract_info = await fetcher.fetch_contract_info(signal['symbol'])
+                msg, keyboard = scanner.format_pump_message(signal, contract_info)
+                pump_signals.append({
+                    'signal': signal,
+                    'message': msg,
+                    'keyboard': keyboard
+                })
+        
+        pump_signals.sort(key=lambda x: abs(x['signal']['change_percent']), reverse=True)
+        return pump_signals[:PUMP_SCAN_SETTINGS.get('send_top_pumps', 5)]
+    
+    async def send_signal(self, signal: Dict, pump_only: bool = False):
         if pump_only and not signal.get('pump_dump'):
             return
         
         if signal['confidence'] < MIN_CONFIDENCE:
-            logger.debug(f"⏭️ Пропущен {signal['symbol']} (уверенность {signal['confidence']}% < {MIN_CONFIDENCE}%)")
             return
         
         coin = self.extract_coin(signal['symbol'])
@@ -1257,57 +1164,71 @@ class MultiExchangeScannerBot:
             'time': datetime.now()
         }
         
-        # Получаем информацию о контракте
         contract_info = None
         for fetcher in self.fetchers.values():
             if fetcher.name == signal['exchange']:
                 contract_info = await fetcher.fetch_contract_info(signal['symbol'])
                 break
         
-        # Определяем процент пампа если есть
         pump_percent = None
         if signal.get('pump_dump') and len(signal['pump_dump']) > 0:
             pump_percent = signal['pump_dump'][0].get('change_percent')
         
-        msg, keyboard = self.format_message(signal, None, contract_info, pump_percent)
+        msg, keyboard = self.format_message(signal, contract_info, pump_percent)
         
         try:
             await self.telegram_bot.send_message(
                 chat_id=TELEGRAM_CHAT_ID,
                 text=msg,
-                parse_mode='HTML',
+                parse_mode='Markdown',
                 reply_markup=keyboard
             )
             logger.info(f"✅ Отправлен сигнал: {signal['symbol']}")
         except Exception as e:
             logger.error(f"❌ Ошибка отправки: {e}")
     
-    async def scheduled(self):
-        logger.info(f"🕐 Запуск мульти-биржевого анализа")
-        signals = await self.scan_all()
-        
-        logger.info(f"📊 Всего сигналов после сканирования: {len(signals)}")
-        
-        if signals:
-            # Отправляем ВСЕ сигналы без ограничений
-            for i, signal in enumerate(signals):
-                logger.info(f"📤 Отправка {i+1}/{len(signals)}: {signal['symbol']} - {signal['direction']} ({signal['confidence']}%)")
-                await self.send_signal(signal, pump_only=False)
-                
-                # Пауза между отправками
-                if i < len(signals) - 1:
-                    await asyncio.sleep(1)
-        else:
-            logger.info("❌ Сигналов не найдено")
+    async def send_pump_signal(self, pump_data: Dict):
+        try:
+            await self.telegram_bot.send_message(
+                chat_id=TELEGRAM_CHAT_ID,
+                text=pump_data['message'],
+                parse_mode='Markdown',
+                reply_markup=pump_data['keyboard']
+            )
+            logger.info(f"🚀 Отправлен памп-сигнал: {pump_data['signal']['symbol']}")
+        except Exception as e:
+            logger.error(f"❌ Ошибка отправки пампа: {e}")
     
     async def run(self):
         logger.info("🤖 Мульти-биржевой бот запущен")
+        logger.info(f"📊 Основной анализ: каждые {UPDATE_INTERVAL//60} мин")
+        logger.info(f"🚀 Памп-сканер: каждые {PUMP_SCAN_INTERVAL//60} мин")
+        
+        last_full_scan = 0
         
         try:
             while True:
-                await self.scheduled()
-                logger.info(f"💤 Следующий анализ через {UPDATE_INTERVAL//60} мин")
-                await asyncio.sleep(UPDATE_INTERVAL)
+                current_time = time.time()
+                
+                # Памп-сканер
+                pump_signals = await self.fast_pump_scan()
+                if pump_signals:
+                    for pump in pump_signals:
+                        await self.send_pump_signal(pump)
+                        await asyncio.sleep(1)
+                
+                # Полный анализ
+                if current_time - last_full_scan >= UPDATE_INTERVAL:
+                    signals = await self.scan_all()
+                    if signals:
+                        for i, signal in enumerate(signals):
+                            await self.send_signal(signal)
+                            if i < len(signals) - 1:
+                                await asyncio.sleep(1)
+                    last_full_scan = current_time
+                
+                await asyncio.sleep(PUMP_SCAN_INTERVAL)
+                
         except KeyboardInterrupt:
             logger.info("🛑 Бот остановлен")
         finally:
@@ -1328,71 +1249,42 @@ class TelegramHandler:
         self.app.add_handler(CommandHandler("scan", self.scan))
         self.app.add_handler(CommandHandler("status", self.status))
         self.app.add_handler(CommandHandler("help", self.help))
-        self.app.add_handler(CommandHandler("pump", self.pump_only))
         self.app.add_handler(CallbackQueryHandler(self.button))
     
     async def start(self, update, context):
-        active_exchanges = ", ".join(self.bot.fetchers.keys())
         await update.message.reply_text(
-            f"🤖 *Мульти-биржевой фьючерсный сканер*\n\n"
-            f"📊 Активные биржи: {active_exchanges}\n"
-            f"📈 Анализ: RSI, MACD, EMA, VWAP\n"
-            f"🔥 Имбалансы, ликвидность, дивергенции\n\n"
-            f"Команды:\n"
-            f"/scan - Сканировать\n"
-            f"/pump - Только сигналы у уровней\n"
-            f"/status - Статус\n"
-            f"/help - Помощь",
+            "🤖 *Мульти-биржевой сканер*\n\n"
+            "Активные биржи: BingX\n"
+            "Команды:\n"
+            "/scan - Ручное сканирование\n"
+            "/status - Статус\n"
+            "/help - Помощь",
             parse_mode='Markdown'
         )
     
     async def scan(self, update, context):
-        msg = await update.message.reply_text("🔍 Сканирую все биржи...")
+        msg = await update.message.reply_text("🔍 Сканирую...")
         signals = await self.bot.scan_all()
         if signals:
             await msg.edit_text(f"✅ Найдено {len(signals)} сигналов")
             for signal in signals:
-                await self.bot.send_signal(signal, pump_only=False)
+                await self.bot.send_signal(signal)
                 await asyncio.sleep(1)
         else:
             await msg.edit_text("❌ Сигналов не найдено")
     
-    async def pump_only(self, update, context):
-        msg = await update.message.reply_text("🔍 Ищу сигналы у уровней...")
-        signals = await self.bot.scan_all()
-        pump_signals = [s for s in signals if s.get('pump_dump')]
-        
-        if pump_signals:
-            await msg.edit_text(f"✅ Найдено {len(pump_signals)} сигналов")
-            for signal in pump_signals:
-                await self.bot.send_signal(signal, pump_only=True)
-                await asyncio.sleep(1)
-        else:
-            await msg.edit_text("❌ Сигналов у уровней не найдено")
-    
     async def status(self, update, context):
-        text = "*📡 Статус:*\n\n"
-        for name in self.bot.fetchers.keys():
-            text += f"✅ {name} Futures: активен\n"
-        
-        text += f"\n📊 *Функции:*\n"
-        text += f"✓ Дивергенции: {'вкл' if FEATURES['advanced']['divergence'] else 'выкл'}\n"
-        text += f"✓ Имбалансы: {'вкл' if FEATURES['advanced']['imbalance'] else 'выкл'}\n"
-        text += f"✓ Ликвидность: {'вкл' if FEATURES['advanced']['liquidity'] else 'выкл'}"
-        
+        text = "*📡 Статус:*\n\n✅ BingX Futures: активен"
         await update.message.reply_text(text, parse_mode='Markdown')
     
     async def help(self, update, context):
         await update.message.reply_text(
             "*Помощь*\n\n"
-            "📊 *Анализ:*\n"
-            "• RSI, MACD, EMA, VWAP\n"
-            "• Дивергенции\n"
-            "• Имбалансы спроса/предложения\n"
-            "• Ликвидность и сборы стопов\n\n"
-            "⚙️ *Команды:*\n"
-            "/scan - все сигналы\n"
-            "/pump - только сигналы у уровней\n"
+            "📊 Анализ: RSI, MACD, EMA, VWAP\n"
+            "🔥 Дивергенции, имбалансы, фракталы\n"
+            "🚀 Памп-сканер каждые 2 мин\n\n"
+            "Команды:\n"
+            "/scan - ручное сканирование\n"
             "/status - состояние бота",
             parse_mode='Markdown'
         )
@@ -1406,48 +1298,38 @@ class TelegramHandler:
         if data.startswith("copy_"):
             coin = data.replace("copy_", "")
             await query.message.reply_text(f"`{coin}`", parse_mode='Markdown')
-            await query.answer(f"✅ {coin} скопирован")
         
         elif data.startswith("refresh_"):
             coin = data.replace("refresh_", "")
-            await query.edit_message_text(f"🔄 Обновляю сигнал по {coin}...")
+            await query.edit_message_text(f"🔄 Обновляю {coin}...")
             
             if coin in self.bot.last_signals:
-                symbol = self.bot.last_signals[coin]['symbol']
-                # Здесь логика обновления
-                await query.edit_message_text(f"✅ {coin} обновлен")
+                signal = self.bot.last_signals[coin]['signal']
+                contract_info = None
+                for fetcher in self.bot.fetchers.values():
+                    if fetcher.name == signal['exchange']:
+                        contract_info = await fetcher.fetch_contract_info(signal['symbol'])
+                        break
+                
+                pump_percent = None
+                if signal.get('pump_dump') and len(signal['pump_dump']) > 0:
+                    pump_percent = signal['pump_dump'][0].get('change_percent')
+                
+                msg, keyboard = self.bot.format_message(signal, contract_info, pump_percent)
+                await query.edit_message_text(msg, parse_mode='Markdown', reply_markup=keyboard)
             else:
                 await query.edit_message_text(f"❌ Нет данных для {coin}")
         
         elif data.startswith("details_"):
             coin = data.replace("details_", "")
-            await query.edit_message_text(f"📊 Загружаю детальный анализ по {coin}...")
+            await query.edit_message_text(f"📊 Загружаю детали по {coin}...")
             
             if coin in self.bot.last_signals:
-                symbol = self.bot.last_signals[coin]['symbol']
-                signal_time = self.bot.last_signals[coin]['time'].strftime('%Y-%m-%d %H:%M:%S')
-                
-                for fetcher in self.bot.fetchers.values():
-                    detailed, keyboard = await self.bot.get_detailed_analysis(fetcher, symbol, coin, signal_time)
-                    await query.message.reply_text(
-                        detailed,
-                        parse_mode='Markdown',
-                        reply_markup=keyboard
-                    )
-                    
-                    original = self.bot.last_signals[coin]['signal']
-                    msg, orig_keyboard = self.bot.format_message(original)
-                    await query.edit_message_text(msg, parse_mode='HTML', reply_markup=orig_keyboard)
-                    break
+                signal = self.bot.last_signals[coin]['signal']
+                # Здесь можно добавить детальный анализ
+                await query.edit_message_text(f"📊 Детальный анализ по {coin}\n\nВ разработке...")
             else:
                 await query.edit_message_text(f"❌ Нет данных для {coin}")
-        
-        elif data.startswith("back_"):
-            coin = data.replace("back_", "")
-            if coin in self.bot.last_signals:
-                signal = self.bot.last_signals[coin]['signal']
-                msg, keyboard = self.bot.format_message(signal)
-                await query.edit_message_text(msg, parse_mode='HTML', reply_markup=keyboard)
     
     def run(self):
         self.app.run_polling()
@@ -1467,4 +1349,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
