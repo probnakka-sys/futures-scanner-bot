@@ -10,9 +10,9 @@ load_dotenv()
 
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
-UPDATE_INTERVAL = int(os.getenv('UPDATE_INTERVAL', 900))
-PUMP_SCAN_INTERVAL = int(os.getenv('PUMP_SCAN_INTERVAL', 120))
-MIN_CONFIDENCE = int(os.getenv('MIN_CONFIDENCE', 55))
+UPDATE_INTERVAL = int(os.getenv('UPDATE_INTERVAL', 900))  # 15 минут для основного анализа
+PUMP_SCAN_INTERVAL = int(os.getenv('PUMP_SCAN_INTERVAL', 120))  # 2 минуты для памп-сканера
+MIN_CONFIDENCE = int(os.getenv('MIN_CONFIDENCE', 55))  # Минимальная уверенность для сигнала
 TIMEFRAME = os.getenv('TIMEFRAME', '15m')
 PAIRS_TO_SCAN = int(os.getenv('PAIRS_TO_SCAN', 50))
 
@@ -28,11 +28,12 @@ REF_LINKS = {
 PUMP_SCAN_SETTINGS = {
     'enabled': True,
     'threshold': 5.0,                          # % движения для сигнала
-    'timeframes': ['5m', '15m', '30m', '1h'],  # Таймфреймы для анализа
-    'min_volume_usdt': 10000,                   # Мин. объем USDT
-    'max_pairs_to_scan': 300,                   # Макс. пар для сканирования
-    'include_low_liquidity': True,              # Включать низколиквидные
-    'send_top_pumps': 5,                         # Топ-5 пампа за интервал
+    'timeframes': ['5m', '15m', '30m', '1h'],   # Таймфреймы для анализа
+    'min_volume_usdt': 10000,                    # Мин. объем USDT
+    'max_pairs_to_scan': 500,                     # Макс. пар для сканирования
+    'include_low_liquidity': True,                # Включать низколиквидные
+    'send_top_pumps': 999,                         # Отправляем все сигналы
+    'cooldown_minutes': 30,                         # Защита от дублей
 }
 
 # ============== ПЕРЕКЛЮЧАТЕЛИ ФУНКЦИЙ ==============
@@ -100,13 +101,13 @@ DISPLAY_SETTINGS = {
     'show_liquidity': True,
     'show_order_blocks': True,
     'show_fractals': True,
-    'show_exchange_link': True,      # Ссылка в тексте (ОСТАВЛЯЕМ!)
+    'show_exchange_link': True,
     
     'buttons': {
-        'copy': True,      # Кнопка копирования
-        'trade': True,     # Кнопка торговли
-        'refresh': True,   # Кнопка обновления
-        'details': True,   # Кнопка деталей
+        'copy': True,
+        'trade': True,
+        'refresh': True,
+        'details': True,
     }
 }
 
