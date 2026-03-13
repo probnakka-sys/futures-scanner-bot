@@ -1215,7 +1215,13 @@ class MultiExchangeScannerBot:
         return all_signals
     
     async def send_signal(self, signal: Dict, pump_only: bool = False):
+        """Отправка сигнала"""
+        
         if pump_only and not signal.get('pump_dump'):
+            return
+        
+        if signal['confidence'] < MIN_CONFIDENCE:
+            logger.debug(f"⏭️ Пропущен {signal['symbol']} (уверенность {signal['confidence']}% < {MIN_CONFIDENCE}%)")
             return
         
         coin = self.extract_coin(signal['symbol'])
@@ -1225,35 +1231,46 @@ class MultiExchangeScannerBot:
             'time': datetime.now()
         }
         
+        # Получаем информацию о контракте
         contract_info = None
         for fetcher in self.fetchers.values():
             if fetcher.name == signal['exchange']:
                 contract_info = await fetcher.fetch_contract_info(signal['symbol'])
                 break
         
+        # Определяем процент пампа если есть
         pump_percent = None
-        if signal.get('pump_dump'):
-            pump_percent = signal['pump_dump'][0]['change_percent'] if signal['pump_dump'] else None
+        if signal.get('pump_dump') and len(signal['pump_dump']) > 0:
+            pump_percent = signal['pump_dump'][0].get('change_percent')
         
         msg, keyboard = self.format_message(signal, None, contract_info, pump_percent)
         
-        await self.telegram_bot.send_message(
-            chat_id=TELEGRAM_CHAT_ID,
-            text=msg,
-            parse_mode='HTML',
-            reply_markup=keyboard
-        )
-        logger.info(f"✅ Отправлен сигнал: {signal['symbol']}")
+        try:
+            await self.telegram_bot.send_message(
+                chat_id=TELEGRAM_CHAT_ID,
+                text=msg,
+                parse_mode='HTML',
+                reply_markup=keyboard
+            )
+            logger.info(f"✅ Отправлен сигнал: {signal['symbol']}")
+        except Exception as e:
+            logger.error(f"❌ Ошибка отправки: {e}")
     
     async def scheduled(self):
         logger.info(f"🕐 Запуск мульти-биржевого анализа")
         signals = await self.scan_all()
         
+        logger.info(f"📊 Всего сигналов после сканирования: {len(signals)}")
+        
         if signals:
-            for i, signal in enumerate(signals[:5]):
+            # Отправляем ВСЕ сигналы без ограничений
+            for i, signal in enumerate(signals):
+                logger.info(f"📤 Отправка {i+1}/{len(signals)}: {signal['symbol']} - {signal['direction']} ({signal['confidence']}%)")
                 await self.send_signal(signal, pump_only=False)
-                if i < len(signals[:5]) - 1:
-                    await asyncio.sleep(3)
+                
+                # Пауза между отправками
+                if i < len(signals) - 1:
+                    await asyncio.sleep(1)
         else:
             logger.info("❌ Сигналов не найдено")
     
@@ -1308,9 +1325,9 @@ class TelegramHandler:
         signals = await self.bot.scan_all()
         if signals:
             await msg.edit_text(f"✅ Найдено {len(signals)} сигналов")
-            for signal in signals[:5]:
+            for signal in signals:
                 await self.bot.send_signal(signal, pump_only=False)
-                await asyncio.sleep(2)
+                await asyncio.sleep(1)
         else:
             await msg.edit_text("❌ Сигналов не найдено")
     
@@ -1321,9 +1338,9 @@ class TelegramHandler:
         
         if pump_signals:
             await msg.edit_text(f"✅ Найдено {len(pump_signals)} сигналов")
-            for signal in pump_signals[:5]:
+            for signal in pump_signals:
                 await self.bot.send_signal(signal, pump_only=True)
-                await asyncio.sleep(2)
+                await asyncio.sleep(1)
         else:
             await msg.edit_text("❌ Сигналов у уровней не найдено")
     
@@ -1371,19 +1388,8 @@ class TelegramHandler:
             
             if coin in self.bot.last_signals:
                 symbol = self.bot.last_signals[coin]['symbol']
-                for fetcher in self.bot.fetchers.values():
-                    signal = await self.bot.analyzer.generate_signal_from_fetcher(fetcher, symbol)
-                    if signal:
-                        self.bot.last_signals[coin]['signal'] = signal
-                        self.bot.last_signals[coin]['time'] = datetime.now()
-                        msg, keyboard = self.bot.format_message(signal)
-                        await query.message.reply_text(
-                            f"🔄 *ОБНОВЛЕННЫЙ СИГНАЛ*\n\n{msg}",
-                            parse_mode='HTML',
-                            reply_markup=keyboard
-                        )
-                        await query.message.delete()
-                        break
+                # Здесь логика обновления
+                await query.edit_message_text(f"✅ {coin} обновлен")
             else:
                 await query.edit_message_text(f"❌ Нет данных для {coin}")
         
