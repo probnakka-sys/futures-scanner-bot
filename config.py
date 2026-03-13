@@ -10,9 +10,9 @@ load_dotenv()
 
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
-UPDATE_INTERVAL = int(os.getenv('UPDATE_INTERVAL', 900))  # 15 минут для основного анализа
-PUMP_SCAN_INTERVAL = int(os.getenv('PUMP_SCAN_INTERVAL', 120))  # 2 минуты для памп-сканера
-MIN_CONFIDENCE = int(os.getenv('MIN_CONFIDENCE', 55))  # Минимальная уверенность для сигнала
+UPDATE_INTERVAL = int(os.getenv('UPDATE_INTERVAL', 900))
+PUMP_SCAN_INTERVAL = int(os.getenv('PUMP_SCAN_INTERVAL', 120))
+MIN_CONFIDENCE = int(os.getenv('MIN_CONFIDENCE', 55))
 TIMEFRAME = os.getenv('TIMEFRAME', '15m')
 PAIRS_TO_SCAN = int(os.getenv('PAIRS_TO_SCAN', 50))
 
@@ -21,6 +21,18 @@ REF_LINKS = {
     'BingX': 'https://bingxdao.com/invite/ZTR83C/',
     'Bybit': os.getenv('BYBIT_REF_LINK', 'https://www.bybit.com'),
     'MEXC': os.getenv('MEXC_REF_LINK', 'https://www.mexc.com')
+}
+
+# ============== НАСТРОЙКИ ПАМП-СКАНЕРА ==============
+
+PUMP_SCAN_SETTINGS = {
+    'enabled': True,
+    'threshold': 5.0,                          # % движения для сигнала
+    'timeframes': ['5m', '15m', '30m', '1h'],  # Таймфреймы для анализа
+    'min_volume_usdt': 10000,                   # Мин. объем USDT
+    'max_pairs_to_scan': 300,                   # Макс. пар для сканирования
+    'include_low_liquidity': True,              # Включать низколиквидные
+    'send_top_pumps': 5,                         # Топ-5 пампа за интервал
 }
 
 # ============== ПЕРЕКЛЮЧАТЕЛИ ФУНКЦИЙ ==============
@@ -62,6 +74,9 @@ FEATURES = {
         'fibonacci': False,
         'imbalance': True,
         'liquidity': True,
+        'order_blocks': True,
+        'fractals': True,
+        'smart_money': True,
     },
     
     'testing': {
@@ -83,13 +98,15 @@ DISPLAY_SETTINGS = {
     'show_alignment': True,
     'show_imbalance': True,
     'show_liquidity': True,
-    'show_exchange_link': True,  # Ссылка в тексте
+    'show_order_blocks': True,
+    'show_fractals': True,
+    'show_exchange_link': True,      # Ссылка в тексте (ОСТАВЛЯЕМ!)
     
     'buttons': {
-        'copy': True,
-        'trade': True,
-        'refresh': True,
-        'details': True,
+        'copy': True,      # Кнопка копирования
+        'trade': True,     # Кнопка торговли
+        'refresh': True,   # Кнопка обновления
+        'details': True,   # Кнопка деталей
     }
 }
 
@@ -121,17 +138,20 @@ INDICATOR_WEIGHTS = {
     'divergence': 20,
     'vwap': 12,
     'patterns': 15,
-    'pump_dump': 10,
+    'pump_dump': 25,
     'btc_correlation': 8,
     'imbalance': 15,
     'liquidity': 20,
+    'order_blocks': 18,
+    'fractals': 12,
+    'smart_money': 25,
 }
 
 # ============== НАСТРОЙКИ ПАМП-ДАМП ==============
 
 PUMP_DUMP_SETTINGS = {
     'enabled': True,
-    'threshold': 5.0,  # % для срабатывания
+    'threshold': 5.0,
     'time_windows': [5, 15, 30, 60],
     'history_minutes': 120,
 }
@@ -155,6 +175,26 @@ LIQUIDITY_SETTINGS = {
     'sweep_retrace_threshold': 1.0,
     'consolidation_threshold': 0.5,
     'zone_distance': 1.0
+}
+
+# ============== НАСТРОЙКИ SMART MONEY ==============
+
+SMC_SETTINGS = {
+    'enabled': True,
+    'order_block_lookback': 50,
+    'fair_value_gap_threshold': 0.5,
+    'liquidity_sweep_retrace': 0.5,
+    'bos_choch_threshold': 1.0,
+    'min_order_block_strength': 30,
+}
+
+# ============== НАСТРОЙКИ ФРАКТАЛОВ ==============
+
+FRACTAL_SETTINGS = {
+    'enabled': True,
+    'window': 5,
+    'strength_multiplier': 1.5,
+    'confirmation_bars': 2,
 }
 
 # ============== ТАЙМФРЕЙМЫ ==============
