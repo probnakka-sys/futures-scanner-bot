@@ -82,7 +82,7 @@ DISPLAY_SETTINGS = {
     'show_alignment': True,
     'show_imbalance': True,
     'show_liquidity': True,
-    'show_exchange_link': True,  # Кликабельная биржа в тексте
+    'show_exchange_link': True,
     
     'buttons': {
         'copy': True,
@@ -130,7 +130,7 @@ INDICATOR_WEIGHTS = {
 
 PUMP_DUMP_SETTINGS = {
     'enabled': True,
-    'threshold': 5.0,  # % для срабатывания
+    'threshold': 5.0,
     'time_windows': [5, 15, 30, 60],
     'history_minutes': 120,
 }
