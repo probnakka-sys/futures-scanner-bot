@@ -1020,7 +1020,7 @@ class MultiExchangeScannerBot:
             f"{dir_emoji} `{coin}` {pump_text}{signal['signal_power']}",
             params_text + "\n",
             f"📊 *Направление:* {signal['direction']}",
-            f"🕓 *Таймфрейм:* {TIMEFRAME}",
+            f"🕓 *Таймфрейм:* {TIMEFRAMES.get('current', '15m')}",
             f"💰 *Цена:* `{price_formatted}`\n",
             f"🎯 *Цели:* {signal.get('target_1', '')} | {signal.get('target_2', '')} | SL {signal.get('stop_loss', '')}\n"
         ]
@@ -1467,3 +1467,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
