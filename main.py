@@ -663,13 +663,18 @@ class BingxFetcher(BaseExchangeFetcher):
             markets = await self.exchange.load_markets()
             market = markets.get(symbol, {})
             
+            limits = market.get('limits', {})
+            leverage_limits = limits.get('leverage', {})
+            amount_limits = limits.get('amount', {})
+            
             return {
-                'max_leverage': market.get('limits', {}).get('leverage', {}).get('max', 100),
-                'min_amount': market.get('limits', {}).get('amount', {}).get('min', 5.0),
-                'max_amount': market.get('limits', {}).get('amount', {}).get('max', 2_000_000),
+                'max_leverage': leverage_limits.get('max', 100),
+                'min_amount': amount_limits.get('min', 5.0),
+                'max_amount': amount_limits.get('max', 2_000_000),
                 'contract_size': market.get('contractSize', 0.001)
             }
-        except:
+        except Exception as e:
+            logger.error(f"Ошибка получения контракта {symbol}: {e}")
             return super().fetch_contract_info(symbol)
     
     async def fetch_open_interest(self, symbol: str) -> Optional[float]:
@@ -952,12 +957,17 @@ class MultiExchangeScannerBot:
             return symbol.replace('USDT', '')
     
     def format_compact(self, num: float) -> str:
-        if num > 1_000_000:
-            return f"{num/1_000_000:.1f}M"
-        elif num > 1_000:
-            return f"{num/1_000:.1f}K"
-        else:
-            return f"{num:.0f}"
+        if num is None:
+            return "N/A"
+        try:
+            if num > 1_000_000:
+                return f"{num/1_000_000:.1f}M"
+            elif num > 1_000:
+                return f"{num/1_000:.1f}K"
+            else:
+                return f"{num:.0f}"
+        except:
+            return "N/A"
     
     def format_message(self, signal: Dict, price_source: Dict = None, 
                        contract_info: Dict = None, pump_percent: float = None) -> Tuple[str, InlineKeyboardMarkup]:
@@ -980,18 +990,31 @@ class MultiExchangeScannerBot:
             params_text = f"└ {signal['exchange']}"
         
         if contract_info:
-            max_lev = contract_info.get('max_leverage', 100)
-            min_amt = contract_info.get('min_amount', 5)
-            max_amt = contract_info.get('max_amount', 2_000_000)
+            max_lev = contract_info.get('max_leverage')
+            if max_lev is None:
+                max_lev = 100
+            
+            min_amt = contract_info.get('min_amount')
+            if min_amt is None:
+                min_amt = 5
+            
+            max_amt = contract_info.get('max_amount')
+            if max_amt is None:
+                max_amt = 2_000_000
+            
             params_text += f" {max_lev}x / {min_amt:.0f}$ / {self.format_compact(max_amt)}"
         
         if signal.get('volume_24h'):
-            params_text += f" / {self.format_compact(signal['volume_24h'])}"
+            volume = signal['volume_24h']
+            if volume is not None:
+                params_text += f" / {self.format_compact(volume)}"
         
         if signal.get('funding_rate'):
-            funding = signal['funding_rate'] * 100
-            color = "🟢" if funding > 0 else "🔴" if funding < 0 else "⚪"
-            params_text += f" / {color} {funding:.3f}%"
+            funding = signal['funding_rate']
+            if funding is not None:
+                funding_pct = funding * 100
+                color = "🟢" if funding_pct > 0 else "🔴" if funding_pct < 0 else "⚪"
+                params_text += f" / {color} {funding_pct:.3f}%"
         
         lines = [
             f"{dir_emoji} `{coin}` {pump_text}{signal['signal_power']}",
@@ -1062,11 +1085,14 @@ class MultiExchangeScannerBot:
             # Торговые данные
             lines.append("\n📈 *ТОРГОВЫЕ ДАННЫЕ:*")
             if ticker:
-                lines.append(f"└ Объем 24ч: `{self.format_compact(ticker.get('volume_24h', 0))} USDT`")
-                if ticker.get('price_change_24h'):
-                    change = ticker['price_change_24h']
-                    emoji = "📈" if change > 0 else "📉"
-                    lines.append(f"└ Изменение 24ч: {emoji} `{change:+.2f}%`")
+                volume = ticker.get('volume_24h')
+                if volume is not None:
+                    lines.append(f"└ Объем 24ч: `{self.format_compact(volume)} USDT`")
+                
+                price_change = ticker.get('price_change_24h')
+                if price_change is not None:
+                    emoji = "📈" if price_change > 0 else "📉"
+                    lines.append(f"└ Изменение 24ч: {emoji} `{price_change:+.2f}%`")
             
             if open_interest:
                 lines.append(f"└ Открытый интерес: `{self.format_compact(open_interest)} USDT`")
@@ -1441,4 +1467,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
