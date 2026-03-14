@@ -10,10 +10,8 @@ load_dotenv()
 
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
-TELEGRAM_PUMP_CHAT_ID = os.getenv('TELEGRAM_PUMP_CHAT_ID')
-
-UPDATE_INTERVAL = int(os.getenv('UPDATE_INTERVAL', 900))
-PUMP_SCAN_INTERVAL = int(os.getenv('PUMP_SCAN_INTERVAL', 30))
+UPDATE_INTERVAL = int(os.getenv('UPDATE_INTERVAL', 900))  # 15 минут для основного анализа
+PUMP_SCAN_INTERVAL = int(os.getenv('PUMP_SCAN_INTERVAL', 30))  # 30 секунд для памп-сканера
 MIN_CONFIDENCE = int(os.getenv('MIN_CONFIDENCE', 55))
 TIMEFRAME = os.getenv('TIMEFRAME', '15m')
 PAIRS_TO_SCAN = int(os.getenv('PAIRS_TO_SCAN', 50))
@@ -29,13 +27,13 @@ REF_LINKS = {
 
 PUMP_SCAN_SETTINGS = {
     'enabled': True,
-    'threshold': 4.0,
-    'instant_threshold': 2.5,
-    'timeframes': ['1m', '3m', '5m'],
-    'min_volume_usdt': 5000,
-    'max_pairs_to_scan': 400,
+    'threshold': 4.0,                          # % движения для сигнала
+    'instant_threshold': 2.5,                   # % за 1-2 минуты для мгновенного сигнала
+    'timeframes': ['1m', '3m', '5m', '15m'],    # Быстрые ТФ
+    'min_volume_usdt': 5000,                    # Мин. объем
+    'max_pairs_to_scan': 500,
     'include_low_liquidity': True,
-    'send_top_pumps': 10,
+    'send_top_pumps': 999,
     'cooldown_minutes': 15,
 }
 
@@ -58,6 +56,7 @@ FEATURES = {
         'hourly': True,
         'daily': True,
         'weekly': True,
+        'monthly': True,  # Добавили месячный
     },
     
     'indicators': {
@@ -75,12 +74,13 @@ FEATURES = {
         'vwap': True,
         'patterns': True,
         'pump_dump': True,
-        'fibonacci': False,
+        'fibonacci': True,      # Включили Фибоначчи
         'imbalance': True,
         'liquidity': True,
         'order_blocks': True,
         'fractals': True,
         'smart_money': True,
+        'volume_profile': True,  # Добавили Volume Profile
     },
     
     'testing': {
@@ -104,6 +104,8 @@ DISPLAY_SETTINGS = {
     'show_liquidity': True,
     'show_order_blocks': True,
     'show_fractals': True,
+    'show_fibonacci': True,
+    'show_volume_profile': True,
     'show_exchange_link': True,
     
     'buttons': {
@@ -130,28 +132,51 @@ INDICATOR_SETTINGS = {
     'volume_sma_period': 20,
 }
 
+# ============== НАСТРОЙКИ ФИБОНАЧЧИ ==============
+
+FIBONACCI_SETTINGS = {
+    'retracement_levels': [0.236, 0.382, 0.5, 0.618, 0.786, 0.86],
+    'extension_levels': [0.18, 0.27, 0.618],
+    'lookback_candles': 3,
+    'min_distance_pct': 0.5,
+    'weight_multiplier': 1.5,
+}
+
+# ============== НАСТРОЙКИ VOLUME PROFILE ==============
+
+VOLUME_PROFILE_SETTINGS = {
+    'enabled': True,
+    'lookback_bars': 100,
+    'value_area_pct': 70,
+    'min_hvn_strength': 2.0,
+    'confluence_distance': 0.5,
+    'timeframes': ['daily', 'weekly', 'monthly'],
+}
+
 INDICATOR_WEIGHTS = {
     'rsi': 10,
     'macd': 15,
     'ema_cross': 15,
     'volume': 10,
-    'hourly_trend': 8,
-    'daily_trend': 15,
-    'weekly_trend': 20,
-    'trend_alignment': 15,
+    'hourly_trend': 15,
+    'daily_trend': 25,
+    'weekly_trend': 35,
+    'trend_alignment': 20,
     'divergence': 20,
     'vwap': 12,
     'patterns': 15,
     'pump_dump': 25,
+    'fibonacci': 20,
     'btc_correlation': 8,
     'imbalance': 15,
     'liquidity': 20,
     'order_blocks': 18,
     'fractals': 12,
     'smart_money': 25,
+    'volume_profile': 25,
 }
 
-# ============== НАСТРОЙКИ ПАМП-ДАМП ==============
+# ============== ОСТАЛЬНЫЕ НАСТРОЙКИ ==============
 
 PUMP_DUMP_SETTINGS = {
     'enabled': True,
@@ -159,8 +184,6 @@ PUMP_DUMP_SETTINGS = {
     'time_windows': [5, 15, 30, 60],
     'history_minutes': 120,
 }
-
-# ============== НАСТРОЙКИ ИМБАЛАНСОВ ==============
 
 IMBALANCE_SETTINGS = {
     'enabled': True,
@@ -171,8 +194,6 @@ IMBALANCE_SETTINGS = {
     'weight_higher_tf': 1.5
 }
 
-# ============== НАСТРОЙКИ ЛИКВИДНОСТИ ==============
-
 LIQUIDITY_SETTINGS = {
     'enabled': True,
     'lookback_bars': 100,
@@ -180,8 +201,6 @@ LIQUIDITY_SETTINGS = {
     'consolidation_threshold': 0.5,
     'zone_distance': 1.0
 }
-
-# ============== НАСТРОЙКИ SMART MONEY ==============
 
 SMC_SETTINGS = {
     'enabled': True,
@@ -191,8 +210,6 @@ SMC_SETTINGS = {
     'bos_choch_threshold': 1.0,
     'min_order_block_strength': 30,
 }
-
-# ============== НАСТРОЙКИ ФРАКТАЛОВ ==============
 
 FRACTAL_SETTINGS = {
     'enabled': True,
@@ -208,6 +225,7 @@ TIMEFRAMES = {
     'hourly': '1h' if FEATURES['timeframes']['hourly'] else None,
     'daily': '1d' if FEATURES['timeframes']['daily'] else None,
     'weekly': '1w' if FEATURES['timeframes']['weekly'] else None,
+    'monthly': '1M' if FEATURES['timeframes']['monthly'] else None,
 }
 
 TIMEFRAMES = {k: v for k, v in TIMEFRAMES.items() if v is not None}
