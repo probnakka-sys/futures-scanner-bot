@@ -9,10 +9,12 @@ load_dotenv()
 # ============== НАСТРОЙКИ БОТА ==============
 
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
-TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
-UPDATE_INTERVAL = int(os.getenv('UPDATE_INTERVAL', 900))  # 15 минут для основного анализа
-PUMP_SCAN_INTERVAL = int(os.getenv('PUMP_SCAN_INTERVAL', 120))  # 2 минуты для памп-сканера
-MIN_CONFIDENCE = int(os.getenv('MIN_CONFIDENCE', 55))  # Минимальная уверенность для сигнала
+TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')           # Основная группа (обычные сигналы)
+TELEGRAM_PUMP_CHAT_ID = os.getenv('TELEGRAM_PUMP_CHAT_ID') # Группа для памп-сигналов
+
+UPDATE_INTERVAL = int(os.getenv('UPDATE_INTERVAL', 900))        # 15 минут
+PUMP_SCAN_INTERVAL = int(os.getenv('PUMP_SCAN_INTERVAL', 30))   # 30 секунд для быстрых пам-пов
+MIN_CONFIDENCE = int(os.getenv('MIN_CONFIDENCE', 55))
 TIMEFRAME = os.getenv('TIMEFRAME', '15m')
 PAIRS_TO_SCAN = int(os.getenv('PAIRS_TO_SCAN', 50))
 
@@ -27,13 +29,14 @@ REF_LINKS = {
 
 PUMP_SCAN_SETTINGS = {
     'enabled': True,
-    'threshold': 5.0,                          # % движения для сигнала
-    'timeframes': ['5m', '15m', '30m', '1h'],   # Таймфреймы для анализа
-    'min_volume_usdt': 10000,                    # Мин. объем USDT
-    'max_pairs_to_scan': 500,                     # Макс. пар для сканирования
+    'threshold': 4.0,                          # % движения для сигнала
+    'instant_threshold': 2.5,                   # % за 2 минуты для мгновенного сигнала
+    'timeframes': ['1m', '3m', '5m', '15m'],    # Быстрые таймфреймы
+    'min_volume_usdt': 5000,                    # Мин. объем USDT
+    'max_pairs_to_scan': 400,                    # Макс. пар для сканирования
     'include_low_liquidity': True,                # Включать низколиквидные
     'send_top_pumps': 999,                         # Отправляем все сигналы
-    'cooldown_minutes': 30,                         # Защита от дублей
+    'cooldown_minutes': 15,                         # Защита от дублей
 }
 
 # ============== ПЕРЕКЛЮЧАТЕЛИ ФУНКЦИЙ ==============
