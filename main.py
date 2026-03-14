@@ -27,6 +27,10 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from matplotlib.patches import Rectangle
 
+# Отключаем предупреждения о шрифтах
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning)
+
 # Импорт конфигурации
 from config import (
     TELEGRAM_TOKEN,
@@ -108,8 +112,8 @@ class ChartGenerator:
     """Генератор графиков для сигналов"""
     
     def __init__(self):
-        self.figsize = (10, 5)  # Оптимально для мобильных
-        self.dpi = 80
+        self.figsize = (14, 7)
+        self.dpi = 100
         self.style = 'dark_background'
         
     def create_chart(self, df: pd.DataFrame, signal: Dict, coin: str, timeframe: str = '15m') -> BytesIO:
@@ -118,12 +122,7 @@ class ChartGenerator:
         """
         plt.style.use(self.style)
         
-        # Берем последние 100 свечей
-        plot_df = df.tail(min(100, len(df))).copy()
-        
-        # Если данных мало, увеличиваем размер для читаемости
-        if len(plot_df) < 30:
-            self.figsize = (12, 6)
+        plot_df = df.tail(min(150, len(df))).copy()
         
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=self.figsize, 
                                        gridspec_kw={'height_ratios': [3, 1]})
@@ -153,98 +152,99 @@ class ChartGenerator:
         
         current_price = signal['price']
         
-        # Автоматическое масштабирование
-        price_min = min(plot_df['low'].min(), current_price)
-        price_max = max(plot_df['high'].max(), current_price)
+        # Автоматическое масштабирование с запасом
+        all_prices = []
+        all_prices.extend(plot_df['low'].values)
+        all_prices.extend(plot_df['high'].values)
+        all_prices.append(current_price)
         
         if signal.get('target_1'):
-            price_max = max(price_max, signal['target_1'])
-            price_min = min(price_min, signal['target_1'])
-            ax1.axhline(y=signal['target_1'], color='#ffaa00', 
-                       linestyle='--', linewidth=1.5, alpha=0.8,
-                       label=f'Target 1: {signal["target_1"]}')
+            all_prices.append(signal['target_1'])
         if signal.get('target_2'):
-            price_max = max(price_max, signal['target_2'])
-            ax1.axhline(y=signal['target_2'], color='#00ff00', 
-                       linestyle='--', linewidth=1.5, alpha=0.8,
-                       label=f'Target 2: {signal["target_2"]}')
+            all_prices.append(signal['target_2'])
         if signal.get('stop_loss'):
-            price_min = min(price_min, signal['stop_loss'])
-            ax1.axhline(y=signal['stop_loss'], color='#ff0000', 
-                       linestyle='--', linewidth=1.5, alpha=0.8,
-                       label=f'Stop: {signal["stop_loss"]}')
+            all_prices.append(signal['stop_loss'])
         
-        # Добавляем запас 5%
+        price_min = min(all_prices)
+        price_max = max(all_prices)
+        
         price_range = price_max - price_min
         if price_range > 0:
-            price_min = price_min - price_range * 0.05
-            price_max = price_max + price_range * 0.05
+            price_min = price_min - price_range * 0.1
+            price_max = price_max + price_range * 0.1
         else:
-            price_min = price_min * 0.95
-            price_max = price_max * 1.05
+            price_min = price_min * 0.9
+            price_max = price_max * 1.1
         
         ax1.set_ylim(price_min, price_max)
         
-        ax1.axhline(y=current_price, color='#00ff00', 
-                   linestyle='--', linewidth=1.5, alpha=0.8,
+        if signal.get('target_1'):
+            ax1.axhline(y=signal['target_1'], color='#ffaa00', 
+                       linestyle='--', linewidth=2, alpha=0.8,
+                       label=f'Target 1: {signal["target_1"]}')
+        if signal.get('target_2'):
+            ax1.axhline(y=signal['target_2'], color='#00ff00', 
+                       linestyle='--', linewidth=2, alpha=0.8,
+                       label=f'Target 2: {signal["target_2"]}')
+        if signal.get('stop_loss'):
+            ax1.axhline(y=signal['stop_loss'], color='#ff0000', 
+                       linestyle='--', linewidth=2, alpha=0.8,
+                       label=f'Stop: {signal["stop_loss"]}')
+        
+        ax1.axhline(y=current_price, color='#00ffff', 
+                   linestyle='-', linewidth=2, alpha=0.9,
                    label=f'Current: {current_price:.2f}')
         
-        # Заголовок с таймфреймом
         direction_emoji = "🟢" if "LONG" in signal['direction'] else "🔴" if "SHORT" in signal['direction'] else "⚪"
         ax1.set_title(f'{direction_emoji} {coin} - {signal["direction"]} (TF: {timeframe})', 
-                     fontsize=14, fontweight='bold', color='white')
-        ax1.set_ylabel('Price (USDT)', color='white')
-        ax1.legend(loc='upper left', fontsize=8, facecolor='#222222')
+                     fontsize=16, fontweight='bold', color='white', pad=20)
+        ax1.set_ylabel('Price (USDT)', color='white', fontsize=12)
+        ax1.legend(loc='upper left', fontsize=9, facecolor='#222222', edgecolor='none')
         ax1.grid(True, alpha=0.2, linestyle='--')
-        ax1.tick_params(colors='white')
+        ax1.tick_params(colors='white', labelsize=10)
         ax1.set_facecolor('#111111')
         
         # ===== НИЖНИЙ ГРАФИК =====
         if 'rsi' in plot_df.columns:
             ax2.plot(plot_df.index, plot_df['rsi'], 
                     color='purple', linewidth=2, label='RSI 14')
-            ax2.axhline(y=70, color='red', linestyle='--', alpha=0.5)
-            ax2.axhline(y=30, color='green', linestyle='--', alpha=0.5)
+            ax2.axhline(y=70, color='red', linestyle='--', alpha=0.5, linewidth=1)
+            ax2.axhline(y=30, color='green', linestyle='--', alpha=0.5, linewidth=1)
             ax2.fill_between(plot_df.index, 30, 70, alpha=0.1, color='gray')
             
             if pd.notna(plot_df['rsi'].iloc[-1]):
                 current_rsi = plot_df['rsi'].iloc[-1]
                 ax2.scatter(plot_df.index[-1], current_rsi, 
-                           color='yellow', s=50, zorder=5)
+                           color='yellow', s=80, zorder=5, edgecolor='white')
         
-        ax2.set_ylabel('RSI', color='white')
-        ax2.set_xlabel('Time', color='white')
+        ax2.set_ylabel('RSI', color='white', fontsize=12)
+        ax2.set_xlabel('Time', color='white', fontsize=12)
         ax2.set_ylim(0, 100)
         ax2.grid(True, alpha=0.2, linestyle='--')
-        ax2.tick_params(colors='white')
+        ax2.tick_params(colors='white', labelsize=10)
         ax2.set_facecolor('#111111')
-        ax2.legend(loc='upper left', fontsize=8, facecolor='#222222')
+        ax2.legend(loc='upper left', fontsize=9, facecolor='#222222', edgecolor='none')
         
-        # Адаптивное форматирование времени
+        # Форматирование времени
         for ax in [ax1, ax2]:
             ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
-            if len(plot_df) > 80:
-                ax.xaxis.set_major_locator(mdates.HourLocator(interval=4))
-            elif len(plot_df) > 50:
-                ax.xaxis.set_major_locator(mdates.HourLocator(interval=2))
-            elif len(plot_df) > 30:
-                ax.xaxis.set_major_locator(mdates.HourLocator(interval=1))
+            if len(plot_df) > 100:
+                ax.xaxis.set_major_locator(mdates.HourLocator(interval=6))
+            elif len(plot_df) > 60:
+                ax.xaxis.set_major_locator(mdates.HourLocator(interval=3))
             else:
-                ax.xaxis.set_major_locator(mdates.MinuteLocator(interval=15))
-            plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, fontsize=8)
+                ax.xaxis.set_major_locator(mdates.HourLocator(interval=1))
+            plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, fontsize=9)
         
-        plt.tight_layout(pad=1.0)
+        plt.tight_layout(pad=2.0)
         
         buf = BytesIO()
         plt.savefig(buf, format='PNG', dpi=self.dpi, 
                    bbox_inches='tight', 
                    facecolor='#111111',
-                   pad_inches=0.1)
+                   pad_inches=0.3)
         buf.seek(0)
         plt.close()
-        
-        # Возвращаем стандартный размер
-        self.figsize = (10, 5)
         
         return buf
 
@@ -619,9 +619,9 @@ class BingxFetcher(BaseExchangeFetcher):
             min_amount = 5.0
             max_amount = 2_000_000
             
-            if limits.get('leverage'):
+            if limits and limits.get('leverage'):
                 max_leverage = limits['leverage'].get('max', 100)
-            if limits.get('amount'):
+            if limits and limits.get('amount'):
                 min_amount = limits['amount'].get('min', 5.0)
                 max_amount = limits['amount'].get('max', 2_000_000)
             
@@ -632,7 +632,7 @@ class BingxFetcher(BaseExchangeFetcher):
                 'has_data': True
             }
         except Exception as e:
-            logger.debug(f"Нет данных контракта для {symbol}, использую стандартные")
+            logger.debug(f"Использую стандартные значения для {symbol}")
             return {
                 'max_leverage': 100,
                 'min_amount': 5.0,
@@ -875,7 +875,7 @@ class FastPumpScanner:
         self.analyzer = analyzer
         self.threshold = self.settings.get('threshold', 4.0)
         self.instant_threshold = self.settings.get('instant_threshold', 2.5)
-        self.timeframes = self.settings.get('timeframes', ['1m', '3m', '5m', '15m'])
+        self.timeframes = self.settings.get('timeframes', ['1m', '3m', '5m'])
         self.max_pairs = self.settings.get('max_pairs_to_scan', 400)
         self.last_pump_signals = {}
     
@@ -895,7 +895,7 @@ class FastPumpScanner:
             
             for pair in scan_pairs:
                 try:
-                    # Сначала проверяем быстрые таймфреймы (1m, 3m)
+                    # Сначала проверяем быстрые таймфреймы
                     for tf in ['1m', '3m', '5m']:
                         if tf not in self.timeframes:
                             continue
@@ -906,7 +906,7 @@ class FastPumpScanner:
                         if df is None or len(df) < 5:
                             continue
                         
-                        # Мгновенный детектор (последние 2 минуты)
+                        # Мгновенный детектор (2 минуты)
                         if len(df) >= 3:
                             price_2min_ago = df['close'].iloc[-3]
                             current_price = df['close'].iloc[-1]
@@ -916,7 +916,7 @@ class FastPumpScanner:
                                 signal_key = f"{pair}_{tf}_instant"
                                 last_time = self.last_pump_signals.get(signal_key)
                                 
-                                if last_time and (datetime.now() - last_time).total_seconds() < 900:  # 15 минут
+                                if last_time and (datetime.now() - last_time).total_seconds() < 900:
                                     continue
                                 
                                 logger.info(f"⚡ МГНОВЕННЫЙ СИГНАЛ: {pair} {change_2min:+.1f}% за 2 мин")
@@ -925,32 +925,20 @@ class FastPumpScanner:
                                     pump_signals.append(signal)
                                     self.last_pump_signals[signal_key] = datetime.now()
                                 break
-                    
-                    # Затем проверяем стандартные таймфреймы
-                    for tf in self.timeframes:
-                        if tf in ['1m', '3m', '5m']:
-                            continue  # уже проверили
-                            
-                        limit = 20
-                        df = await self.fetcher.fetch_ohlcv(pair, tf, limit=limit)
                         
-                        if df is None or len(df) < 10:
+                        # Расчет для разных таймфреймов
+                        if tf == '1m':
+                            start_price = df['close'].iloc[-2]
+                            minutes = 1
+                        elif tf == '3m':
+                            start_price = df['close'].iloc[-2]
+                            minutes = 3
+                        elif tf == '5m':
+                            start_price = df['close'].iloc[-5]
+                            minutes = 5
+                        else:
                             continue
                         
-                        if tf == '30m':
-                            bars_ago = 1
-                            minutes = 30
-                        elif tf == '15m':
-                            bars_ago = 2
-                            minutes = 30
-                        elif tf == '5m':
-                            bars_ago = 6
-                            minutes = 30
-                        else:
-                            bars_ago = 1
-                            minutes = self._timeframe_to_minutes(tf)
-                        
-                        start_price = df['close'].iloc[-bars_ago-1]
                         current_price = df['close'].iloc[-1]
                         change_percent = (current_price - start_price) / start_price * 100
                         
@@ -958,14 +946,14 @@ class FastPumpScanner:
                             signal_key = f"{pair}_{tf}"
                             last_time = self.last_pump_signals.get(signal_key)
                             
-                            if last_time and (datetime.now() - last_time).total_seconds() < 900:  # 15 минут
+                            if last_time and (datetime.now() - last_time).total_seconds() < 900:
                                 continue
                             
+                            logger.info(f"✅ Памп-сигнал: {pair} {change_percent:+.1f}% за {minutes} мин")
                             signal = await self._create_pump_signal(pair, df, tf, change_percent, minutes)
                             if signal:
                                 pump_signals.append(signal)
                                 self.last_pump_signals[signal_key] = datetime.now()
-                                logger.info(f"✅ Памп-сигнал: {pair} {change_percent:+.1f}% за {minutes} мин")
                             break
                     
                 except Exception as e:
@@ -1076,16 +1064,15 @@ class FastPumpScanner:
     def format_pump_message(self, signal: Dict, contract_info: Dict = None) -> Tuple[str, InlineKeyboardMarkup]:
         coin = signal['symbol'].split('/')[0].replace('USDT', '')
         
-        line1 = f"🚀 {coin} {signal['signal_type']} {signal['pump_dump'][0]['change_percent']:+.1f}% {signal['signal_power']}"
+        line1 = f"🚀 <code>{coin}</code> {signal['signal_type']} {signal['pump_dump'][0]['change_percent']:+.1f}% {signal['signal_power']}"
         
         if contract_info:
             max_lev = contract_info.get('max_leverage', 100)
             min_amt = contract_info.get('min_amount', 5.0)
-            max_amt = contract_info.get('max_amount', 2_000_000)
             
             line2 = f"📌 {max_lev}x / {min_amt:.0f}$"
             
-            if signal.get('volume_24h') and signal['volume_24h'] is not None:
+            if signal.get('volume_24h') and signal['volume_24h'] is not None and signal['volume_24h'] > 0:
                 volume = signal['volume_24h']
                 if volume > 1_000_000:
                     line2 += f" / {volume/1_000_000:.1f}M"
@@ -1100,7 +1087,7 @@ class FastPumpScanner:
                 line2 += f" / {funding_emoji} {funding:.3f}%"
         else:
             line2 = f"📌 100x / 5$"
-            if signal.get('volume_24h') and signal['volume_24h'] is not None:
+            if signal.get('volume_24h') and signal['volume_24h'] is not None and signal['volume_24h'] > 0:
                 volume = signal['volume_24h']
                 if volume > 1_000_000:
                     line2 += f" / {volume/1_000_000:.1f}M"
@@ -1161,6 +1148,7 @@ class FastPumpScanner:
             clean_reason = clean_reason.replace("🔴 ", "")
             clean_reason = clean_reason.replace("⚪️ ", "")
             clean_reason = clean_reason.replace("⚪ ", "")
+            clean_reason = clean_reason.replace("🔝 ", "")
             clean_reason = clean_reason.strip()
             clean_reasons.append(clean_reason)
         
@@ -1237,16 +1225,15 @@ class MultiExchangeScannerBot:
             coin = self.extract_coin(signal['symbol'])
             pump_text = ""
         
-        line1 = f"{main_emoji} {coin}{pump_text} {signal['signal_power']}"
+        line1 = f"{main_emoji} <code>{coin}</code>{pump_text} {signal['signal_power']}"
         
         if contract_info:
             max_lev = contract_info.get('max_leverage', 100)
             min_amt = contract_info.get('min_amount', 5.0)
-            max_amt = contract_info.get('max_amount', 2_000_000)
             
             line2 = f"📌 {max_lev}x / {min_amt:.0f}$"
             
-            if signal.get('volume_24h') and signal['volume_24h'] is not None:
+            if signal.get('volume_24h') and signal['volume_24h'] is not None and signal['volume_24h'] > 0:
                 volume = signal['volume_24h']
                 if volume > 1_000_000:
                     line2 += f" / {volume/1_000_000:.1f}M"
@@ -1261,7 +1248,7 @@ class MultiExchangeScannerBot:
                 line2 += f" / {funding_emoji} {funding:.3f}%"
         else:
             line2 = f"📌 100x / 5$"
-            if signal.get('volume_24h') and signal['volume_24h'] is not None:
+            if signal.get('volume_24h') and signal['volume_24h'] is not None and signal['volume_24h'] > 0:
                 volume = signal['volume_24h']
                 if volume > 1_000_000:
                     line2 += f" / {volume/1_000_000:.1f}M"
@@ -1328,6 +1315,7 @@ class MultiExchangeScannerBot:
             clean_reason = clean_reason.replace("🔴 ", "")
             clean_reason = clean_reason.replace("⚪️ ", "")
             clean_reason = clean_reason.replace("⚪ ", "")
+            clean_reason = clean_reason.replace("🔝 ", "")
             clean_reason = clean_reason.strip()
             clean_reasons.append(clean_reason)
         
@@ -1452,7 +1440,11 @@ class MultiExchangeScannerBot:
                 })
         
         pump_signals.sort(key=lambda x: abs(x['signal']['pump_dump'][0]['change_percent']), reverse=True)
-        return pump_signals
+        
+        # Отправляем топ-10 самых сильных
+        top_signals = pump_signals[:10]
+        logger.info(f"🎯 Памп-сканер: найдено {len(pump_signals)} сигналов, отправляю топ-10")
+        return top_signals
     
     async def send_signal(self, signal: Dict):
         """Отправка обычного сигнала в основную группу"""
@@ -1487,7 +1479,7 @@ class MultiExchangeScannerBot:
                 chart_buf = self.chart_generator.create_chart(df, signal, coin, TIMEFRAMES.get('current', '15m'))
                 
                 await self.telegram_bot.send_photo(
-                    chat_id=TELEGRAM_CHAT_ID,  # Основная группа
+                    chat_id=TELEGRAM_CHAT_ID,
                     photo=chart_buf,
                     caption=msg,
                     parse_mode='HTML',
@@ -1496,7 +1488,7 @@ class MultiExchangeScannerBot:
                 logger.info(f"✅ Отправлен обычный сигнал с графиком: {signal['symbol']}")
             else:
                 await self.telegram_bot.send_message(
-                    chat_id=TELEGRAM_CHAT_ID,  # Основная группа
+                    chat_id=TELEGRAM_CHAT_ID,
                     text=msg,
                     parse_mode='HTML',
                     reply_markup=keyboard
@@ -1528,7 +1520,7 @@ class MultiExchangeScannerBot:
                 chart_buf = self.chart_generator.create_chart(df, signal, coin, TIMEFRAMES.get('current', '15m'))
                 
                 await self.telegram_bot.send_photo(
-                    chat_id=TELEGRAM_PUMP_CHAT_ID,  # Памп-группа
+                    chat_id=TELEGRAM_PUMP_CHAT_ID,
                     photo=chart_buf,
                     caption=pump_data['message'],
                     parse_mode='HTML',
@@ -1537,7 +1529,7 @@ class MultiExchangeScannerBot:
                 logger.info(f"✅ Отправлен памп-сигнал с графиком: {signal['symbol']}")
             else:
                 await self.telegram_bot.send_message(
-                    chat_id=TELEGRAM_PUMP_CHAT_ID,  # Памп-группа
+                    chat_id=TELEGRAM_PUMP_CHAT_ID,
                     text=pump_data['message'],
                     parse_mode='HTML',
                     reply_markup=pump_data['keyboard']
@@ -1590,15 +1582,20 @@ class MultiExchangeScannerBot:
             while True:
                 current_time = time.time()
                 
-                # Памп-сканер (каждые 30 секунд)
+                # Памп-сканер
                 pump_signals = await self.fast_pump_scan()
                 if pump_signals:
                     logger.info(f"🚀 Найдено {len(pump_signals)} памп-сигналов")
-                    for pump in pump_signals:
+                    for i, pump in enumerate(pump_signals):
                         await self.send_pump_signal(pump)
-                        await asyncio.sleep(2)
+                        
+                        remaining = len(pump_signals) - i - 1
+                        if remaining > 0:
+                            delay = min(60, 20 + remaining * 4)
+                            logger.info(f"⏱️ Следующий памп-сигнал через {delay} сек (осталось {remaining})")
+                            await asyncio.sleep(delay)
                 
-                # Полный анализ (каждые 15 минут)
+                # Полный анализ
                 if current_time - last_full_scan >= UPDATE_INTERVAL:
                     signals = await self.scan_all()
                     if signals:
@@ -1700,7 +1697,7 @@ class TelegramHandler:
                 for fetcher in self.bot.fetchers.values():
                     if fetcher.name == signal['exchange']:
                         contract_info = await fetcher.fetch_contract_info(signal['symbol'])
-                        df = await fetcher.fetch_ohlcv(signal['symbol'], TIMEFRAMES.get('current', '15m'), limit=100)
+                        df = await fetcher.fetch_ohlcv(signal['symbol'], TIMEFRAMES.get('current', '15m'), limit=200)
                         break
                 
                 pump_percent = None
@@ -1753,7 +1750,7 @@ class TelegramHandler:
                         await context.bot.send_message(
                             chat_id=update.effective_chat.id,
                             text=detailed,
-                            parse_mode='Markdown',
+                            parse_mode='HTML',
                             reply_markup=keyboard
                         )
                         
