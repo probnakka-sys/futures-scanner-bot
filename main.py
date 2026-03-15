@@ -12,10 +12,9 @@ from typing import Dict, List, Tuple, Optional, Set
 import ccxt.async_support as ccxt
 from dotenv import load_dotenv
 # Telegram
-from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from telegram.error import RetryAfter, TimedOut
-from telegram import Update
 import time
 import json
 import aiohttp
@@ -51,8 +50,14 @@ from config import (
     SMC_SETTINGS,
     FRACTAL_SETTINGS,
     PAIRS_TO_SCAN,
-    DISPLAY_SETTINGS
+    DISPLAY_SETTINGS,
+    FIBONACCI_SETTINGS,
+    VOLUME_PROFILE_SETTINGS,
+    STATS_SETTINGS
 )
+
+# Импорт системы статистики
+from signal_stats import SignalStatistics
 
 # Настройка логирования
 logging.basicConfig(
@@ -116,7 +121,7 @@ class ChartGenerator:
         self.dpi = 100
         self.style = 'dark_background'
         
-    def create_chart(self, df: pd.DataFrame, signal: Dict, coin: str) -> BytesIO:
+    def create_chart(self, df: pd.DataFrame, signal: Dict, coin: str, timeframe: str = '15m') -> BytesIO:
         """
         Создание графика с ценой, индикаторами и целями
         """
@@ -169,7 +174,7 @@ class ChartGenerator:
                        label=f'Stop: {signal["stop_loss"]}')
         
         direction_emoji = "🟢" if "LONG" in signal['direction'] else "🔴" if "SHORT" in signal['direction'] else "⚪"
-        ax1.set_title(f'{direction_emoji} {coin} - {signal["direction"]} (уверенность {signal["confidence"]}%)', 
+        ax1.set_title(f'{direction_emoji} {coin} - {signal["direction"]} (TF: {timeframe}, уверенность {signal["confidence"]}%)', 
                      fontsize=14, fontweight='bold', color='white')
         ax1.set_ylabel('Price (USDT)', color='white')
         ax1.legend(loc='upper left', fontsize=8, facecolor='#222222')
@@ -370,6 +375,35 @@ class SmartMoneyAnalyzer:
                             break
         return order_blocks[-20:]
     
+    def find_fair_value_gaps(self, df: pd.DataFrame) -> List[Dict]:
+        fvg_list = []
+        for i in range(1, len(df) - 1):
+            candle1 = df.iloc[i-1]
+            candle2 = df.iloc[i]
+            candle3 = df.iloc[i+1]
+            
+            if candle3['low'] > candle1['high']:
+                gap_size = (candle3['low'] - candle1['high']) / candle1['high'] * 100
+                fvg_list.append({
+                    'type': 'bullish',
+                    'price_min': candle1['high'],
+                    'price_max': candle3['low'],
+                    'size': gap_size,
+                    'strength': min(100, gap_size * 20),
+                    'description': f"Бычий FVG ({gap_size:.2f}%)"
+                })
+            elif candle3['high'] < candle1['low']:
+                gap_size = (candle1['low'] - candle3['high']) / candle3['high'] * 100
+                fvg_list.append({
+                    'type': 'bearish',
+                    'price_min': candle3['high'],
+                    'price_max': candle1['low'],
+                    'size': gap_size,
+                    'strength': min(100, gap_size * 20),
+                    'description': f"Медвежий FVG ({gap_size:.2f}%)"
+                })
+        return fvg_list[-10:]
+    
     def analyze(self, df: pd.DataFrame, current_price: float) -> Dict:
         result = {
             'has_signal': False,
@@ -377,12 +411,21 @@ class SmartMoneyAnalyzer:
             'strength': 0
         }
         
+        # Ордер-блоки
         order_blocks = self.find_order_blocks(df)
         for ob in order_blocks:
             if ob['price_min'] <= current_price <= ob['price_max']:
                 result['has_signal'] = True
                 result['signals'].append(ob['description'])
                 result['strength'] = max(result['strength'], ob['strength'])
+        
+        # FVG
+        fvg_list = self.find_fair_value_gaps(df)
+        for fvg in fvg_list:
+            if fvg['price_min'] <= current_price <= fvg['price_max']:
+                result['has_signal'] = True
+                result['signals'].append(f"📐 FVG: {fvg['description']}")
+                result['strength'] = max(result['strength'], fvg['strength'])
         
         return result
 
@@ -909,6 +952,14 @@ class MultiTimeframeAnalyzer:
         self.divergence = DivergenceAnalyzer() if FEATURES['advanced']['divergence'] else None
         self.smc = SmartMoneyAnalyzer(SMC_SETTINGS) if FEATURES['advanced']['smart_money'] else None
         self.fractal = FractalAnalyzer(FRACTAL_SETTINGS) if FEATURES['advanced']['fractals'] else None
+        self.fibonacci = None
+        self.volume_profile = None
+    
+    def set_fibonacci(self, fib_analyzer):
+        self.fibonacci = fib_analyzer
+    
+    def set_volume_profile(self, vp_analyzer):
+        self.volume_profile = vp_analyzer
     
     def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         df['rsi'] = calculate_rsi(df['close'], INDICATOR_SETTINGS['rsi_period'])
@@ -1048,24 +1099,22 @@ class MultiTimeframeAnalyzer:
             reasons.append(f"Тренды согласованы ({alignment['trend_alignment']:.0f}%)")
             confidence += INDICATOR_WEIGHTS['trend_alignment']
         
-            # Анализ Фибоначчи
-        if hasattr(self, 'fibonacci') and self.fibonacci and FEATURES['advanced']['fibonacci']:
+        # Анализ Фибоначчи
+        if self.fibonacci and FEATURES['advanced']['fibonacci']:
             fib_analysis = self.fibonacci.analyze_multi_timeframe(dataframes)
             if fib_analysis['has_confluence']:
                 for signal in fib_analysis['signals']:
                     reasons.append(signal)
                 confidence += fib_analysis['strength'] / 5
-                # Сохраняем в результат (будет добавлен позже)
                 fib_result = fib_analysis
 
         # Анализ Volume Profile
-        if hasattr(self, 'volume_profile') and self.volume_profile and FEATURES['advanced']['volume_profile']:
+        if self.volume_profile and FEATURES['advanced']['volume_profile']:
             vp_analysis = self.volume_profile.analyze_multi_timeframe(dataframes)
             if vp_analysis['has_confluence']:
                 for signal in vp_analysis['signals']:
                     reasons.append(signal)
                 confidence += vp_analysis['strength'] / 5
-                # Сохраняем в результат (будет добавлен позже)
                 vp_result = vp_analysis
 
         funding = metadata.get('funding_rate')
@@ -1128,7 +1177,7 @@ class MultiTimeframeAnalyzer:
             targets['target_2'] = round(current_price - atr * 3.0, 2)
             targets['stop_loss'] = round(current_price + atr * 1.0, 2)
         
-        return {
+        result = {
             'symbol': symbol,
             'exchange': exchange,
             'price': current_price,
@@ -1144,11 +1193,11 @@ class MultiTimeframeAnalyzer:
             'alignment': alignment,
             **targets
         }
-         # Добавляем результаты анализов если они есть
-        if 'fib_result' in locals():
-            result['fibonacci'] = fib_result
-        if 'vp_result' in locals():
-            result['volume_profile'] = vp_result
+        
+        if 'fib_analysis' in locals() and fib_analysis:
+            result['fibonacci'] = fib_analysis
+        if 'vp_analysis' in locals() and vp_analysis:
+            result['volume_profile'] = vp_analysis
         
         return result
 
@@ -1289,7 +1338,7 @@ class FastPumpScanner:
     def format_pump_message(self, signal: Dict, contract_info: Dict = None) -> Tuple[str, InlineKeyboardMarkup]:
         coin = signal['symbol'].split('/')[0].replace('USDT', '')
         
-        line1 = f"🚀 {coin} {signal['signal_type']} {signal['pump_dump'][0]['change_percent']:+.1f}% {signal['signal_power']}"
+        line1 = f"🚀 <code>{coin}</code> {signal['signal_type']} {signal['pump_dump'][0]['change_percent']:+.1f}% {signal['signal_power']}"
         
         if contract_info:
             max_lev = contract_info.get('max_leverage', 100)
@@ -1305,8 +1354,6 @@ class FastPumpScanner:
                     volume_str = f" / {vol/1_000:.1f}K"
                 else:
                     volume_str = f" / {vol:.0f}"
-            else:
-                volume_str = " / N/A"
             
             line2 = f"📌 {max_lev}x / {min_amt:.0f}$ / {self._format_compact(max_amt)}{volume_str} / ⚪ 0.000%"
         else:
@@ -1396,18 +1443,31 @@ class MultiExchangeScannerBot:
         self.imbalance = ImbalanceAnalyzer(IMBALANCE_SETTINGS) if FEATURES['advanced']['imbalance'] else None
         self.liquidity = LiquidityAnalyzer(LIQUIDITY_SETTINGS) if FEATURES['advanced']['liquidity'] else None
         
+        # Инициализация дополнительных анализаторов
         if FEATURES['advanced']['fibonacci']:
             from config import FIBONACCI_SETTINGS
             self.fibonacci = FibonacciAnalyzer(FIBONACCI_SETTINGS)
+            self.analyzer.set_fibonacci(self.fibonacci)
             logger.info("✅ Анализатор Фибоначчи инициализирован")
 
         if FEATURES['advanced']['volume_profile']:
             from config import VOLUME_PROFILE_SETTINGS
             self.volume_profile = VolumeProfileAnalyzer(VOLUME_PROFILE_SETTINGS)
+            self.analyzer.set_volume_profile(self.volume_profile)
             logger.info("✅ Volume Profile анализатор инициализирован")
-
+        
+        # Инициализация бирж
         if FEATURES['exchanges'].get('bingx', {}).get('enabled', False):
             self.fetchers['BingX'] = BingxFetcher()
+        
+        # Инициализация статистики
+        if STATS_SETTINGS['enabled'] and STATS_SETTINGS['stats_chat_id']:
+            self.stats = SignalStatistics(self.telegram_bot, STATS_SETTINGS['stats_chat_id'])
+            logger.info("✅ Система статистики инициализирована")
+            
+            # Запускаем фоновые задачи
+            asyncio.create_task(self.stats_updater_loop())
+            asyncio.create_task(self.daily_report_loop())
     
     def extract_coin(self, symbol: str) -> str:
         if '/USDT' in symbol:
@@ -1441,16 +1501,22 @@ class MultiExchangeScannerBot:
             coin = self.extract_coin(signal['symbol'])
             pump_text = ""
         
-        line1 = f"{main_emoji} {coin}{pump_text} {signal['signal_power']}"
+        line1 = f"{main_emoji} <code>{coin}</code>{pump_text} {signal['signal_power']}"
         
         if contract_info:
-            max_lev = contract_info.get('max_leverage', 100)
-            min_amt = contract_info.get('min_amount', 5.0)
-            max_amt = contract_info.get('max_amount', 2_000_000)
+            max_lev = contract_info.get('max_leverage')
+            if max_lev is None:
+                max_lev = 100
+            min_amt = contract_info.get('min_amount')
+            if min_amt is None:
+                min_amt = 5.0
+            max_amt = contract_info.get('max_amount')
+            if max_amt is None:
+                max_amt = 2_000_000
             
             line2 = f"📌 {max_lev}x / {min_amt:.0f}$ / {self.format_compact(max_amt)}"
             
-            if signal.get('volume_24h') and signal['volume_24h'] is not None and signal['volume_24h'] > 0:
+            if signal.get('volume_24h') is not None and signal['volume_24h'] > 0:
                 volume = signal['volume_24h']
                 if volume > 1_000_000:
                     line2 += f" / {volume/1_000_000:.1f}M"
@@ -1458,17 +1524,29 @@ class MultiExchangeScannerBot:
                     line2 += f" / {volume/1_000:.1f}K"
                 else:
                     line2 += f" / {volume:.0f}"
-            else:
-                line2 += f" / N/A"
             
-            funding_rate = signal.get('funding_rate', 0)
-            if funding_rate is None:
-                funding_rate = 0.0
-            funding = funding_rate * 100
-            funding_emoji = "🟢" if funding > 0 else "🔴" if funding < 0 else "⚪"
-            line2 += f" / {funding_emoji} {funding:.3f}%"
+            funding_rate = signal.get('funding_rate')
+            if funding_rate is not None:
+                funding = funding_rate * 100
+                funding_emoji = "🟢" if funding > 0 else "🔴" if funding < 0 else "⚪"
+                line2 += f" / {funding_emoji} {funding:.3f}%"
         else:
-            line2 = f"📌 100x / 5$ / 2.0M / N/A / ⚪ 0.000%"
+            line2 = f"📌 100x / 5$ / 2.0M"
+            
+            if signal.get('volume_24h') is not None and signal['volume_24h'] > 0:
+                volume = signal['volume_24h']
+                if volume > 1_000_000:
+                    line2 += f" / {volume/1_000_000:.1f}M"
+                elif volume > 1_000:
+                    line2 += f" / {volume/1_000:.1f}K"
+                else:
+                    line2 += f" / {volume:.0f}"
+            
+            funding_rate = signal.get('funding_rate')
+            if funding_rate is not None:
+                funding = funding_rate * 100
+                funding_emoji = "🟢" if funding > 0 else "🔴" if funding < 0 else "⚪"
+                line2 += f" / {funding_emoji} {funding:.3f}%"
         
         exchange_link = REF_LINKS.get(signal['exchange'], '#')
         line3 = f"💲 Trade: <a href='{exchange_link}'>{signal['exchange']}</a>"
@@ -1674,7 +1752,7 @@ class MultiExchangeScannerBot:
         try:
             if df is not None and not df.empty:
                 df = self.analyzer.calculate_indicators(df)
-                chart_buf = self.chart_generator.create_chart(df, signal, coin)
+                chart_buf = self.chart_generator.create_chart(df, signal, coin, TIMEFRAMES.get('current', '15m'))
                 
                 await self.telegram_bot.send_photo(
                     chat_id=TELEGRAM_CHAT_ID,
@@ -1692,6 +1770,12 @@ class MultiExchangeScannerBot:
                     reply_markup=keyboard
                 )
                 logger.info(f"✅ Отправлен сигнал: {signal['symbol']}")
+            
+            # Добавляем в статистику
+            if hasattr(self, 'stats'):
+                signal_type = 'pump' if signal.get('pump_dump') else 'regular'
+                self.stats.add_signal(signal, signal_type)
+                
         except Exception as e:
             logger.error(f"❌ Ошибка отправки: {e}")
     
@@ -1714,7 +1798,7 @@ class MultiExchangeScannerBot:
         try:
             if df is not None and not df.empty:
                 df = self.analyzer.calculate_indicators(df)
-                chart_buf = self.chart_generator.create_chart(df, signal, coin)
+                chart_buf = self.chart_generator.create_chart(df, signal, coin, TIMEFRAMES.get('current', '15m'))
                 
                 await self.telegram_bot.send_photo(
                     chat_id=TELEGRAM_CHAT_ID,
@@ -1732,6 +1816,11 @@ class MultiExchangeScannerBot:
                     reply_markup=pump_data['keyboard']
                 )
                 logger.info(f"✅ Отправлен памп-сигнал: {signal['symbol']}")
+            
+            # Добавляем в статистику
+            if hasattr(self, 'stats'):
+                self.stats.add_signal(signal, 'pump')
+                
         except Exception as e:
             logger.error(f"❌ Ошибка отправки пампа: {e}")
     
@@ -1755,6 +1844,18 @@ class MultiExchangeScannerBot:
                 for reason in signal['reasons']:
                     clean_reason = reason.replace("📊 ", "").replace("✅ ", "").replace("🔄 ", "")
                     lines.append(f"└ {clean_reason}")
+                
+                # Добавляем информацию о Фибоначчи если есть
+                if 'fibonacci' in signal:
+                    lines.append("\n📐 *ФИБОНАЧЧИ:*")
+                    for tf, levels in signal['fibonacci']['levels'].items():
+                        lines.append(f"└ {tf.upper()}: {len(levels)} уровней")
+                
+                # Добавляем информацию о Volume Profile если есть
+                if 'volume_profile' in signal:
+                    lines.append("\n📊 *VOLUME PROFILE:*")
+                    for tf, vp in signal['volume_profile']['levels'].items():
+                        lines.append(f"└ {tf.upper()}: POC={vp['poc']:.2f}")
             
             detailed = "\n".join(lines)
             
@@ -1767,6 +1868,38 @@ class MultiExchangeScannerBot:
         except Exception as e:
             logger.error(f"Ошибка детального анализа {symbol}: {e}")
             return f"❌ Ошибка анализа: {e}", None
+    
+    async def stats_updater_loop(self):
+        """Обновление статусов сигналов каждые 5 минут"""
+        while True:
+            await asyncio.sleep(STATS_SETTINGS['update_interval'])
+            
+            for signal_id, signal_data in self.stats.db['signals'].items():
+                if signal_data['status'] != 'pending':
+                    continue
+                
+                # Получаем текущую цену
+                for fetcher in self.fetchers.values():
+                    ticker = await fetcher.fetch_ticker(signal_data['symbol'])
+                    if ticker and ticker.get('last'):
+                        self.stats.update_signal(signal_id, ticker['last'])
+                        break
+
+    async def daily_report_loop(self):
+        """Ежедневный отчет в 20:00"""
+        while True:
+            now = datetime.now()
+            target_time = datetime.strptime(STATS_SETTINGS['daily_report_time'], '%H:%M').time()
+            target = datetime.combine(now.date(), target_time)
+            
+            if now > target:
+                target += timedelta(days=1)
+            
+            wait_seconds = (target - now).total_seconds()
+            await asyncio.sleep(wait_seconds)
+            
+            if hasattr(self, 'stats'):
+                await self.stats.send_daily_report()
     
     async def run(self):
         logger.info("🤖 Мульти-биржевой бот запущен")
@@ -1815,7 +1948,9 @@ class TelegramHandler:
         self.app.add_handler(CommandHandler("scan", self.scan))
         self.app.add_handler(CommandHandler("status", self.status))
         self.app.add_handler(CommandHandler("help", self.help))
+        self.app.add_handler(CommandHandler("stats", self.stats_command))
         self.app.add_handler(CallbackQueryHandler(self.button))
+        self.app.add_handler(CallbackQueryHandler(self.stats_button_handler, pattern="^stats_"))
     
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
@@ -1824,6 +1959,7 @@ class TelegramHandler:
             "Команды:\n"
             "/scan - Ручное сканирование\n"
             "/status - Статус\n"
+            "/stats - Статистика сигналов\n"
             "/help - Помощь",
             parse_mode='Markdown'
         )
@@ -1853,11 +1989,156 @@ class TelegramHandler:
             "🚀 Памп-сканер каждые 30 сек\n\n"
             "Команды:\n"
             "/scan - ручное сканирование\n"
-            "/status - состояние бота",
+            "/status - состояние бота\n"
+            "/stats - статистика сигналов",
             parse_mode='Markdown'
         )
     
+    async def stats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка команд статистики"""
+        # Проверяем, что команда из группы статистики
+        if str(update.effective_chat.id) != STATS_SETTINGS['stats_chat_id']:
+            await update.message.reply_text("❌ Эта команда доступна только в группе статистики")
+            return
+        
+        if not hasattr(self.bot, 'stats'):
+            await update.message.reply_text("❌ Статистика не инициализирована")
+            return
+        
+        # Разбираем команду
+        text = update.message.text
+        parts = text.split()
+        
+        # По умолчанию
+        days = 7
+        signal_type = 'all'
+        coin = None
+        
+        if len(parts) > 1:
+            for part in parts[1:]:
+                if part.isdigit():
+                    days = int(part)
+                elif part.lower() in ['pump', 'pumps']:
+                    signal_type = 'pump'
+                elif part.lower() in ['regular', 'обычные']:
+                    signal_type = 'regular'
+                elif part.upper() in [p.split('/')[0] for p in PAIRS_TO_SCAN]:
+                    coin = part.upper()
+        
+        stats = self.bot.stats.get_statistics(
+            days=days, 
+            signal_type=signal_type,
+            coin=coin
+        )
+        
+        msg = self.bot.stats.format_stats_message(stats, days, signal_type, coin)
+        
+        keyboard = [
+            [InlineKeyboardButton("📊 Общая", callback_data="stats_7"),
+             InlineKeyboardButton("🚀 Пампы", callback_data="stats_pump_7")],
+            [InlineKeyboardButton("📈 По монетам", callback_data="stats_coins"),
+             InlineKeyboardButton("❓ Помощь", callback_data="stats_help")]
+        ]
+        
+        await update.message.reply_text(
+            msg, 
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    
+    async def stats_button_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка кнопок статистики"""
+        query = update.callback_query
+        await query.answer()
+        
+        data = query.data
+        
+        if data == "stats_7":
+            stats = self.bot.stats.get_statistics(days=7)
+            msg = self.bot.stats.format_stats_message(stats, 7)
+        elif data == "stats_pump_7":
+            stats = self.bot.stats.get_statistics(days=7, signal_type='pump')
+            msg = self.bot.stats.format_stats_message(stats, 7, signal_type='pump')
+        elif data == "stats_regular_7":
+            stats = self.bot.stats.get_statistics(days=7, signal_type='regular')
+            msg = self.bot.stats.format_stats_message(stats, 7, signal_type='regular')
+        elif data == "stats_coins":
+            # Показываем список монет
+            coins = set()
+            for signal in self.bot.stats.db['signals'].values():
+                coins.add(signal['coin'])
+            
+            msg = "📈 *Выберите монету:*\n\n"
+            keyboard = []
+            row = []
+            
+            for i, coin in enumerate(sorted(coins)[:12]):
+                row.append(InlineKeyboardButton(coin, callback_data=f"stats_coin_{coin}"))
+                if len(row) == 3:
+                    keyboard.append(row)
+                    row = []
+            if row:
+                keyboard.append(row)
+            
+            keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="stats_back")])
+            
+            await query.edit_message_text(
+                msg,
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            return
+        elif data.startswith("stats_coin_"):
+            coin = data.replace("stats_coin_", "")
+            stats = self.bot.stats.get_statistics(days=7, coin=coin)
+            msg = self.bot.stats.format_stats_message(stats, 7, coin=coin)
+        elif data == "stats_help":
+            msg = """
+📚 *ПОМОЩЬ ПО СТАТИСТИКЕ*
+
+Вы можете нажимать кнопки или вводить команды:
+
+🔹 *Простые команды:*
+/stats - статистика за 7 дней
+/stats 30 - статистика за 30 дней
+/stats 1 - статистика за сегодня
+
+🔹 *По типу сигналов:*
+/stats pump - только пампы
+/stats regular - только обычные
+
+🔹 *По монетам:*
+/stats BTC - по Bitcoin
+/stats ETH 14 - по Ethereum за 14 дней
+
+🔹 *Примеры:*
+/stats 7 pump - пампы за неделю
+/stats 30 regular - обычные за месяц
+/stats 14 BTC - по BTC за 14 дней
+
+📌 *Совет:* Просто нажимайте кнопки! 👆
+"""
+        elif data == "stats_back":
+            stats = self.bot.stats.get_statistics(days=7)
+            msg = self.bot.stats.format_stats_message(stats, 7)
+        else:
+            return
+        
+        keyboard = [
+            [InlineKeyboardButton("📊 Общая", callback_data="stats_7"),
+             InlineKeyboardButton("🚀 Пампы", callback_data="stats_pump_7")],
+            [InlineKeyboardButton("📈 По монетам", callback_data="stats_coins"),
+             InlineKeyboardButton("❓ Помощь", callback_data="stats_help")]
+        ]
+        
+        await query.edit_message_text(
+            msg,
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    
     async def button(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработчик кнопок сигналов"""
         query = update.callback_query
         await query.answer()
         data = query.data
