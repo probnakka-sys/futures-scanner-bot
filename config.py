@@ -32,7 +32,7 @@ PUMP_SCAN_SETTINGS = {
     'instant_threshold': 2.5,                   # % за 1-2 минуты для мгновенного сигнала
     'timeframes': ['1m', '3m', '5m', '15m'],    # Быстрые ТФ
     'min_volume_usdt': 5000,                    # Мин. объем
-    'max_pairs_to_scan': 500,
+    'max_pairs_to_scan': 600,
     'include_low_liquidity': True,
     'send_top_pumps': 999,
     'cooldown_minutes': 15,
