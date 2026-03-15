@@ -91,7 +91,7 @@ FEATURES = {
         'order_blocks': True,
         'fractals': True,
         'smart_money': True,
-        'volume_profile': True,  # Добавили Volume Profile
+        'volume_profile': False,  # Добавили Volume Profile
     },
     
     'testing': {
