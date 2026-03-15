@@ -1778,22 +1778,22 @@ class MultiExchangeScannerBot:
         return all_signals[:15]
     
     async def fast_pump_scan(self) -> List[Dict]:
-    if not FEATURES['advanced']['pump_dump']:
-        return []
-    
-    pump_signals = []
-    for name, fetcher in self.fetchers.items():
-        scanner = FastPumpScanner(fetcher, PUMP_SCAN_SETTINGS, self.analyzer)
-        signals = await scanner.scan_all_pairs()  # Теперь использует оптимизированный метод
+        if not FEATURES['advanced']['pump_dump']:
+            return []
         
-        for signal in signals:
-            contract_info = await fetcher.fetch_contract_info(signal['symbol'])
-            msg, keyboard = scanner.format_pump_message(signal, contract_info)
-            pump_signals.append({
-                'signal': signal,
-                'message': msg,
-                'keyboard': keyboard
-            })
+        pump_signals = []
+        for name, fetcher in self.fetchers.items():
+            scanner = FastPumpScanner(fetcher, PUMP_SCAN_SETTINGS, self.analyzer)
+            signals = await scanner.scan_all_pairs()  # Теперь использует оптимизированный метод
+            
+            for signal in signals:
+                contract_info = await fetcher.fetch_contract_info(signal['symbol'])
+                msg, keyboard = scanner.format_pump_message(signal, contract_info)
+                pump_signals.append({
+                    'signal': signal,
+                    'message': msg,
+                    'keyboard': keyboard
+                })
     
     pump_signals.sort(key=lambda x: abs(x['signal']['pump_dump'][0]['change_percent']), reverse=True)
     return pump_signals
