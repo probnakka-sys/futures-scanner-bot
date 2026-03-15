@@ -174,15 +174,14 @@ class ChartGenerator:
                        linestyle='--', linewidth=1.5, alpha=0.8,
                        label=f'Stop: {signal["stop_loss"]}')
         
-        # Убираем эмодзи, оставляем только текстовое обозначение
-        direction_text = "LONG" if "LONG" in signal['direction'] else "SHORT" if "SHORT" in signal['direction'] else "NEUTRAL"
-            ax1.set_title(f'{coin} - {signal["direction"]} (TF: {timeframe}, уверенность {signal["confidence"]}%)', 
-                        fontsize=14, fontweight='bold', color='white')
-            ax1.set_ylabel('Price (USDT)', color='white')
-            ax1.legend(loc='upper left', fontsize=8, facecolor='#222222')
-            ax1.grid(True, alpha=0.2, linestyle='--')
-            ax1.tick_params(colors='white')
-            ax1.set_facecolor('#111111')
+        # Убираем эмодзи из заголовка, чтобы избежать проблем со шрифтами
+        ax1.set_title(f'{coin} - {signal["direction"]} (TF: {timeframe}, уверенность {signal["confidence"]}%)', 
+                     fontsize=14, fontweight='bold', color='white')
+        ax1.set_ylabel('Price (USDT)', color='white')
+        ax1.legend(loc='upper left', fontsize=8, facecolor='#222222')
+        ax1.grid(True, alpha=0.2, linestyle='--')
+        ax1.tick_params(colors='white')
+        ax1.set_facecolor('#111111')
         
         # ===== НИЖНИЙ ГРАФИК =====
         if 'rsi' in plot_df.columns:
