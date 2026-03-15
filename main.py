@@ -1747,7 +1747,13 @@ class MultiExchangeScannerBot:
                     
                     logger.info(f"  📊 Метаданные: funding={funding}, volume={ticker.get('volume_24h')}")
                     
-                    signal = self.analyzer.generate_signal(dataframes, metadata, pair, name)
+                    try:
+                        signal = self.analyzer.generate_signal(dataframes, metadata, pair, name)
+                    except Exception as e:
+                        logger.error(f"❌ Исключение в generate_signal для {pair}: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        continue
                     
                     if signal is None:
                         logger.info(f"  ❌ generate_signal вернул None для {pair}")
