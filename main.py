@@ -1241,14 +1241,20 @@ class FastPumpScanner:
                         if df is None or len(df) < 10:
                             continue
                         
-                        if tf == '30m':
+                        if tf == '1m':
                             bars_ago = 1
-                            minutes = 30
-                        elif tf == '15m':
-                            bars_ago = 2
-                            minutes = 30
+                            minutes = 1
+                        elif tf == '3m':
+                            bars_ago = 1
+                            minutes = 3
                         elif tf == '5m':
-                            bars_ago = 6
+                            bars_ago = 1
+                            minutes = 5
+                        elif tf == '15m':
+                            bars_ago = 1
+                            minutes = 15
+                        elif tf == '30m':
+                            bars_ago = 1
                             minutes = 30
                         else:
                             bars_ago = 1
