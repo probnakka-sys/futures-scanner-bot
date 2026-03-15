@@ -176,6 +176,17 @@ INDICATOR_WEIGHTS = {
     'volume_profile': 25,
 }
 
+# ============== НАСТРОЙКИ СТАТИСТИКИ ==============
+
+STATS_SETTINGS = {
+    'enabled': True,
+    'stats_chat_id': os.getenv('STATS_CHAT_ID', ''),  # ID группы для статистики
+    'daily_report_time': '20:00',  # Время ежедневного отчета (20:00)
+    'update_interval': 300,  # 5 минут обновление статусов
+    'history_days': 90,       # храним статистику 90 дней
+    'db_file': 'signals_database.json'
+}
+
 # ============== ОСТАЛЬНЫЕ НАСТРОЙКИ ==============
 
 PUMP_DUMP_SETTINGS = {
