@@ -10,13 +10,12 @@ load_dotenv()
 
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
-PUMP_CHAT_ID = os.getenv('PUMP_CHAT_ID', '')
 UPDATE_INTERVAL = int(os.getenv('UPDATE_INTERVAL', 900))  # 15 минут для основного анализа
 PUMP_SCAN_INTERVAL = int(os.getenv('PUMP_SCAN_INTERVAL', 30))  # 30 секунд для памп-сканера
 MIN_CONFIDENCE = int(os.getenv('MIN_CONFIDENCE', 55))
 TIMEFRAME = os.getenv('TIMEFRAME', '15m')
 PAIRS_TO_SCAN = int(os.getenv('PAIRS_TO_SCAN', 50))
- 
+
 # Реферальные ссылки
 REF_LINKS = {
     'BingX': 'https://bingxdao.com/invite/ZTR83C/',
@@ -32,7 +31,7 @@ PUMP_SCAN_SETTINGS = {
     'instant_threshold': 2.5,                   # % за 1-2 минуты для мгновенного сигнала
     'timeframes': ['1m', '3m', '5m', '15m'],    # Быстрые ТФ
     'min_volume_usdt': 5000,                    # Мин. объем
-    'max_pairs_to_scan': 600,
+    'max_pairs_to_scan': 500,
     'include_low_liquidity': True,
     'send_top_pumps': 999,
     'cooldown_minutes': 15,
