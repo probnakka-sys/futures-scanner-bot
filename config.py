@@ -24,6 +24,16 @@ REF_LINKS = {
     'MEXC': os.getenv('MEXC_REF_LINK', 'https://www.mexc.com')
 }
 
+# ============== НАСТРОЙКИ ПРОИЗВОДИТЕЛЬНОСТИ ==============
+
+PERFORMANCE_SETTINGS = {
+    'pump_batch_size': 50,           # Параллельная обработка 50 пар за раз
+    'max_concurrent_requests': 10,    # Максимум одновременных запросов
+    'delay_between_batches': 0.5,     # Пауза между батчами (сек)
+    'cache_ohlcv': True,               # Кэшировать свечные данные
+    'cache_ttl': 60,                    # Время жизни кэша (сек)
+}
+
 # ============== НАСТРОЙКИ ПАМП-СКАНЕРА ==============
 
 PUMP_SCAN_SETTINGS = {
