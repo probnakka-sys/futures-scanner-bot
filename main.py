@@ -1128,8 +1128,65 @@ class MultiTimeframeAnalyzer:
                     reasons.append(signal)
                 confidence += vp_analysis['strength'] / 5
 
-        funding = metadata.get('funding_rate')
-        # ... остальной код до формирования result ...
+                funding = metadata.get('funding_rate')
+        if funding is not None and funding != 0:
+            funding_pct = funding * 100
+            if funding > 0.001:
+                reasons.append(f"Позитивный фандинг ({funding_pct:.4f}%)")
+                if confidence > 60:
+                    direction = 'SHORT 📉'
+            elif funding < -0.001:
+                reasons.append(f"Негативный фандинг ({funding_pct:.4f}%)")
+                if confidence > 60:
+                    direction = 'LONG 📈'
+        
+        bullish_keywords = ['перепродан', 'Бычье', 'восходящий', 'негативный фандинг', 'выше VWAP']
+        bearish_keywords = ['перекуплен', 'Медвежье', 'нисходящий', 'позитивный фандинг', 'ниже VWAP']
+        bullish = sum(1 for r in reasons if any(k in r for k in bullish_keywords))
+        bearish = sum(1 for r in reasons if any(k in r for k in bearish_keywords))
+        
+        if bullish > bearish and confidence >= MIN_CONFIDENCE:
+            if alignment['weekly_trend'] == 'ВОСХОДЯЩИЙ 📈':
+                direction = 'Разворот LONG 📈'
+                reasons.append("Подтверждение разворота недельным трендом")
+            else:
+                direction = 'LONG 📈'
+        elif bearish > bullish and confidence >= MIN_CONFIDENCE:
+            if alignment['weekly_trend'] == 'НИСХОДЯЩИЙ 📉':
+                direction = 'Разворот SHORT 📉'
+                reasons.append("Подтверждение разворота недельным трендом")
+            else:
+                direction = 'SHORT 📉'
+        
+        signal_strength = (confidence + alignment['trend_alignment']) / 2
+        
+        signal_power = "⚡️"
+        if signal_strength >= 85:
+            signal_power = "🔥🔥🔥 ОЧЕНЬ СИЛЬНЫЙ"
+        elif signal_strength >= 70:
+            signal_power = "🔥🔥 СИЛЬНЫЙ"
+        elif signal_strength >= 55:
+            signal_power = "🔥 СРЕДНИЙ"
+        elif signal_strength >= 40:
+            signal_power = "📊 СЛАБЫЙ"
+        else:
+            signal_power = "👀 НАБЛЮДЕНИЕ"
+        
+        if direction == 'NEUTRAL':
+            return None
+        
+        atr = last['atr'] if pd.notna(last['atr']) else (last['high'] - last['low']) * 0.3
+        current_price = last['close']
+        targets = {}
+        
+        if 'LONG' in direction:
+            targets['target_1'] = round(current_price + atr * 1.5, 2)
+            targets['target_2'] = round(current_price + atr * 3.0, 2)
+            targets['stop_loss'] = round(current_price - atr * 1.0, 2)
+        else:
+            targets['target_1'] = round(current_price - atr * 1.5, 2)
+            targets['target_2'] = round(current_price - atr * 3.0, 2)
+            targets['stop_loss'] = round(current_price + atr * 1.0, 2)
         
         result = {
             'symbol': symbol,
@@ -1148,9 +1205,9 @@ class MultiTimeframeAnalyzer:
             **targets
         }
         
-        if fib_analysis:
+        if 'fib_analysis' in locals() and fib_analysis:
             result['fibonacci'] = fib_analysis
-        if vp_analysis:
+        if 'vp_analysis' in locals() and vp_analysis:
             result['volume_profile'] = vp_analysis
         
         return result
