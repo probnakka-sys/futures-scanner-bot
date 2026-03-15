@@ -857,7 +857,7 @@ class BingxFetcher(BaseExchangeFetcher):
             'secret': os.getenv('BINGX_SECRET_KEY'),
             'enableRateLimit': True,
             'options': {
-                'defaultType': 'swap',
+                'defaultType': 'swap',  # swap = фьючерсы
                 'adjustForTimeDifference': True
             }
         })
@@ -865,20 +865,14 @@ class BingxFetcher(BaseExchangeFetcher):
     
     async def fetch_all_pairs(self) -> List[str]:
         try:
-            # Принудительно устанавливаем тип рынка перед загрузкой
-            self.exchange.options['defaultType'] = 'swap'
-            # Перезагружаем рынки с новыми настройками
-            await self.exchange.load_markets(True)  # True = принудительная перезагрузка
-            
-            markets = self.exchange.markets
+            markets = await self.exchange.load_markets()
             usdt_pairs = []
             
             for symbol, market in markets.items():
                 # Проверяем, что это фьючерсный рынок USDT
                 if (market['quote'] == 'USDT' and 
                     market['active'] and 
-                    market['type'] in ['swap', 'future'] and
-                    ':USDT' in symbol):  # Фьючерсы BingX обычно имеют формат BTC/USDT:USDT
+                    market['type'] in ['swap', 'future']):
                     usdt_pairs.append(symbol)
             
             logger.info(f"📊 BingX Futures: загружено {len(usdt_pairs)} фьючерсных пар")
