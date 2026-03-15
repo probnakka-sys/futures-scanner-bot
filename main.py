@@ -1771,7 +1771,7 @@ class MultiExchangeScannerBot:
     async def run(self):
         logger.info("🤖 Мульти-биржевой бот запущен")
         logger.info(f"📊 Основной анализ: каждые {UPDATE_INTERVAL//60} мин")
-        logger.info(f"🚀 Памп-сканер: каждые {PUMP_SCAN_INTERVAL//60} мин")
+        logger.info(f"🚀 Памп-сканер: каждые {PUMP_SCAN_INTERVAL} сек")
         
         last_full_scan = 0
         
