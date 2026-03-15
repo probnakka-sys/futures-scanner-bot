@@ -35,7 +35,6 @@ from matplotlib.patches import Rectangle
 from config import (
     TELEGRAM_TOKEN,
     TELEGRAM_CHAT_ID,
-    PUMP_CHAT_ID,
     UPDATE_INTERVAL,
     PUMP_SCAN_INTERVAL,
     MIN_CONFIDENCE,
@@ -174,8 +173,8 @@ class ChartGenerator:
                        linestyle='--', linewidth=1.5, alpha=0.8,
                        label=f'Stop: {signal["stop_loss"]}')
         
-        # Убираем эмодзи из заголовка, чтобы избежать проблем со шрифтами
-        ax1.set_title(f'{coin} - {signal["direction"]} (TF: {timeframe}, уверенность {signal["confidence"]}%)', 
+        direction_emoji = "🟢" if "LONG" in signal['direction'] else "🔴" if "SHORT" in signal['direction'] else "⚪"
+        ax1.set_title(f'{direction_emoji} {coin} - {signal["direction"]} (TF: {timeframe}, уверенность {signal["confidence"]}%)', 
                      fontsize=14, fontweight='bold', color='white')
         ax1.set_ylabel('Price (USDT)', color='white')
         ax1.legend(loc='upper left', fontsize=8, facecolor='#222222')
@@ -857,7 +856,7 @@ class BingxFetcher(BaseExchangeFetcher):
             'secret': os.getenv('BINGX_SECRET_KEY'),
             'enableRateLimit': True,
             'options': {
-                'defaultType': 'swap',  # swap = фьючерсы
+                'defaultType': 'swap',
                 'adjustForTimeDifference': True
             }
         })
@@ -867,15 +866,11 @@ class BingxFetcher(BaseExchangeFetcher):
         try:
             markets = await self.exchange.load_markets()
             usdt_pairs = []
-            
             for symbol, market in markets.items():
-                # Проверяем, что это фьючерсный рынок USDT
                 if (market['quote'] == 'USDT' and 
                     market['active'] and 
                     market['type'] in ['swap', 'future']):
                     usdt_pairs.append(symbol)
-            
-            logger.info(f"📊 BingX Futures: загружено {len(usdt_pairs)} фьючерсных пар")
             return usdt_pairs
         except Exception as e:
             logger.error(f"❌ BingX ошибка: {e}")
@@ -1105,22 +1100,22 @@ class MultiTimeframeAnalyzer:
             confidence += INDICATOR_WEIGHTS['trend_alignment']
         
         # Анализ Фибоначчи
-        fib_analysis = None
         if self.fibonacci and FEATURES['advanced']['fibonacci']:
             fib_analysis = self.fibonacci.analyze_multi_timeframe(dataframes)
             if fib_analysis['has_confluence']:
                 for signal in fib_analysis['signals']:
                     reasons.append(signal)
                 confidence += fib_analysis['strength'] / 5
+                fib_result = fib_analysis
 
         # Анализ Volume Profile
-        vp_analysis = None
         if self.volume_profile and FEATURES['advanced']['volume_profile']:
             vp_analysis = self.volume_profile.analyze_multi_timeframe(dataframes)
             if vp_analysis['has_confluence']:
                 for signal in vp_analysis['signals']:
                     reasons.append(signal)
                 confidence += vp_analysis['strength'] / 5
+                vp_result = vp_analysis
 
         funding = metadata.get('funding_rate')
         if funding is not None and funding != 0:
@@ -1199,9 +1194,9 @@ class MultiTimeframeAnalyzer:
             **targets
         }
         
-        if fib_analysis:
+        if 'fib_analysis' in locals() and fib_analysis:
             result['fibonacci'] = fib_analysis
-        if vp_analysis:
+        if 'vp_analysis' in locals() and vp_analysis:
             result['volume_profile'] = vp_analysis
         
         return result
@@ -1241,20 +1236,14 @@ class FastPumpScanner:
                         if df is None or len(df) < 10:
                             continue
                         
-                        if tf == '1m':
+                        if tf == '30m':
                             bars_ago = 1
-                            minutes = 1
-                        elif tf == '3m':
-                            bars_ago = 1
-                            minutes = 3
-                        elif tf == '5m':
-                            bars_ago = 1
-                            minutes = 5
+                            minutes = 30
                         elif tf == '15m':
-                            bars_ago = 1
-                            minutes = 15
-                        elif tf == '30m':
-                            bars_ago = 1
+                            bars_ago = 2
+                            minutes = 30
+                        elif tf == '5m':
+                            bars_ago = 6
                             minutes = 30
                         else:
                             bars_ago = 1
@@ -1644,16 +1633,12 @@ class MultiExchangeScannerBot:
         try:
             pairs = await fetcher.fetch_all_pairs()
             if not pairs:
-                logger.warning(f"⚠️ {name}: нет пар для анализа")
                 return []
             
             scan_count = min(PAIRS_TO_SCAN, len(pairs))
-            logger.info(f"📊 {name}: буду анализировать {scan_count} пар из {len(pairs)}")
             
             for i, pair in enumerate(pairs[:PAIRS_TO_SCAN]):
                 try:
-                    logger.info(f"🔄 Анализирую {pair} ({i+1}/{scan_count})")
-                    
                     dataframes = {}
                     for tf_name, tf_value in TIMEFRAMES.items():
                         limit = 200 if tf_name == 'current' else 100
@@ -1661,12 +1646,8 @@ class MultiExchangeScannerBot:
                         if df is not None and not df.empty:
                             df = self.analyzer.calculate_indicators(df)
                             dataframes[tf_name] = df
-                            logger.info(f"✅ Загружены данные для {tf_name}: {len(df)} свечей")
-                        else:
-                            logger.warning(f"⚠️ Нет данных для {tf_name}")
                     
                     if not dataframes:
-                        logger.warning(f"⚠️ Нет данных для {pair}, пропускаю")
                         continue
                     
                     funding = await fetcher.fetch_funding_rate(pair)
@@ -1678,26 +1659,17 @@ class MultiExchangeScannerBot:
                         'price_change_24h': ticker.get('percentage')
                     }
                     
-                    logger.info(f"📊 Метаданные для {pair}: funding={funding}, volume={ticker.get('volume_24h')}")
-                    
                     signal = self.analyzer.generate_signal(dataframes, metadata, pair, name)
                     
-                    if signal is None:
-                        logger.info(f"❌ generate_signal вернул None для {pair}")
+                    if not signal:
                         continue
-                    
-                    logger.info(f"✅ Сгенерирован сигнал для {pair}: {signal['direction']} (уверенность {signal['confidence']}%)")
                     
                     if 'NEUTRAL' in signal['direction']:
-                        logger.info(f"⏭️ NEUTRAL сигнал пропущен: {pair}")
                         continue
                     
-                    if signal['confidence'] < MIN_CONFIDENCE:
-                        logger.info(f"⏭️ Низкая уверенность: {signal['confidence']}% < {MIN_CONFIDENCE}%")
-                        continue
-                    
-                    signals.append(signal)
-                    logger.info(f"✅ ДОБАВЛЕН сигнал: {name} {pair} - {signal['direction']} ({signal['confidence']}%)")
+                    if signal['confidence'] >= MIN_CONFIDENCE:
+                        signals.append(signal)
+                        logger.info(f"✅ {name} {pair} - {signal['direction']} ({signal['confidence']}%)")
                     
                     if (i + 1) % 10 == 0:
                         logger.info(f"📊 Прогресс {name}: {i + 1}/{scan_count}")
@@ -1705,13 +1677,11 @@ class MultiExchangeScannerBot:
                     await asyncio.sleep(0.2)
                     
                 except Exception as e:
-                    logger.error(f"❌ Ошибка анализа {name} {pair}: {e}")
                     continue
-                        
+                    
         except Exception as e:
             logger.error(f"❌ Ошибка сканирования {name}: {e}")
         
-        logger.info(f"🎯 {name}: найдено {len(signals)} сигналов")
         return signals
     
     async def scan_all(self) -> List[Dict]:
@@ -1831,7 +1801,7 @@ class MultiExchangeScannerBot:
                 chart_buf = self.chart_generator.create_chart(df, signal, coin, TIMEFRAMES.get('current', '15m'))
                 
                 await self.telegram_bot.send_photo(
-                    chat_id=PUMP_CHAT_ID,
+                    chat_id=TELEGRAM_CHAT_ID,
                     photo=chart_buf,
                     caption=pump_data['message'],
                     parse_mode='HTML',
@@ -1840,7 +1810,7 @@ class MultiExchangeScannerBot:
                 logger.info(f"✅ Отправлен памп-сигнал с графиком: {signal['symbol']}")
             else:
                 await self.telegram_bot.send_message(
-                    chat_id=PUMP_CHAT_ID,
+                    chat_id=TELEGRAM_CHAT_ID,
                     text=pump_data['message'],
                     parse_mode='HTML',
                     reply_markup=pump_data['keyboard']
