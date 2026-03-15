@@ -1705,62 +1705,81 @@ class MultiExchangeScannerBot:
         return message, InlineKeyboardMarkup(keyboard) if keyboard else None
     
     async def scan_exchange(self, name: str, fetcher: BaseExchangeFetcher) -> List[Dict]:
-        logger.info(f"🔍 Сканирую {name}...")
-        signals = []
+    logger.info(f"🔍 Сканирую {name}...")
+    signals = []
+    
+    try:
+        pairs = await fetcher.fetch_all_pairs()
+        if not pairs:
+            logger.warning(f"⚠️ {name}: нет пар для анализа")
+            return []
         
-        try:
-            pairs = await fetcher.fetch_all_pairs()
-            if not pairs:
-                return []
-            
-            scan_count = min(PAIRS_TO_SCAN, len(pairs))
-            
-            for i, pair in enumerate(pairs[:PAIRS_TO_SCAN]):
-                try:
-                    dataframes = {}
-                    for tf_name, tf_value in TIMEFRAMES.items():
-                        limit = 200 if tf_name == 'current' else 100
-                        df = await fetcher.fetch_ohlcv(pair, tf_value, limit)
-                        if df is not None and not df.empty:
-                            df = self.analyzer.calculate_indicators(df)
-                            dataframes[tf_name] = df
-                    
-                    if not dataframes:
-                        continue
-                    
-                    funding = await fetcher.fetch_funding_rate(pair)
-                    ticker = await fetcher.fetch_ticker(pair)
-                    
-                    metadata = {
-                        'funding_rate': funding,
-                        'volume_24h': ticker.get('volume_24h'),
-                        'price_change_24h': ticker.get('percentage')
-                    }
-                    
-                    signal = self.analyzer.generate_signal(dataframes, metadata, pair, name)
-                    
-                    if not signal:
-                        continue
-                    
-                    if 'NEUTRAL' in signal['direction']:
-                        continue
-                    
-                    if signal['confidence'] >= MIN_CONFIDENCE:
-                        signals.append(signal)
-                        logger.info(f"✅ {name} {pair} - {signal['direction']} ({signal['confidence']}%)")
-                    
-                    if (i + 1) % 10 == 0:
-                        logger.info(f"📊 Прогресс {name}: {i + 1}/{scan_count}")
-                    
-                    await asyncio.sleep(0.2)
-                    
-                except Exception as e:
+        scan_count = min(PAIRS_TO_SCAN, len(pairs))
+        logger.info(f"📊 {name}: анализирую {scan_count} пар из {len(pairs)}")
+        
+        for i, pair in enumerate(pairs[:PAIRS_TO_SCAN]):
+            try:
+                logger.info(f"🔄 [{i+1}/{scan_count}] Анализирую {pair}")
+                
+                dataframes = {}
+                for tf_name, tf_value in TIMEFRAMES.items():
+                    limit = 200 if tf_name == 'current' else 100
+                    df = await fetcher.fetch_ohlcv(pair, tf_value, limit)
+                    if df is not None and not df.empty:
+                        df = self.analyzer.calculate_indicators(df)
+                        dataframes[tf_name] = df
+                        logger.info(f"  ✅ Загружены данные для {tf_name}: {len(df)} свечей")
+                    else:
+                        logger.warning(f"  ⚠️ Нет данных для {tf_name}")
+                
+                if not dataframes:
+                    logger.warning(f"  ⚠️ Нет данных для {pair}, пропускаю")
                     continue
+                
+                funding = await fetcher.fetch_funding_rate(pair)
+                ticker = await fetcher.fetch_ticker(pair)
+                
+                metadata = {
+                    'funding_rate': funding,
+                    'volume_24h': ticker.get('volume_24h'),
+                    'price_change_24h': ticker.get('percentage')
+                }
+                
+                logger.info(f"  📊 Метаданные: funding={funding}, volume={ticker.get('volume_24h')}")
+                
+                signal = self.analyzer.generate_signal(dataframes, metadata, pair, name)
+                
+                if signal is None:
+                    logger.info(f"  ❌ generate_signal вернул None для {pair}")
+                    continue
+                
+                logger.info(f"  ✅ Сгенерирован сигнал: {signal['direction']} (уверенность {signal['confidence']}%)")
+                
+                if 'NEUTRAL' in signal['direction']:
+                    logger.info(f"  ⏭️ NEUTRAL сигнал пропущен")
+                    continue
+                
+                if signal['confidence'] < MIN_CONFIDENCE:
+                    logger.info(f"  ⏭️ Низкая уверенность: {signal['confidence']}% < {MIN_CONFIDENCE}%")
+                    continue
+                
+                signals.append(signal)
+                logger.info(f"  ✅ ДОБАВЛЕН сигнал: {pair} - {signal['direction']} ({signal['confidence']}%)")
+                
+                if (i + 1) % 10 == 0:
+                    logger.info(f"📊 Прогресс {name}: {i + 1}/{scan_count}")
+                
+                await asyncio.sleep(0.2)
+                
+            except Exception as e:
+                logger.error(f"❌ Ошибка анализа {pair}: {e}")
+                continue
                     
-        except Exception as e:
-            logger.error(f"❌ Ошибка сканирования {name}: {e}")
-        
-        return signals
+    except Exception as e:
+        logger.error(f"❌ Ошибка сканирования {name}: {e}")
+    
+    logger.info(f"🎯 {name}: найдено {len(signals)} сигналов")
+    return signals
     
     async def scan_all(self) -> List[Dict]:
         logger.info("="*50)
