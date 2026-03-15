@@ -1076,6 +1076,9 @@ class MultiTimeframeAnalyzer:
     
     def generate_signal(self, dataframes: Dict[str, pd.DataFrame], metadata: Dict, symbol: str, exchange: str) -> Optional[Dict]:
         logger.info(f"🔄 generate_signal начал работу для {symbol}")
+
+        # Получаем настройки ATR
+        from config import ATR_SETTINGS
         
         if 'current' not in dataframes or dataframes['current'].empty:
             logger.warning(f"⚠️ Нет current данных для {symbol}")
@@ -1218,13 +1221,31 @@ class MultiTimeframeAnalyzer:
         targets = {}
         
         if 'LONG' in direction:
-            targets['target_1'] = round(current_price + atr * 1.5, 2)
-            targets['target_2'] = round(current_price + atr * 3.0, 2)
-            targets['stop_loss'] = round(current_price - atr * 1.0, 2)
-        else:
-            targets['target_1'] = round(current_price - atr * 1.5, 2)
-            targets['target_2'] = round(current_price - atr * 3.0, 2)
-            targets['stop_loss'] = round(current_price + atr * 1.0, 2)
+            if current_price < 0.01:  # Для очень маленьких цен
+                targets['target_1'] = round(current_price + atr * ATR_SETTINGS['long_target_1_mult'], 6)
+                targets['target_2'] = round(current_price + atr * ATR_SETTINGS['long_target_2_mult'], 6)
+                targets['stop_loss'] = round(current_price - atr * ATR_SETTINGS['long_stop_loss_mult'], 6)
+            elif current_price < 1.0:  # Для маленьких цен
+                targets['target_1'] = round(current_price + atr * ATR_SETTINGS['long_target_1_mult'], 4)
+                targets['target_2'] = round(current_price + atr * ATR_SETTINGS['long_target_2_mult'], 4)
+                targets['stop_loss'] = round(current_price - atr * ATR_SETTINGS['long_stop_loss_mult'], 4)
+            else:  # Для обычных цен
+                targets['target_1'] = round(current_price + atr * ATR_SETTINGS['long_target_1_mult'], 2)
+                targets['target_2'] = round(current_price + atr * ATR_SETTINGS['long_target_2_mult'], 2)
+                targets['stop_loss'] = round(current_price - atr * ATR_SETTINGS['long_stop_loss_mult'], 2)
+        else:  # SHORT
+            if current_price < 0.01:
+                targets['target_1'] = round(current_price - atr * ATR_SETTINGS['short_target_1_mult'], 6)
+                targets['target_2'] = round(current_price - atr * ATR_SETTINGS['short_target_2_mult'], 6)
+                targets['stop_loss'] = round(current_price + atr * ATR_SETTINGS['short_stop_loss_mult'], 6)
+            elif current_price < 1.0:
+                targets['target_1'] = round(current_price - atr * ATR_SETTINGS['short_target_1_mult'], 4)
+                targets['target_2'] = round(current_price - atr * ATR_SETTINGS['short_target_2_mult'], 4)
+                targets['stop_loss'] = round(current_price + atr * ATR_SETTINGS['short_stop_loss_mult'], 4)
+            else:
+                targets['target_1'] = round(current_price - atr * ATR_SETTINGS['short_target_1_mult'], 2)
+                targets['target_2'] = round(current_price - atr * ATR_SETTINGS['short_target_2_mult'], 2)
+                targets['stop_loss'] = round(current_price + atr * ATR_SETTINGS['short_stop_loss_mult'], 2)
         
         logger.info(f"  📈 {symbol} - ATR: {atr}, Targets: {targets}")
         
