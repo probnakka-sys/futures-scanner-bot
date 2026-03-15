@@ -5,12 +5,6 @@ import os
 from dotenv import load_dotenv
 
 load_dotenv()
-if not TELEGRAM_TOKEN:
-    TELEGRAM_TOKEN = "8472133401:AAEYcS6g7k7Hd50I2hrxlq5jX4p9uOXkk5s"
-    print("⚠️ Использую захардкоженный токен для теста")
-print(f"🚀 DEBUG - TELEGRAM_TOKEN из os.getenv: {os.getenv('TELEGRAM_TOKEN')}")
-print(f"🚀 DEBUG - TELEGRAM_TOKEN из os.environ: {os.environ.get('TELEGRAM_TOKEN')}")
-print(f"🚀 DEBUG - Все переменные: {list(os.environ.keys())}")
 
 # ============== НАСТРОЙКИ БОТА ==============
 
@@ -23,6 +17,14 @@ MIN_CONFIDENCE = int(os.getenv('MIN_CONFIDENCE', 55))
 TIMEFRAME = os.getenv('TIMEFRAME', '15m')
 PAIRS_TO_SCAN = int(os.getenv('PAIRS_TO_SCAN', 50))
 
+print(f"🚀 DEBUG - TELEGRAM_TOKEN из os.getenv: {os.getenv('TELEGRAM_TOKEN')}")
+print(f"🚀 DEBUG - TELEGRAM_TOKEN из os.environ: {os.environ.get('TELEGRAM_TOKEN')}")
+print(f"🚀 DEBUG - Все переменные: {list(os.environ.keys())}")
+
+if not TELEGRAM_TOKEN:
+    TELEGRAM_TOKEN = "8472133401:AAEYcS6g7k7Hd50I2hrxlq5jX4p9uOXkk5s"
+    print("⚠️ Использую захардкоженный токен для теста")
+    
 # Реферальные ссылки
 REF_LINKS = {
     'BingX': 'https://bingxdao.com/invite/ZTR83C/',
