@@ -864,28 +864,28 @@ class BingxFetcher(BaseExchangeFetcher):
         logger.info("✅ BingX Futures инициализирован")
     
     async def fetch_all_pairs(self) -> List[str]:
-    try:
-        # Принудительно устанавливаем тип рынка перед загрузкой
-        self.exchange.options['defaultType'] = 'swap'
-        # Перезагружаем рынки с новыми настройками
-        await self.exchange.load_markets(True)  # True = принудительная перезагрузка
-        
-        markets = self.exchange.markets
-        usdt_pairs = []
-        
-        for symbol, market in markets.items():
-            # Проверяем, что это фьючерсный рынок USDT
-            if (market['quote'] == 'USDT' and 
-                market['active'] and 
-                market['type'] in ['swap', 'future'] and
-                ':USDT' in symbol):  # Фьючерсы BingX обычно имеют формат BTC/USDT:USDT
-                usdt_pairs.append(symbol)
-        
-        logger.info(f"📊 BingX Futures: загружено {len(usdt_pairs)} фьючерсных пар")
-        return usdt_pairs
-    except Exception as e:
-        logger.error(f"❌ BingX ошибка: {e}")
-        return []
+        try:
+            # Принудительно устанавливаем тип рынка перед загрузкой
+            self.exchange.options['defaultType'] = 'swap'
+            # Перезагружаем рынки с новыми настройками
+            await self.exchange.load_markets(True)  # True = принудительная перезагрузка
+            
+            markets = self.exchange.markets
+            usdt_pairs = []
+            
+            for symbol, market in markets.items():
+                # Проверяем, что это фьючерсный рынок USDT
+                if (market['quote'] == 'USDT' and 
+                    market['active'] and 
+                    market['type'] in ['swap', 'future'] and
+                    ':USDT' in symbol):  # Фьючерсы BingX обычно имеют формат BTC/USDT:USDT
+                    usdt_pairs.append(symbol)
+            
+            logger.info(f"📊 BingX Futures: загружено {len(usdt_pairs)} фьючерсных пар")
+            return usdt_pairs
+        except Exception as e:
+            logger.error(f"❌ BingX ошибка: {e}")
+            return []
     
     async def fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 200) -> Optional[pd.DataFrame]:
         try:
