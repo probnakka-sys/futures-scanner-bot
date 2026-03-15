@@ -1795,8 +1795,8 @@ class MultiExchangeScannerBot:
                     'keyboard': keyboard
                 })
     
-    pump_signals.sort(key=lambda x: abs(x['signal']['pump_dump'][0]['change_percent']), reverse=True)
-    return pump_signals
+        pump_signals.sort(key=lambda x: abs(x['signal']['pump_dump'][0]['change_percent']), reverse=True)
+        return pump_signals
     
     async def send_signal(self, signal: Dict, pump_only: bool = False):
         if pump_only and not signal.get('pump_dump'):
