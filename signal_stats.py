@@ -115,28 +115,30 @@ class SignalStatistics:
         
         # Проверяем достижение целей
         if 'LONG' in signal['direction'] or 'Разворот LONG' in signal['direction']:
-            if current_price >= signal['target_2']:
+            # LONG позиция - прибыль при росте цены
+            if signal['target_2'] and current_price >= signal['target_2']:
                 signal['status'] = 'victory'
                 signal['final_result'] = 'target_2_hit'
                 profit_pct = ((signal['target_2'] - signal['entry_price']) / signal['entry_price']) * 100
-            elif current_price >= signal['target_1']:
+            elif signal['target_1'] and current_price >= signal['target_1']:
                 signal['status'] = 'profit'
                 signal['final_result'] = 'target_1_hit'
                 profit_pct = ((signal['target_1'] - signal['entry_price']) / signal['entry_price']) * 100
-            elif current_price <= signal['stop_loss']:
+            elif signal['stop_loss'] and current_price <= signal['stop_loss']:
                 signal['status'] = 'loss'
                 signal['final_result'] = 'stop_loss'
                 profit_pct = ((signal['stop_loss'] - signal['entry_price']) / signal['entry_price']) * 100
         else:  # SHORT или Разворот SHORT
-            if current_price <= signal['target_2']:
+            # SHORT позиция - прибыль при падении цены
+            if signal['target_2'] and current_price <= signal['target_2']:
                 signal['status'] = 'victory'
                 signal['final_result'] = 'target_2_hit'
                 profit_pct = ((signal['entry_price'] - signal['target_2']) / signal['entry_price']) * 100
-            elif current_price <= signal['target_1']:
+            elif signal['target_1'] and current_price <= signal['target_1']:
                 signal['status'] = 'profit'
                 signal['final_result'] = 'target_1_hit'
                 profit_pct = ((signal['entry_price'] - signal['target_1']) / signal['entry_price']) * 100
-            elif current_price >= signal['stop_loss']:
+            elif signal['stop_loss'] and current_price >= signal['stop_loss']:
                 signal['status'] = 'loss'
                 signal['final_result'] = 'stop_loss'
                 profit_pct = ((signal['entry_price'] - signal['stop_loss']) / signal['entry_price']) * 100
@@ -325,8 +327,8 @@ class SignalStatistics:
             'loss': '❌'
         }.get(signal['status'], '🔄')
         
-        msg = f"{emoji} <b>Сигнал завершен</b>\n\n"
-        msg += f"Монета: <code>{signal['coin']}</code>\n"
+        msg = f"{emoji} *Сигнал завершен*\n\n"
+        msg += f"Монета: `{signal['coin']}`\n"
         msg += f"Тип: {'🚀 Памп' if signal['type'] == 'pump' else '📊 Обычный'}\n"
         msg += f"Направление: {signal['direction']}\n"
         msg += f"Вход: {signal['entry_price']}\n"
