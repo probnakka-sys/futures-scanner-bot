@@ -35,6 +35,7 @@ from matplotlib.patches import Rectangle
 from config import (
     TELEGRAM_TOKEN,
     TELEGRAM_CHAT_ID,
+    PUMP_CHAT_ID,
     UPDATE_INTERVAL,
     PUMP_SCAN_INTERVAL,
     MIN_CONFIDENCE,
@@ -173,8 +174,8 @@ class ChartGenerator:
                        linestyle='--', linewidth=1.5, alpha=0.8,
                        label=f'Stop: {signal["stop_loss"]}')
         
-        direction_emoji = "🟢" if "LONG" in signal['direction'] else "🔴" if "SHORT" in signal['direction'] else "⚪"
-        ax1.set_title(f'{direction_emoji} {coin} - {signal["direction"]} (TF: {timeframe}, уверенность {signal["confidence"]}%)', 
+        # Убираем эмодзи из заголовка, чтобы избежать проблем со шрифтами
+        ax1.set_title(f'{coin} - {signal["direction"]} (TF: {timeframe}, уверенность {signal["confidence"]}%)', 
                      fontsize=14, fontweight='bold', color='white')
         ax1.set_ylabel('Price (USDT)', color='white')
         ax1.legend(loc='upper left', fontsize=8, facecolor='#222222')
@@ -856,7 +857,7 @@ class BingxFetcher(BaseExchangeFetcher):
             'secret': os.getenv('BINGX_SECRET_KEY'),
             'enableRateLimit': True,
             'options': {
-                'defaultType': 'swap',
+                'defaultType': 'swap',  # swap = фьючерсы
                 'adjustForTimeDifference': True
             }
         })
@@ -866,11 +867,15 @@ class BingxFetcher(BaseExchangeFetcher):
         try:
             markets = await self.exchange.load_markets()
             usdt_pairs = []
+            
             for symbol, market in markets.items():
+                # Проверяем, что это фьючерсный рынок USDT
                 if (market['quote'] == 'USDT' and 
                     market['active'] and 
                     market['type'] in ['swap', 'future']):
                     usdt_pairs.append(symbol)
+            
+            logger.info(f"📊 BingX Futures: загружено {len(usdt_pairs)} фьючерсных пар")
             return usdt_pairs
         except Exception as e:
             logger.error(f"❌ BingX ошибка: {e}")
@@ -1099,24 +1104,6 @@ class MultiTimeframeAnalyzer:
             reasons.append(f"Тренды согласованы ({alignment['trend_alignment']:.0f}%)")
             confidence += INDICATOR_WEIGHTS['trend_alignment']
         
-        # Анализ Фибоначчи
-        if self.fibonacci and FEATURES['advanced']['fibonacci']:
-            fib_analysis = self.fibonacci.analyze_multi_timeframe(dataframes)
-            if fib_analysis['has_confluence']:
-                for signal in fib_analysis['signals']:
-                    reasons.append(signal)
-                confidence += fib_analysis['strength'] / 5
-                fib_result = fib_analysis
-
-        # Анализ Volume Profile
-        if self.volume_profile and FEATURES['advanced']['volume_profile']:
-            vp_analysis = self.volume_profile.analyze_multi_timeframe(dataframes)
-            if vp_analysis['has_confluence']:
-                for signal in vp_analysis['signals']:
-                    reasons.append(signal)
-                confidence += vp_analysis['strength'] / 5
-                vp_result = vp_analysis
-
         funding = metadata.get('funding_rate')
         if funding is not None and funding != 0:
             funding_pct = funding * 100
@@ -1177,6 +1164,42 @@ class MultiTimeframeAnalyzer:
             targets['target_2'] = round(current_price - atr * 3.0, 2)
             targets['stop_loss'] = round(current_price + atr * 1.0, 2)
         
+                # В КОНЦЕ метода, перед return добавьте:
+        
+        # Анализ Фибоначчи
+        fib_analysis = None
+        if hasattr(self, 'fibonacci') and self.fibonacci and FEATURES['advanced']['fibonacci']:
+            fib_analysis = self.fibonacci.analyze_multi_timeframe(dataframes)
+            if fib_analysis['has_confluence']:
+                for signal in fib_analysis['signals']:
+                    reasons.append(signal)
+                confidence += fib_analysis['strength'] / 5
+
+        # Анализ Volume Profile
+        vp_analysis = None
+        if hasattr(self, 'volume_profile') and self.volume_profile and FEATURES['advanced']['volume_profile']:
+            vp_analysis = self.volume_profile.analyze_multi_timeframe(dataframes)
+            if vp_analysis['has_confluence']:
+                for signal in vp_analysis['signals']:
+                    reasons.append(signal)
+                confidence += vp_analysis['strength'] / 5
+
+        # Обновляем signal_strength если confidence изменился
+        signal_strength = (confidence + alignment['trend_alignment']) / 2
+        
+        # Обновляем signal_power
+        if signal_strength >= 85:
+            signal_power = "🔥🔥🔥 ОЧЕНЬ СИЛЬНЫЙ"
+        elif signal_strength >= 70:
+            signal_power = "🔥🔥 СИЛЬНЫЙ"
+        elif signal_strength >= 55:
+            signal_power = "🔥 СРЕДНИЙ"
+        elif signal_strength >= 40:
+            signal_power = "📊 СЛАБЫЙ"
+        else:
+            signal_power = "👀 НАБЛЮДЕНИЕ"
+        
+        # Формируем результат
         result = {
             'symbol': symbol,
             'exchange': exchange,
@@ -1194,9 +1217,9 @@ class MultiTimeframeAnalyzer:
             **targets
         }
         
-        if 'fib_analysis' in locals() and fib_analysis:
+        if fib_analysis:
             result['fibonacci'] = fib_analysis
-        if 'vp_analysis' in locals() and vp_analysis:
+        if vp_analysis:
             result['volume_profile'] = vp_analysis
         
         return result
@@ -1236,14 +1259,20 @@ class FastPumpScanner:
                         if df is None or len(df) < 10:
                             continue
                         
-                        if tf == '30m':
+                        if tf == '1m':
                             bars_ago = 1
-                            minutes = 30
-                        elif tf == '15m':
-                            bars_ago = 2
-                            minutes = 30
+                            minutes = 1
+                        elif tf == '3m':
+                            bars_ago = 1
+                            minutes = 3
                         elif tf == '5m':
-                            bars_ago = 6
+                            bars_ago = 1
+                            minutes = 5
+                        elif tf == '15m':
+                            bars_ago = 1
+                            minutes = 15
+                        elif tf == '30m':
+                            bars_ago = 1
                             minutes = 30
                         else:
                             bars_ago = 1
@@ -1801,7 +1830,7 @@ class MultiExchangeScannerBot:
                 chart_buf = self.chart_generator.create_chart(df, signal, coin, TIMEFRAMES.get('current', '15m'))
                 
                 await self.telegram_bot.send_photo(
-                    chat_id=TELEGRAM_CHAT_ID,
+                    chat_id=PUMP_CHAT_ID,
                     photo=chart_buf,
                     caption=pump_data['message'],
                     parse_mode='HTML',
@@ -1810,7 +1839,7 @@ class MultiExchangeScannerBot:
                 logger.info(f"✅ Отправлен памп-сигнал с графиком: {signal['symbol']}")
             else:
                 await self.telegram_bot.send_message(
-                    chat_id=TELEGRAM_CHAT_ID,
+                    chat_id=PUMP_CHAT_ID,
                     text=pump_data['message'],
                     parse_mode='HTML',
                     reply_markup=pump_data['keyboard']
