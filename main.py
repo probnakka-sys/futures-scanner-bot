@@ -35,6 +35,7 @@ from matplotlib.patches import Rectangle
 from config import (
     TELEGRAM_TOKEN,
     TELEGRAM_CHAT_ID,
+    PUMP_CHAT_ID,
     UPDATE_INTERVAL,
     PUMP_SCAN_INTERVAL,
     MIN_CONFIDENCE,
@@ -1721,110 +1722,108 @@ class MultiExchangeScannerBot:
         return pump_signals
     
     async def send_signal(self, signal: Dict, pump_only: bool = False):
-    if pump_only and not signal.get('pump_dump'):
-        return
-    
-    if signal['confidence'] < MIN_CONFIDENCE:
-        return
-    
-    coin = self.extract_coin(signal['symbol'])
-    
-    self.last_signals[coin] = {
-        'symbol': signal['symbol'],
-        'signal': signal,
-        'time': datetime.now()
-    }
-    
-    contract_info = None
-    df = None
-    for fetcher in self.fetchers.values():
-        if fetcher.name == signal['exchange']:
-            contract_info = await fetcher.fetch_contract_info(signal['symbol'])
-            df = await fetcher.fetch_ohlcv(signal['symbol'], TIMEFRAMES.get('current', '15m'), limit=200)
-            break
-    
-    pump_percent = None
-    if signal.get('pump_dump') and len(signal['pump_dump']) > 0:
-        pump_percent = signal['pump_dump'][0].get('change_percent')
-    
-    msg, keyboard = self.format_message(signal, contract_info, pump_percent)
-    
-    try:
-        if df is not None and not df.empty:
-            df = self.analyzer.calculate_indicators(df)
-            chart_buf = self.chart_generator.create_chart(df, signal, coin, TIMEFRAMES.get('current', '15m'))
-            
-            # Обычные сигналы в основную группу
-            await self.telegram_bot.send_photo(
-                chat_id=TELEGRAM_CHAT_ID,  # <- основная группа
-                photo=chart_buf,
-                caption=msg,
-                parse_mode='HTML',
-                reply_markup=keyboard
-            )
-            logger.info(f"✅ Отправлен сигнал с графиком: {signal['symbol']}")
-        else:
-            await self.telegram_bot.send_message(
-                chat_id=TELEGRAM_CHAT_ID,  # <- основная группа
-                text=msg,
-                parse_mode='HTML',
-                reply_markup=keyboard
-            )
-            logger.info(f"✅ Отправлен сигнал: {signal['symbol']}")
+        if pump_only and not signal.get('pump_dump'):
+            return
         
-        # Добавляем в статистику
-        if hasattr(self, 'stats'):
-            signal_type = 'pump' if signal.get('pump_dump') else 'regular'
-            self.stats.add_signal(signal, signal_type)
+        if signal['confidence'] < MIN_CONFIDENCE:
+            return
+        
+        coin = self.extract_coin(signal['symbol'])
+        
+        self.last_signals[coin] = {
+            'symbol': signal['symbol'],
+            'signal': signal,
+            'time': datetime.now()
+        }
+        
+        contract_info = None
+        df = None
+        for fetcher in self.fetchers.values():
+            if fetcher.name == signal['exchange']:
+                contract_info = await fetcher.fetch_contract_info(signal['symbol'])
+                df = await fetcher.fetch_ohlcv(signal['symbol'], TIMEFRAMES.get('current', '15m'), limit=200)
+                break
+        
+        pump_percent = None
+        if signal.get('pump_dump') and len(signal['pump_dump']) > 0:
+            pump_percent = signal['pump_dump'][0].get('change_percent')
+        
+        msg, keyboard = self.format_message(signal, contract_info, pump_percent)
+        
+        try:
+            if df is not None and not df.empty:
+                df = self.analyzer.calculate_indicators(df)
+                chart_buf = self.chart_generator.create_chart(df, signal, coin, TIMEFRAMES.get('current', '15m'))
+                
+                await self.telegram_bot.send_photo(
+                    chat_id=TELEGRAM_CHAT_ID,
+                    photo=chart_buf,
+                    caption=msg,
+                    parse_mode='HTML',
+                    reply_markup=keyboard
+                )
+                logger.info(f"✅ Отправлен сигнал с графиком: {signal['symbol']}")
+            else:
+                await self.telegram_bot.send_message(
+                    chat_id=TELEGRAM_CHAT_ID,
+                    text=msg,
+                    parse_mode='HTML',
+                    reply_markup=keyboard
+                )
+                logger.info(f"✅ Отправлен сигнал: {signal['symbol']}")
             
-    except Exception as e:
-        logger.error(f"❌ Ошибка отправки: {e}")
+            # Добавляем в статистику
+            if hasattr(self, 'stats'):
+                signal_type = 'pump' if signal.get('pump_dump') else 'regular'
+                self.stats.add_signal(signal, signal_type)
+                
+        except Exception as e:
+            logger.error(f"❌ Ошибка отправки: {e}")
     
     async def send_pump_signal(self, pump_data: Dict):
-    signal = pump_data['signal']
-    coin = self.extract_coin(signal['symbol'])
-    
-    self.last_signals[coin] = {
-        'symbol': signal['symbol'],
-        'signal': signal,
-        'time': datetime.now()
-    }
-    
-    df = None
-    for fetcher in self.fetchers.values():
-        if fetcher.name == signal['exchange']:
-            df = await fetcher.fetch_ohlcv(signal['symbol'], TIMEFRAMES.get('current', '15m'), limit=200)
-            break
-    
-    try:
-        if df is not None and not df.empty:
-            df = self.analyzer.calculate_indicators(df)
-            chart_buf = self.chart_generator.create_chart(df, signal, coin, TIMEFRAMES.get('current', '15m'))
-            
-            # Памп-сигналы в отдельную группу
-            await self.telegram_bot.send_photo(
-                chat_id=PUMP_CHAT_ID,  # <- отдельная группа для пампа
-                photo=chart_buf,
-                caption=pump_data['message'],
-                parse_mode='HTML',
-                reply_markup=pump_data['keyboard']
-            )
-            logger.info(f"✅ Отправлен памп-сигнал с графиком: {signal['symbol']}")
-        else:
-            await self.telegram_bot.send_message(
-                chat_id=PUMP_CHAT_ID,  # <- отдельная группа для пампа
-                text=pump_data['message'],
-                parse_mode='HTML',
-                reply_markup=pump_data['keyboard']
-            )
-            logger.info(f"✅ Отправлен памп-сигнал: {signal['symbol']}")
+        signal = pump_data['signal']
+        coin = self.extract_coin(signal['symbol'])
         
-        # Добавляем в статистику
-        if hasattr(self, 'stats'):
-            self.stats.add_signal(signal, 'pump')
+        self.last_signals[coin] = {
+            'symbol': signal['symbol'],
+            'signal': signal,
+            'time': datetime.now()
+        }
+        
+        df = None
+        for fetcher in self.fetchers.values():
+            if fetcher.name == signal['exchange']:
+                df = await fetcher.fetch_ohlcv(signal['symbol'], TIMEFRAMES.get('current', '15m'), limit=200)
+                break
+        
+        try:
+            if df is not None and not df.empty:
+                df = self.analyzer.calculate_indicators(df)
+                chart_buf = self.chart_generator.create_chart(df, signal, coin, TIMEFRAMES.get('current', '15m'))
+                
+                await self.telegram_bot.send_photo(
+                    chat_id=PUMP_CHAT_ID,
+                    photo=chart_buf,
+                    caption=pump_data['message'],
+                    parse_mode='HTML',
+                    reply_markup=pump_data['keyboard']
+                )
+                logger.info(f"✅ Отправлен памп-сигнал с графиком: {signal['symbol']}")
+            else:
+                await self.telegram_bot.send_message(
+                    chat_id=PUMP_CHAT_ID,
+                    text=pump_data['message'],
+                    parse_mode='HTML',
+                    reply_markup=pump_data['keyboard']
+                )
+                logger.info(f"✅ Отправлен памп-сигнал: {signal['symbol']}")
             
-    except Exception as e:
-        logger.error(f"❌ Ошибка отправки пампа: {e}")
+            # Добавляем в статистику
+            if hasattr(self, 'stats'):
+                self.stats.add_signal(signal, 'pump')
+                
+        except Exception as e:
+            logger.error(f"❌ Ошибка отправки пампа: {e}")
     
     async def get_detailed_analysis(self, fetcher, symbol: str, coin: str, signal_time: str = None) -> Tuple[str, InlineKeyboardMarkup]:
         try:
