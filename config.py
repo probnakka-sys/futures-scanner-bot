@@ -16,7 +16,7 @@ PUMP_SCAN_INTERVAL = int(os.getenv('PUMP_SCAN_INTERVAL', 30))  # 30 секунд
 MIN_CONFIDENCE = int(os.getenv('MIN_CONFIDENCE', 55))
 TIMEFRAME = os.getenv('TIMEFRAME', '15m')
 PAIRS_TO_SCAN = int(os.getenv('PAIRS_TO_SCAN', 50))
- 
+
 # Реферальные ссылки
 REF_LINKS = {
     'BingX': 'https://bingxdao.com/invite/ZTR83C/',
@@ -24,28 +24,29 @@ REF_LINKS = {
     'MEXC': os.getenv('MEXC_REF_LINK', 'https://www.mexc.com')
 }
 
-# ============== НАСТРОЙКИ ПРОИЗВОДИТЕЛЬНОСТИ ==============
-
-PERFORMANCE_SETTINGS = {
-    'pump_batch_size': 50,           # Параллельная обработка 50 пар за раз
-    'max_concurrent_requests': 10,    # Максимум одновременных запросов
-    'delay_between_batches': 0.5,     # Пауза между батчами (сек)
-    'cache_ohlcv': True,               # Кэшировать свечные данные
-    'cache_ttl': 60,                    # Время жизни кэша (сек)
-}
-
 # ============== НАСТРОЙКИ ПАМП-СКАНЕРА ==============
 
 PUMP_SCAN_SETTINGS = {
     'enabled': True,
-    'threshold': 4.0,                          # % движения для сигнала
-    'instant_threshold': 2.5,                   # % за 1-2 минуты для мгновенного сигнала
-    'timeframes': ['1m', '3m', '5m', '15m'],    # Быстрые ТФ
-    'min_volume_usdt': 5000,                    # Мин. объем
+    'threshold': 3.0,                          # % движения для сигнала (было 4.0)
+    'instant_threshold': 2.0,                   # % за 1-2 минуты для мгновенного сигнала
+    'timeframes': ['1m', '3m', '5m', '15m', '30m'],  # Добавили 30m
+    'min_volume_usdt': 3000,                    # Мин. объем (было 5000)
     'max_pairs_to_scan': 600,
     'include_low_liquidity': True,
     'send_top_pumps': 999,
-    'cooldown_minutes': 15,
+    'cooldown_minutes': 10,                      # Защита от дублей (было 15)
+}
+
+# ============== НАСТРОЙКИ ATR (True Range) ==============
+
+ATR_SETTINGS = {
+    'long_target_1_mult': 2.0,      # Было 1.5 - увеличили для дальних целей
+    'long_target_2_mult': 4.0,      # Было 3.0 - увеличили
+    'long_stop_loss_mult': 1.2,     # Было 1.0 - чуть шире стоп
+    'short_target_1_mult': 2.0,     # Было 1.5
+    'short_target_2_mult': 4.0,     # Было 3.0
+    'short_stop_loss_mult': 1.2,    # Было 1.0
 }
 
 # ============== ПЕРЕКЛЮЧАТЕЛИ ФУНКЦИЙ ==============
@@ -67,7 +68,7 @@ FEATURES = {
         'hourly': True,
         'daily': True,
         'weekly': True,
-        'monthly': True,  # Добавили месячный
+        'monthly': True,
     },
     
     'indicators': {
@@ -85,13 +86,13 @@ FEATURES = {
         'vwap': True,
         'patterns': True,
         'pump_dump': True,
-        'fibonacci': True,      # Включили Фибоначчи
+        'fibonacci': True,
         'imbalance': True,
         'liquidity': True,
         'order_blocks': True,
         'fractals': True,
         'smart_money': True,
-        'volume_profile': False,  # Добавили Volume Profile
+        'volume_profile': False,  # Временно отключено
     },
     
     'testing': {
@@ -156,7 +157,7 @@ FIBONACCI_SETTINGS = {
 # ============== НАСТРОЙКИ VOLUME PROFILE ==============
 
 VOLUME_PROFILE_SETTINGS = {
-    'enabled': True,
+    'enabled': False,  # Отключено до исправления
     'lookback_bars': 100,
     'value_area_pct': 70,
     'min_hvn_strength': 2.0,
@@ -191,10 +192,10 @@ INDICATOR_WEIGHTS = {
 
 STATS_SETTINGS = {
     'enabled': True,
-    'stats_chat_id': os.getenv('STATS_CHAT_ID', ''),  # ID группы для статистики
-    'daily_report_time': '20:00',  # Время ежедневного отчета (20:00)
-    'update_interval': 300,  # 5 минут обновление статусов
-    'history_days': 90,       # храним статистику 90 дней
+    'stats_chat_id': os.getenv('STATS_CHAT_ID', ''),
+    'daily_report_time': '20:00',
+    'update_interval': 300,
+    'history_days': 90,
     'db_file': 'signals_database.json'
 }
 
@@ -238,6 +239,16 @@ FRACTAL_SETTINGS = {
     'window': 5,
     'strength_multiplier': 1.5,
     'confirmation_bars': 2,
+}
+
+# ============== НАСТРОЙКИ ПРОИЗВОДИТЕЛЬНОСТИ ==============
+
+PERFORMANCE_SETTINGS = {
+    'pump_batch_size': 50,
+    'max_concurrent_requests': 10,
+    'delay_between_batches': 0.5,
+    'cache_ohlcv': True,
+    'cache_ttl': 60,
 }
 
 # ============== ТАЙМФРЕЙМЫ ==============
