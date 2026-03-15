@@ -1085,7 +1085,10 @@ class MultiTimeframeAnalyzer:
         last = df.iloc[-1]
         prev = df.iloc[-2] if len(df) > 1 else last
         
+        logger.info(f"  📊 {symbol} - Цена: {last['close']}, RSI: {last['rsi'] if pd.notna(last['rsi']) else 'N/A'}")
+        
         alignment = self.analyze_timeframe_alignment(dataframes)
+        logger.info(f"  📊 {symbol} - Trend alignment: {alignment['trend_alignment']}%")
         
         confidence = 50
         reasons = []
@@ -1140,20 +1143,24 @@ class MultiTimeframeAnalyzer:
         # Анализ Фибоначчи
         fib_analysis = None
         if self.fibonacci and FEATURES['advanced']['fibonacci']:
+            logger.info(f"  🔍 {symbol} - Начинаю анализ Фибоначчи")
             fib_analysis = self.fibonacci.analyze_multi_timeframe(dataframes)
             if fib_analysis['has_confluence']:
                 for signal in fib_analysis['signals']:
                     reasons.append(signal)
                 confidence += fib_analysis['strength'] / 5
+                logger.info(f"  ✅ {symbol} - Фибоначчи: найдено {len(fib_analysis['signals'])} сигналов")
 
         # Анализ Volume Profile
         vp_analysis = None
         if self.volume_profile and FEATURES['advanced']['volume_profile']:
+            logger.info(f"  🔍 {symbol} - Начинаю анализ Volume Profile")
             vp_analysis = self.volume_profile.analyze_multi_timeframe(dataframes)
             if vp_analysis['has_confluence']:
                 for signal in vp_analysis['signals']:
                     reasons.append(signal)
                 confidence += vp_analysis['strength'] / 5
+                logger.info(f"  ✅ {symbol} - Volume Profile: найдено {len(vp_analysis['signals'])} сигналов")
 
         funding = metadata.get('funding_rate')
         if funding is not None and funding != 0:
@@ -1184,6 +1191,8 @@ class MultiTimeframeAnalyzer:
                 reasons.append("Подтверждение разворота недельным трендом")
             else:
                 direction = 'SHORT 📉'
+        
+        logger.info(f"  📊 {symbol} - Direction: {direction}, Confidence: {confidence}")
         
         # Пересчитываем signal_strength и signal_power после всех изменений confidence
         signal_strength = (confidence + alignment['trend_alignment']) / 2
@@ -1216,6 +1225,8 @@ class MultiTimeframeAnalyzer:
             targets['target_1'] = round(current_price - atr * 1.5, 2)
             targets['target_2'] = round(current_price - atr * 3.0, 2)
             targets['stop_loss'] = round(current_price + atr * 1.0, 2)
+        
+        logger.info(f"  📈 {symbol} - ATR: {atr}, Targets: {targets}")
         
         result = {
             'symbol': symbol,
