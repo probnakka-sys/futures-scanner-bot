@@ -325,8 +325,8 @@ class SignalStatistics:
             'loss': '❌'
         }.get(signal['status'], '🔄')
         
-        msg = f"{emoji} *Сигнал завершен*\n\n"
-        msg += f"Монета: `{signal['coin']}`\n"
+        msg = f"{emoji} <b>Сигнал завершен</b>\n\n"
+        msg += f"Монета: <code>{signal['coin']}</code>\n"
         msg += f"Тип: {'🚀 Памп' if signal['type'] == 'pump' else '📊 Обычный'}\n"
         msg += f"Направление: {signal['direction']}\n"
         msg += f"Вход: {signal['entry_price']}\n"
@@ -336,5 +336,5 @@ class SignalStatistics:
         await self.bot.send_message(
             chat_id=self.stats_chat_id,
             text=msg,
-            parse_mode='Markdown'
+            parse_mode='HTML'
         )
