@@ -112,6 +112,36 @@ def calculate_vwap(df: pd.DataFrame) -> pd.Series:
     vwap = (typical_price * df['volume']).cumsum() / df['volume'].cumsum()
     return vwap
 
+# ============== КЭШИРОВАНИЕ ДАННЫХ ==============
+
+class CacheManager:
+    """Кэширование данных для уменьшения количества запросов к бирже"""
+    
+    def __init__(self, ttl=60):
+        self.cache = {}
+        self.ttl = ttl
+        logger.info(f"✅ CacheManager инициализирован (TTL: {ttl} сек)")
+    
+    def get(self, key: str) -> Optional[any]:
+        """Получение данных из кэша"""
+        if key in self.cache:
+            data, timestamp = self.cache[key]
+            if time.time() - timestamp < self.ttl:
+                return data
+            else:
+                # Удаляем устаревшие данные
+                del self.cache[key]
+        return None
+    
+    def set(self, key: str, data: any):
+        """Сохранение данных в кэш"""
+        self.cache[key] = (data, time.time())
+    
+    def clear(self):
+        """Очистка кэша"""
+        self.cache.clear()
+        logger.info("🧹 Кэш очищен")
+
 # ============== ГЕНЕРАТОР ГРАФИКОВ ==============
 
 class ChartGenerator:
@@ -1104,24 +1134,6 @@ class MultiTimeframeAnalyzer:
             reasons.append(f"Тренды согласованы ({alignment['trend_alignment']:.0f}%)")
             confidence += INDICATOR_WEIGHTS['trend_alignment']
         
-        # Анализ Фибоначчи
-        fib_analysis = None
-        if self.fibonacci and FEATURES['advanced']['fibonacci']:
-            fib_analysis = self.fibonacci.analyze_multi_timeframe(dataframes)
-            if fib_analysis['has_confluence']:
-                for signal in fib_analysis['signals']:
-                    reasons.append(signal)
-                confidence += fib_analysis['strength'] / 5
-
-        # Анализ Volume Profile
-        vp_analysis = None
-        if self.volume_profile and FEATURES['advanced']['volume_profile']:
-            vp_analysis = self.volume_profile.analyze_multi_timeframe(dataframes)
-            if vp_analysis['has_confluence']:
-                for signal in vp_analysis['signals']:
-                    reasons.append(signal)
-                confidence += vp_analysis['strength'] / 5
-
         funding = metadata.get('funding_rate')
         if funding is not None and funding != 0:
             funding_pct = funding * 100
@@ -1152,7 +1164,6 @@ class MultiTimeframeAnalyzer:
             else:
                 direction = 'SHORT 📉'
         
-        # Пересчитываем signal_strength и signal_power после всех изменений confidence
         signal_strength = (confidence + alignment['trend_alignment']) / 2
         
         signal_power = "⚡️"
@@ -1183,6 +1194,42 @@ class MultiTimeframeAnalyzer:
             targets['target_2'] = round(current_price - atr * 3.0, 2)
             targets['stop_loss'] = round(current_price + atr * 1.0, 2)
         
+                # В КОНЦЕ метода, перед return добавьте:
+        
+        # Анализ Фибоначчи
+        fib_analysis = None
+        if hasattr(self, 'fibonacci') and self.fibonacci and FEATURES['advanced']['fibonacci']:
+            fib_analysis = self.fibonacci.analyze_multi_timeframe(dataframes)
+            if fib_analysis['has_confluence']:
+                for signal in fib_analysis['signals']:
+                    reasons.append(signal)
+                confidence += fib_analysis['strength'] / 5
+
+        # Анализ Volume Profile
+        vp_analysis = None
+        if hasattr(self, 'volume_profile') and self.volume_profile and FEATURES['advanced']['volume_profile']:
+            vp_analysis = self.volume_profile.analyze_multi_timeframe(dataframes)
+            if vp_analysis['has_confluence']:
+                for signal in vp_analysis['signals']:
+                    reasons.append(signal)
+                confidence += vp_analysis['strength'] / 5
+
+        # Обновляем signal_strength если confidence изменился
+        signal_strength = (confidence + alignment['trend_alignment']) / 2
+        
+        # Обновляем signal_power
+        if signal_strength >= 85:
+            signal_power = "🔥🔥🔥 ОЧЕНЬ СИЛЬНЫЙ"
+        elif signal_strength >= 70:
+            signal_power = "🔥🔥 СИЛЬНЫЙ"
+        elif signal_strength >= 55:
+            signal_power = "🔥 СРЕДНИЙ"
+        elif signal_strength >= 40:
+            signal_power = "📊 СЛАБЫЙ"
+        else:
+            signal_power = "👀 НАБЛЮДЕНИЕ"
+        
+        # Формируем результат
         result = {
             'symbol': symbol,
             'exchange': exchange,
@@ -1207,20 +1254,99 @@ class MultiTimeframeAnalyzer:
         
         return result
 
-# ============== БЫСТРЫЙ ПАМП-СКАНЕР ==============
+# ============== БЫСТРЫЙ ПАМП-СКАНЕР (ОПТИМИЗИРОВАННЫЙ) ==============
 
 class FastPumpScanner:
     def __init__(self, fetcher: BaseExchangeFetcher, settings: Dict = None, analyzer=None):
         self.fetcher = fetcher
         self.settings = settings or PUMP_SCAN_SETTINGS
         self.analyzer = analyzer
-        self.threshold = self.settings.get('threshold', 5.0)
-        self.timeframes = self.settings.get('timeframes', ['15m'])
-        self.max_pairs = self.settings.get('max_pairs_to_scan', 300)
+        self.threshold = self.settings.get('threshold', 4.0)
+        self.timeframes = self.settings.get('timeframes', ['1m', '3m', '5m', '15m'])
+        self.max_pairs = self.settings.get('max_pairs_to_scan', 600)
         self.last_pump_signals = {}
+        self.cache = CacheManager(ttl=30)  # Кэш на 30 секунд
+        
+        # Настройки производительности из config
+        from config import PERFORMANCE_SETTINGS
+        self.batch_size = PERFORMANCE_SETTINGS.get('pump_batch_size', 50)
+        self.delay_between_batches = PERFORMANCE_SETTINGS.get('delay_between_batches', 0.5)
+    
+    async def scan_pair(self, pair: str) -> Optional[Dict]:
+        """Сканирование одной пары (для параллельного вызова)"""
+        try:
+            # Проверяем кэш
+            cache_key = f"{pair}_pump"
+            cached = self.cache.get(cache_key)
+            if cached:
+                return cached
+            
+            for tf in self.timeframes:
+                limit = 20
+                df = await self.fetcher.fetch_ohlcv(pair, tf, limit=limit)
+                
+                if df is None or len(df) < 10:
+                    continue
+                
+                # Правильный расчет для каждого ТФ
+                bars_ago = 1
+                minutes = self._timeframe_to_minutes(tf)
+                
+                start_price = df['close'].iloc[-bars_ago-1]
+                current_price = df['close'].iloc[-1]
+                change_percent = (current_price - start_price) / start_price * 100
+                
+                if abs(change_percent) >= self.threshold:
+                    signal_key = f"{pair}_{tf}"
+                    last_time = self.last_pump_signals.get(signal_key)
+                    
+                    # Проверяем cooldown
+                    if last_time and (datetime.now() - last_time).total_seconds() < 1800:
+                        continue
+                    
+                    if self.analyzer:
+                        dataframes = {}
+                        for tf_name, tf_value in TIMEFRAMES.items():
+                            limit_tf = 200 if tf_name == 'current' else 100
+                            df_tf = await self.fetcher.fetch_ohlcv(pair, tf_value, limit_tf)
+                            if df_tf is not None and not df_tf.empty:
+                                df_tf = self.analyzer.calculate_indicators(df_tf)
+                                dataframes[tf_name] = df_tf
+                        
+                        if dataframes:
+                            funding = await self.fetcher.fetch_funding_rate(pair)
+                            ticker = await self.fetcher.fetch_ticker(pair)
+                            
+                            metadata = {
+                                'funding_rate': funding,
+                                'volume_24h': ticker.get('volume_24h'),
+                                'price_change_24h': ticker.get('percentage')
+                            }
+                            
+                            signal = self.analyzer.generate_signal(dataframes, metadata, pair, self.fetcher.name)
+                            
+                            if signal and 'NEUTRAL' not in signal['direction']:
+                                signal['pump_dump'] = [{
+                                    'change_percent': change_percent,
+                                    'time_window': minutes,
+                                    'start_price': start_price,
+                                    'end_price': current_price
+                                }]
+                                signal['signal_type'] = "PUMP" if change_percent > 0 else "DUMP"
+                                
+                                # Сохраняем в кэш и историю
+                                self.cache.set(cache_key, signal)
+                                self.last_pump_signals[signal_key] = datetime.now()
+                                
+                                return signal
+            return None
+        except Exception as e:
+            logger.error(f"Ошибка сканирования {pair}: {e}")
+            return None
     
     async def scan_all_pairs(self) -> List[Dict]:
-        logger.info("🚀 ЗАПУСК БЫСТРОГО ПАМП-СКАНЕРА")
+        """Оптимизированное сканирование всех пар"""
+        logger.info("🚀 ЗАПУСК БЫСТРОГО ПАМП-СКАНЕРА (ОПТИМИЗИРОВАННЫЙ)")
         
         try:
             all_pairs = await self.fetcher.fetch_all_pairs()
@@ -1233,87 +1359,27 @@ class FastPumpScanner:
             
             pump_signals = []
             
-            for pair in scan_pairs:
-                try:
-                    for tf in self.timeframes:
-                        limit = 20
-                        df = await self.fetcher.fetch_ohlcv(pair, tf, limit=limit)
-                        
-                        if df is None or len(df) < 10:
-                            continue
-                        
-                        if tf == '1m':
-                            bars_ago = 1
-                            minutes = 1
-                        elif tf == '3m':
-                            bars_ago = 1
-                            minutes = 3
-                        elif tf == '5m':
-                            bars_ago = 1
-                            minutes = 5
-                        elif tf == '15m':
-                            bars_ago = 1
-                            minutes = 15
-                        elif tf == '30m':
-                            bars_ago = 1
-                            minutes = 30
-                        else:
-                            bars_ago = 1
-                            minutes = self._timeframe_to_minutes(tf)
-                        
-                        start_price = df['close'].iloc[-bars_ago-1]
-                        current_price = df['close'].iloc[-1]
-                        change_percent = (current_price - start_price) / start_price * 100
-                        
-                        if abs(change_percent) >= self.threshold:
-                            signal_key = f"{pair}_{tf}"
-                            last_time = self.last_pump_signals.get(signal_key)
-                            
-                            if last_time and (datetime.now() - last_time).total_seconds() < 1800:
-                                continue
-                            
-                            if self.analyzer:
-                                dataframes = {}
-                                for tf_name, tf_value in TIMEFRAMES.items():
-                                    limit_tf = 200 if tf_name == 'current' else 100
-                                    df_tf = await self.fetcher.fetch_ohlcv(pair, tf_value, limit_tf)
-                                    if df_tf is not None and not df_tf.empty:
-                                        df_tf = self.analyzer.calculate_indicators(df_tf)
-                                        dataframes[tf_name] = df_tf
-                                
-                                if dataframes:
-                                    funding = await self.fetcher.fetch_funding_rate(pair)
-                                    ticker = await self.fetcher.fetch_ticker(pair)
-                                    
-                                    metadata = {
-                                        'funding_rate': funding,
-                                        'volume_24h': ticker.get('volume_24h'),
-                                        'price_change_24h': ticker.get('percentage')
-                                    }
-                                    
-                                    signal = self.analyzer.generate_signal(dataframes, metadata, pair, self.fetcher.name)
-                                else:
-                                    signal = None
-                            else:
-                                signal = None
-                            
-                            if signal and 'NEUTRAL' not in signal['direction']:
-                                signal['pump_dump'] = [{
-                                    'change_percent': change_percent,
-                                    'time_window': minutes,
-                                    'start_price': start_price,
-                                    'end_price': current_price
-                                }]
-                                signal['signal_type'] = "PUMP" if change_percent > 0 else "DUMP"
-                                
-                                pump_signals.append(signal)
-                                self.last_pump_signals[signal_key] = datetime.now()
-                                logger.info(f"✅ Памп-сигнал: {pair} {change_percent:+.1f}% за {minutes} мин")
-                                break
-                    
-                except Exception as e:
-                    continue
+            # Разбиваем на батчи для параллельной обработки
+            batches = [scan_pairs[i:i+self.batch_size] for i in range(0, len(scan_pairs), self.batch_size)]
             
+            for batch_num, batch in enumerate(batches):
+                logger.info(f"🔄 Обработка батча {batch_num + 1}/{len(batches)} ({len(batch)} пар)")
+                
+                # Параллельная обработка батча
+                tasks = [self.scan_pair(pair) for pair in batch]
+                batch_results = await asyncio.gather(*tasks)
+                
+                # Собираем результаты
+                for signal in batch_results:
+                    if signal:
+                        pump_signals.append(signal)
+                        logger.info(f"✅ Памп-сигнал: {signal['symbol']} {signal['pump_dump'][0]['change_percent']:+.1f}%")
+                
+                # Пауза между батчами
+                if batch_num < len(batches) - 1:
+                    await asyncio.sleep(self.delay_between_batches)
+            
+            # Сортируем по силе движения
             pump_signals.sort(key=lambda x: abs(x['pump_dump'][0]['change_percent']), reverse=True)
             logger.info(f"🎯 Памп-сканер: найдено {len(pump_signals)} сигналов")
             return pump_signals
@@ -1333,7 +1399,7 @@ class FastPumpScanner:
             return "⚡ СЛАБЫЙ"
     
     def _timeframe_to_minutes(self, tf: str) -> int:
-        return {'5m': 5, '15m': 15, '30m': 30, '1h': 60}.get(tf, 15)
+        return {'1m': 1, '3m': 3, '5m': 5, '15m': 15, '30m': 30, '1h': 60}.get(tf, 15)
     
     def _format_compact(self, num: float) -> str:
         if num is None:
@@ -1712,25 +1778,25 @@ class MultiExchangeScannerBot:
         return all_signals[:15]
     
     async def fast_pump_scan(self) -> List[Dict]:
-        if not FEATURES['advanced']['pump_dump']:
-            return []
+    if not FEATURES['advanced']['pump_dump']:
+        return []
+    
+    pump_signals = []
+    for name, fetcher in self.fetchers.items():
+        scanner = FastPumpScanner(fetcher, PUMP_SCAN_SETTINGS, self.analyzer)
+        signals = await scanner.scan_all_pairs()  # Теперь использует оптимизированный метод
         
-        pump_signals = []
-        for name, fetcher in self.fetchers.items():
-            scanner = FastPumpScanner(fetcher, PUMP_SCAN_SETTINGS, self.analyzer)
-            signals = await scanner.scan_all_pairs()
-            
-            for signal in signals:
-                contract_info = await fetcher.fetch_contract_info(signal['symbol'])
-                msg, keyboard = scanner.format_pump_message(signal, contract_info)
-                pump_signals.append({
-                    'signal': signal,
-                    'message': msg,
-                    'keyboard': keyboard
-                })
-        
-        pump_signals.sort(key=lambda x: abs(x['signal']['pump_dump'][0]['change_percent']), reverse=True)
-        return pump_signals
+        for signal in signals:
+            contract_info = await fetcher.fetch_contract_info(signal['symbol'])
+            msg, keyboard = scanner.format_pump_message(signal, contract_info)
+            pump_signals.append({
+                'signal': signal,
+                'message': msg,
+                'keyboard': keyboard
+            })
+    
+    pump_signals.sort(key=lambda x: abs(x['signal']['pump_dump'][0]['change_percent']), reverse=True)
+    return pump_signals
     
     async def send_signal(self, signal: Dict, pump_only: bool = False):
         if pump_only and not signal.get('pump_dump'):
