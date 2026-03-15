@@ -1104,6 +1104,24 @@ class MultiTimeframeAnalyzer:
             reasons.append(f"Тренды согласованы ({alignment['trend_alignment']:.0f}%)")
             confidence += INDICATOR_WEIGHTS['trend_alignment']
         
+        # Анализ Фибоначчи
+        fib_analysis = None
+        if self.fibonacci and FEATURES['advanced']['fibonacci']:
+            fib_analysis = self.fibonacci.analyze_multi_timeframe(dataframes)
+            if fib_analysis['has_confluence']:
+                for signal in fib_analysis['signals']:
+                    reasons.append(signal)
+                confidence += fib_analysis['strength'] / 5
+
+        # Анализ Volume Profile
+        vp_analysis = None
+        if self.volume_profile and FEATURES['advanced']['volume_profile']:
+            vp_analysis = self.volume_profile.analyze_multi_timeframe(dataframes)
+            if vp_analysis['has_confluence']:
+                for signal in vp_analysis['signals']:
+                    reasons.append(signal)
+                confidence += vp_analysis['strength'] / 5
+
         funding = metadata.get('funding_rate')
         if funding is not None and funding != 0:
             funding_pct = funding * 100
@@ -1134,6 +1152,7 @@ class MultiTimeframeAnalyzer:
             else:
                 direction = 'SHORT 📉'
         
+        # Пересчитываем signal_strength и signal_power после всех изменений confidence
         signal_strength = (confidence + alignment['trend_alignment']) / 2
         
         signal_power = "⚡️"
@@ -1164,42 +1183,6 @@ class MultiTimeframeAnalyzer:
             targets['target_2'] = round(current_price - atr * 3.0, 2)
             targets['stop_loss'] = round(current_price + atr * 1.0, 2)
         
-                # В КОНЦЕ метода, перед return добавьте:
-        
-        # Анализ Фибоначчи
-        fib_analysis = None
-        if hasattr(self, 'fibonacci') and self.fibonacci and FEATURES['advanced']['fibonacci']:
-            fib_analysis = self.fibonacci.analyze_multi_timeframe(dataframes)
-            if fib_analysis['has_confluence']:
-                for signal in fib_analysis['signals']:
-                    reasons.append(signal)
-                confidence += fib_analysis['strength'] / 5
-
-        # Анализ Volume Profile
-        vp_analysis = None
-        if hasattr(self, 'volume_profile') and self.volume_profile and FEATURES['advanced']['volume_profile']:
-            vp_analysis = self.volume_profile.analyze_multi_timeframe(dataframes)
-            if vp_analysis['has_confluence']:
-                for signal in vp_analysis['signals']:
-                    reasons.append(signal)
-                confidence += vp_analysis['strength'] / 5
-
-        # Обновляем signal_strength если confidence изменился
-        signal_strength = (confidence + alignment['trend_alignment']) / 2
-        
-        # Обновляем signal_power
-        if signal_strength >= 85:
-            signal_power = "🔥🔥🔥 ОЧЕНЬ СИЛЬНЫЙ"
-        elif signal_strength >= 70:
-            signal_power = "🔥🔥 СИЛЬНЫЙ"
-        elif signal_strength >= 55:
-            signal_power = "🔥 СРЕДНИЙ"
-        elif signal_strength >= 40:
-            signal_power = "📊 СЛАБЫЙ"
-        else:
-            signal_power = "👀 НАБЛЮДЕНИЕ"
-        
-        # Формируем результат
         result = {
             'symbol': symbol,
             'exchange': exchange,
