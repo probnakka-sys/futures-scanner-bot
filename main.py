@@ -11,18 +11,13 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Optional, Set
 import ccxt.async_support as ccxt
 from dotenv import load_dotenv
-# Telegram
-from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
-from telegram.error import RetryAfter, TimedOut
 import time
 import json
 import aiohttp
 import random
 from io import BytesIO
-# Для продвинутых структур данных
-import heapq
-from collections import deque
 
 # Графики
 import matplotlib
@@ -35,7 +30,6 @@ from matplotlib.patches import Rectangle
 from config import (
     TELEGRAM_TOKEN,
     TELEGRAM_CHAT_ID,
-    PUMP_CHAT_ID,
     UPDATE_INTERVAL,
     PUMP_SCAN_INTERVAL,
     MIN_CONFIDENCE,
@@ -51,14 +45,8 @@ from config import (
     SMC_SETTINGS,
     FRACTAL_SETTINGS,
     PAIRS_TO_SCAN,
-    DISPLAY_SETTINGS,
-    FIBONACCI_SETTINGS,
-    VOLUME_PROFILE_SETTINGS,
-    STATS_SETTINGS
+    DISPLAY_SETTINGS
 )
-
-# Импорт системы статистики
-from signal_stats import SignalStatistics
 
 # Настройка логирования
 logging.basicConfig(
@@ -122,7 +110,7 @@ class ChartGenerator:
         self.dpi = 100
         self.style = 'dark_background'
         
-    def create_chart(self, df: pd.DataFrame, signal: Dict, coin: str, timeframe: str = '15m') -> BytesIO:
+    def create_chart(self, df: pd.DataFrame, signal: Dict, coin: str) -> BytesIO:
         """
         Создание графика с ценой, индикаторами и целями
         """
@@ -174,8 +162,8 @@ class ChartGenerator:
                        linestyle='--', linewidth=1.5, alpha=0.8,
                        label=f'Stop: {signal["stop_loss"]}')
         
-        # Убираем эмодзи из заголовка, чтобы избежать проблем со шрифтами
-        ax1.set_title(f'{coin} - {signal["direction"]} (TF: {timeframe}, уверенность {signal["confidence"]}%)', 
+        direction_emoji = "🟢" if "LONG" in signal['direction'] else "🔴" if "SHORT" in signal['direction'] else "⚪"
+        ax1.set_title(f'{direction_emoji} {coin} - {signal["direction"]} (уверенность {signal["confidence"]}%)', 
                      fontsize=14, fontweight='bold', color='white')
         ax1.set_ylabel('Price (USDT)', color='white')
         ax1.legend(loc='upper left', fontsize=8, facecolor='#222222')
@@ -376,35 +364,6 @@ class SmartMoneyAnalyzer:
                             break
         return order_blocks[-20:]
     
-    def find_fair_value_gaps(self, df: pd.DataFrame) -> List[Dict]:
-        fvg_list = []
-        for i in range(1, len(df) - 1):
-            candle1 = df.iloc[i-1]
-            candle2 = df.iloc[i]
-            candle3 = df.iloc[i+1]
-            
-            if candle3['low'] > candle1['high']:
-                gap_size = (candle3['low'] - candle1['high']) / candle1['high'] * 100
-                fvg_list.append({
-                    'type': 'bullish',
-                    'price_min': candle1['high'],
-                    'price_max': candle3['low'],
-                    'size': gap_size,
-                    'strength': min(100, gap_size * 20),
-                    'description': f"Бычий FVG ({gap_size:.2f}%)"
-                })
-            elif candle3['high'] < candle1['low']:
-                gap_size = (candle1['low'] - candle3['high']) / candle3['high'] * 100
-                fvg_list.append({
-                    'type': 'bearish',
-                    'price_min': candle3['high'],
-                    'price_max': candle1['low'],
-                    'size': gap_size,
-                    'strength': min(100, gap_size * 20),
-                    'description': f"Медвежий FVG ({gap_size:.2f}%)"
-                })
-        return fvg_list[-10:]
-    
     def analyze(self, df: pd.DataFrame, current_price: float) -> Dict:
         result = {
             'has_signal': False,
@@ -412,21 +371,12 @@ class SmartMoneyAnalyzer:
             'strength': 0
         }
         
-        # Ордер-блоки
         order_blocks = self.find_order_blocks(df)
         for ob in order_blocks:
             if ob['price_min'] <= current_price <= ob['price_max']:
                 result['has_signal'] = True
                 result['signals'].append(ob['description'])
                 result['strength'] = max(result['strength'], ob['strength'])
-        
-        # FVG
-        fvg_list = self.find_fair_value_gaps(df)
-        for fvg in fvg_list:
-            if fvg['price_min'] <= current_price <= fvg['price_max']:
-                result['has_signal'] = True
-                result['signals'].append(f"📐 FVG: {fvg['description']}")
-                result['strength'] = max(result['strength'], fvg['strength'])
         
         return result
 
@@ -465,300 +415,6 @@ class FractalAnalyzer:
                 result['has_fractal'] = True
                 result['signals'].append(f"Преобладание медвежьих фракталов ({fractal_down}/{fractal_up})")
                 result['strength'] = 70
-        
-        return result
-
-# ============== АНАЛИЗАТОР ФИБОНАЧЧИ ==============
-
-class FibonacciAnalyzer:
-    """
-    Анализ уровней Фибоначчи с учетом:
-    - Коррекций (0.236, 0.382, 0.5, 0.618, 0.786, 0.86)
-    - Расширений (0.18, 0.27, 0.618)
-    - Правила 3 свечей для точки B
-    """
-    
-    def __init__(self, settings: Dict = None):
-        self.settings = settings or FIBONACCI_SETTINGS
-        self.retracement_levels = self.settings.get('retracement_levels', 
-                                                    [0.236, 0.382, 0.5, 0.618, 0.786, 0.86])
-        self.extension_levels = self.settings.get('extension_levels', 
-                                                  [0.18, 0.27, 0.618])
-        self.lookback_candles = self.settings.get('lookback_candles', 3)
-        self.min_distance = self.settings.get('min_distance_pct', 0.5)
-    
-    def find_swing_low(self, df: pd.DataFrame, window: int = 5) -> Optional[int]:
-        """Поиск локального минимума (точка A для бычьего движения)"""
-        for i in range(window, len(df) - window):
-            if (df['low'].iloc[i] < df['low'].iloc[i-1] and 
-                df['low'].iloc[i] < df['low'].iloc[i-2] and
-                df['low'].iloc[i] < df['low'].iloc[i+1] and
-                df['low'].iloc[i] < df['low'].iloc[i+2]):
-                return i
-        return None
-    
-    def find_swing_high(self, df: pd.DataFrame, window: int = 5) -> Optional[int]:
-        """Поиск локального максимума (точка A для медвежьего движения)"""
-        for i in range(window, len(df) - window):
-            if (df['high'].iloc[i] > df['high'].iloc[i-1] and 
-                df['high'].iloc[i] > df['high'].iloc[i-2] and
-                df['high'].iloc[i] > df['high'].iloc[i+1] and
-                df['high'].iloc[i] > df['high'].iloc[i+2]):
-                return i
-        return None
-    
-    def find_point_b(self, df: pd.DataFrame, start_idx: int, is_bullish: bool) -> Optional[Dict]:
-        """Поиск точки B как максимума/минимума следующих N свечей"""
-        if start_idx + self.lookback_candles >= len(df):
-            return None
-        
-        if is_bullish:
-            max_price = float('-inf')
-            max_idx = start_idx
-            for i in range(1, self.lookback_candles + 1):
-                idx = start_idx + i
-                if df['high'].iloc[idx] > max_price:
-                    max_price = df['high'].iloc[idx]
-                    max_idx = idx
-            return {'price': max_price, 'index': max_idx, 'type': 'bullish'}
-        else:
-            min_price = float('inf')
-            min_idx = start_idx
-            for i in range(1, self.lookback_candles + 1):
-                idx = start_idx + i
-                if df['low'].iloc[idx] < min_price:
-                    min_price = df['low'].iloc[idx]
-                    min_idx = idx
-            return {'price': min_price, 'index': min_idx, 'type': 'bearish'}
-    
-    def calculate_fib_levels(self, point_a: float, point_b: float) -> Dict:
-        """Расчет всех уровней Фибоначчи"""
-        diff = point_b - point_a
-        levels = {}
-        
-        for level in self.retracement_levels:
-            price = point_b - diff * level
-            levels[f'{level:.3f}'] = {
-                'price': round(price, 2),
-                'type': 'retracement',
-                'level': level,
-                'description': f'{level*100:.1f}%'
-            }
-        
-        for level in self.extension_levels:
-            price = point_b + diff * level
-            levels[f'-{level:.3f}'] = {
-                'price': round(price, 2),
-                'type': 'extension',
-                'level': -level,
-                'description': f'-{level*100:.1f}%'
-            }
-        
-        return levels
-    
-    def check_price_reaction(self, current_price: float, levels: Dict) -> List[Dict]:
-        """Проверка реакции цены на уровни Фибоначчи"""
-        reactions = []
-        
-        for key, level_data in levels.items():
-            level_price = level_data['price']
-            distance = abs(current_price - level_price) / current_price * 100
-            
-            if distance < self.min_distance:
-                strength = 50
-                if level_data['level'] == 0.618:
-                    strength = 90
-                elif level_data['level'] == 0.5:
-                    strength = 80
-                elif level_data['level'] == 0.236:
-                    strength = 70
-                elif level_data['level'] == 0.786:
-                    strength = 85
-                elif level_data['level'] == -0.618:
-                    strength = 95
-                
-                direction = 'support' if current_price < level_price else 'resistance'
-                reactions.append({
-                    'level': key,
-                    'price': level_price,
-                    'strength': strength,
-                    'description': f"{level_data['description']} ({direction})"
-                })
-        
-        return reactions
-    
-    def analyze(self, df: pd.DataFrame, timeframe: str = 'current') -> Dict:
-        """Анализ Фибоначчи на таймфрейме"""
-        result = {'has_signal': False, 'signals': [], 'strength': 0, 'levels': {}, 'timeframe': timeframe}
-        
-        # Бычье движение
-        low_idx = self.find_swing_low(df)
-        if low_idx:
-            point_a = df['low'].iloc[low_idx]
-            point_b_data = self.find_point_b(df, low_idx, True)
-            if point_b_data:
-                levels = self.calculate_fib_levels(point_a, point_b_data['price'])
-                reactions = self.check_price_reaction(df['close'].iloc[-1], levels)
-                for r in reactions:
-                    result['has_signal'] = True
-                    result['signals'].append(f"📐 {timeframe}: {r['description']}")
-                    result['strength'] = max(result['strength'], r['strength'])
-                    result['levels'] = levels
-        
-        # Медвежье движение
-        high_idx = self.find_swing_high(df)
-        if high_idx:
-            point_a = df['high'].iloc[high_idx]
-            point_b_data = self.find_point_b(df, high_idx, False)
-            if point_b_data:
-                levels = self.calculate_fib_levels(point_a, point_b_data['price'])
-                reactions = self.check_price_reaction(df['close'].iloc[-1], levels)
-                for r in reactions:
-                    result['has_signal'] = True
-                    result['signals'].append(f"📐 {timeframe}: {r['description']}")
-                    result['strength'] = max(result['strength'], r['strength'])
-                    result['levels'] = levels
-        
-        return result
-    
-    def analyze_multi_timeframe(self, dataframes: Dict[str, pd.DataFrame]) -> Dict:
-        """Мультитаймфреймовый анализ Фибоначчи"""
-        result = {'has_confluence': False, 'signals': [], 'strength': 0, 'levels': {}}
-        
-        for tf_name, df in dataframes.items():
-            if df is None or df.empty:
-                continue
-            
-            tf_result = self.analyze(df, tf_name)
-            if tf_result['has_signal']:
-                weight = 1.0
-                if tf_name == 'monthly':
-                    weight = 3.0
-                elif tf_name == 'weekly':
-                    weight = 2.5
-                elif tf_name == 'daily':
-                    weight = 2.0
-                elif tf_name == 'hourly':
-                    weight = 1.5
-                
-                result['signals'].extend(tf_result['signals'])
-                result['strength'] += tf_result['strength'] * weight
-                result['levels'][tf_name] = tf_result['levels']
-                result['has_confluence'] = True
-        
-        if result['strength'] > 100:
-            result['strength'] = 100
-        
-        return result
-
-# ============== АНАЛИЗАТОР VOLUME PROFILE ==============
-
-class VolumeProfileAnalyzer:
-    """Анализ Volume Profile для определения ключевых уровней"""
-    
-    def __init__(self, settings: Dict = None):
-        self.settings = settings or VOLUME_PROFILE_SETTINGS
-        self.lookback = self.settings.get('lookback_bars', 100)
-        self.va_pct = self.settings.get('value_area_pct', 70)
-    
-    def calculate_volume_profile(self, df: pd.DataFrame) -> Dict:
-        """Расчет Volume Profile"""
-        if df is None or len(df) < 20:
-            return {}
-        
-        recent = df.tail(self.lookback).copy()
-        price_precision = 6 if recent['close'].max() < 0.1 else 4 if recent['close'].max() < 10 else 2
-        
-        volume_by_price = {}
-        for _, row in recent.iterrows():
-            price_step = 10 ** (-price_precision)
-            price_levels = np.arange(round(row['low'], price_precision), round(row['high'], price_precision) + price_step, price_step)
-            vol_per_level = row['volume'] / len(price_levels) if len(price_levels) > 0 else 0
-            for price in price_levels:
-                price_key = round(price, price_precision)
-                volume_by_price[price_key] = volume_by_price.get(price_key, 0) + vol_per_level
-        
-        if not volume_by_price:
-            return {}
-        
-        sorted_prices = sorted(volume_by_price.keys())
-        volumes = [volume_by_price[p] for p in sorted_prices]
-        max_vol_idx = np.argmax(volumes)
-        poc_price = sorted_prices[max_vol_idx]
-        
-        total_volume = sum(volumes)
-        price_vol_pairs = list(zip(sorted_prices, volumes))
-        price_vol_pairs.sort(key=lambda x: x[1], reverse=True)
-        
-        cum_vol, value_area_prices = 0, []
-        for price, vol in price_vol_pairs:
-            cum_vol += vol
-            value_area_prices.append(price)
-            if cum_vol >= total_volume * self.va_pct / 100:
-                break
-        
-        val, vah = min(value_area_prices), max(value_area_prices)
-        avg_volume = total_volume / len(volumes)
-        hvn_threshold = avg_volume * self.settings.get('min_hvn_strength', 2.0)
-        hvn_levels = [p for p, v in zip(sorted_prices, volumes) if v > hvn_threshold]
-        
-        return {
-            'poc': poc_price,
-            'val': val,
-            'vah': vah,
-            'hvn': hvn_levels[:5],
-            'total_volume': total_volume
-        }
-    
-    def check_price_reaction(self, current_price: float, vp_data: Dict) -> List[Dict]:
-        """Проверка реакции цены на уровни Volume Profile"""
-        reactions, distance = [], self.settings.get('confluence_distance', 0.5)
-        if not vp_data:
-            return reactions
-        
-        poc_dist = abs(current_price - vp_data['poc']) / current_price * 100
-        if poc_dist < distance:
-            reactions.append({'level': 'POC', 'strength': 90, 'description': f"Цена у POC ({vp_data['poc']:.2f})"})
-        
-        val_dist = abs(current_price - vp_data['val']) / current_price * 100
-        if val_dist < distance:
-            reactions.append({'level': 'VAL', 'strength': 75, 'description': f"Цена у VAL ({vp_data['val']:.2f})"})
-        
-        vah_dist = abs(current_price - vp_data['vah']) / current_price * 100
-        if vah_dist < distance:
-            reactions.append({'level': 'VAH', 'strength': 75, 'description': f"Цена у VAH ({vp_data['vah']:.2f})"})
-        
-        for hvn in vp_data['hvn'][:1]:
-            hvn_dist = abs(current_price - hvn) / current_price * 100
-            if hvn_dist < distance:
-                reactions.append({'level': 'HVN', 'strength': 80, 'description': f"Цена в зоне HVN ({hvn:.2f})"})
-                break
-        
-        return reactions
-    
-    def analyze_multi_timeframe(self, dataframes: Dict[str, pd.DataFrame]) -> Dict:
-        """Мультитаймфреймовый анализ Volume Profile"""
-        result = {'has_confluence': False, 'signals': [], 'strength': 0, 'levels': {}}
-        target_tfs = self.settings.get('timeframes', ['daily', 'weekly', 'monthly'])
-        
-        for tf_name in target_tfs:
-            if tf_name not in dataframes or dataframes[tf_name] is None:
-                continue
-            
-            df = dataframes[tf_name]
-            vp_data = self.calculate_volume_profile(df)
-            if vp_data:
-                reactions = self.check_price_reaction(df['close'].iloc[-1], vp_data)
-                weight = 3.0 if tf_name == 'monthly' else 2.5 if tf_name == 'weekly' else 2.0 if tf_name == 'daily' else 1.0
-                
-                for r in reactions:
-                    result['has_confluence'] = True
-                    result['signals'].append(f"📊 {tf_name}: {r['description']}")
-                    result['strength'] += r['strength'] * weight
-                    result['levels'][tf_name] = vp_data
-        
-        if result['strength'] > 100:
-            result['strength'] = 100
         
         return result
 
@@ -857,7 +513,7 @@ class BingxFetcher(BaseExchangeFetcher):
             'secret': os.getenv('BINGX_SECRET_KEY'),
             'enableRateLimit': True,
             'options': {
-                'defaultType': 'swap',  # swap = фьючерсы
+                'defaultType': 'swap',
                 'adjustForTimeDifference': True
             }
         })
@@ -867,15 +523,11 @@ class BingxFetcher(BaseExchangeFetcher):
         try:
             markets = await self.exchange.load_markets()
             usdt_pairs = []
-            
             for symbol, market in markets.items():
-                # Проверяем, что это фьючерсный рынок USDT
                 if (market['quote'] == 'USDT' and 
                     market['active'] and 
                     market['type'] in ['swap', 'future']):
                     usdt_pairs.append(symbol)
-            
-            logger.info(f"📊 BingX Futures: загружено {len(usdt_pairs)} фьючерсных пар")
             return usdt_pairs
         except Exception as e:
             logger.error(f"❌ BingX ошибка: {e}")
@@ -957,14 +609,6 @@ class MultiTimeframeAnalyzer:
         self.divergence = DivergenceAnalyzer() if FEATURES['advanced']['divergence'] else None
         self.smc = SmartMoneyAnalyzer(SMC_SETTINGS) if FEATURES['advanced']['smart_money'] else None
         self.fractal = FractalAnalyzer(FRACTAL_SETTINGS) if FEATURES['advanced']['fractals'] else None
-        self.fibonacci = None
-        self.volume_profile = None
-    
-    def set_fibonacci(self, fib_analyzer):
-        self.fibonacci = fib_analyzer
-    
-    def set_volume_profile(self, vp_analyzer):
-        self.volume_profile = vp_analyzer
     
     def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         df['rsi'] = calculate_rsi(df['close'], INDICATOR_SETTINGS['rsi_period'])
@@ -1104,25 +748,7 @@ class MultiTimeframeAnalyzer:
             reasons.append(f"Тренды согласованы ({alignment['trend_alignment']:.0f}%)")
             confidence += INDICATOR_WEIGHTS['trend_alignment']
         
-                # Анализ Фибоначчи
-        fib_analysis = None
-        if self.fibonacci and FEATURES['advanced']['fibonacci']:
-            fib_analysis = self.fibonacci.analyze_multi_timeframe(dataframes)
-            if fib_analysis['has_confluence']:
-                for signal in fib_analysis['signals']:
-                    reasons.append(signal)
-                confidence += fib_analysis['strength'] / 5
-
-        # Анализ Volume Profile
-        vp_analysis = None
-        if self.volume_profile and FEATURES['advanced']['volume_profile']:
-            vp_analysis = self.volume_profile.analyze_multi_timeframe(dataframes)
-            if vp_analysis['has_confluence']:
-                for signal in vp_analysis['signals']:
-                    reasons.append(signal)
-                confidence += vp_analysis['strength'] / 5
-
-                funding = metadata.get('funding_rate')
+        funding = metadata.get('funding_rate')
         if funding is not None and funding != 0:
             funding_pct = funding * 100
             if funding > 0.001:
@@ -1182,7 +808,7 @@ class MultiTimeframeAnalyzer:
             targets['target_2'] = round(current_price - atr * 3.0, 2)
             targets['stop_loss'] = round(current_price + atr * 1.0, 2)
         
-        result = {
+        return {
             'symbol': symbol,
             'exchange': exchange,
             'price': current_price,
@@ -1198,13 +824,6 @@ class MultiTimeframeAnalyzer:
             'alignment': alignment,
             **targets
         }
-        
-        if 'fib_analysis' in locals() and fib_analysis:
-            result['fibonacci'] = fib_analysis
-        if 'vp_analysis' in locals() and vp_analysis:
-            result['volume_profile'] = vp_analysis
-        
-        return result
 
 # ============== БЫСТРЫЙ ПАМП-СКАНЕР ==============
 
@@ -1343,7 +962,7 @@ class FastPumpScanner:
     def format_pump_message(self, signal: Dict, contract_info: Dict = None) -> Tuple[str, InlineKeyboardMarkup]:
         coin = signal['symbol'].split('/')[0].replace('USDT', '')
         
-        line1 = f"🚀 <code>{coin}</code> {signal['signal_type']} {signal['pump_dump'][0]['change_percent']:+.1f}% {signal['signal_power']}"
+        line1 = f"🚀 {coin} {signal['signal_type']} {signal['pump_dump'][0]['change_percent']:+.1f}% {signal['signal_power']}"
         
         if contract_info:
             max_lev = contract_info.get('max_leverage', 100)
@@ -1359,6 +978,8 @@ class FastPumpScanner:
                     volume_str = f" / {vol/1_000:.1f}K"
                 else:
                     volume_str = f" / {vol:.0f}"
+            else:
+                volume_str = " / N/A"
             
             line2 = f"📌 {max_lev}x / {min_amt:.0f}$ / {self._format_compact(max_amt)}{volume_str} / ⚪ 0.000%"
         else:
@@ -1448,31 +1069,8 @@ class MultiExchangeScannerBot:
         self.imbalance = ImbalanceAnalyzer(IMBALANCE_SETTINGS) if FEATURES['advanced']['imbalance'] else None
         self.liquidity = LiquidityAnalyzer(LIQUIDITY_SETTINGS) if FEATURES['advanced']['liquidity'] else None
         
-        # Инициализация дополнительных анализаторов
-        if FEATURES['advanced']['fibonacci']:
-            from config import FIBONACCI_SETTINGS
-            self.fibonacci = FibonacciAnalyzer(FIBONACCI_SETTINGS)
-            self.analyzer.set_fibonacci(self.fibonacci)
-            logger.info("✅ Анализатор Фибоначчи инициализирован")
-
-        if FEATURES['advanced']['volume_profile']:
-            from config import VOLUME_PROFILE_SETTINGS
-            self.volume_profile = VolumeProfileAnalyzer(VOLUME_PROFILE_SETTINGS)
-            self.analyzer.set_volume_profile(self.volume_profile)
-            logger.info("✅ Volume Profile анализатор инициализирован")
-        
-        # Инициализация бирж
         if FEATURES['exchanges'].get('bingx', {}).get('enabled', False):
             self.fetchers['BingX'] = BingxFetcher()
-        
-        # Инициализация статистики
-        if STATS_SETTINGS['enabled'] and STATS_SETTINGS['stats_chat_id']:
-            self.stats = SignalStatistics(self.telegram_bot, STATS_SETTINGS['stats_chat_id'])
-            logger.info("✅ Система статистики инициализирована")
-            
-            # Запускаем фоновые задачи
-            asyncio.create_task(self.stats_updater_loop())
-            asyncio.create_task(self.daily_report_loop())
     
     def extract_coin(self, symbol: str) -> str:
         if '/USDT' in symbol:
@@ -1506,22 +1104,16 @@ class MultiExchangeScannerBot:
             coin = self.extract_coin(signal['symbol'])
             pump_text = ""
         
-        line1 = f"{main_emoji} <code>{coin}</code>{pump_text} {signal['signal_power']}"
+        line1 = f"{main_emoji} {coin}{pump_text} {signal['signal_power']}"
         
         if contract_info:
-            max_lev = contract_info.get('max_leverage')
-            if max_lev is None:
-                max_lev = 100
-            min_amt = contract_info.get('min_amount')
-            if min_amt is None:
-                min_amt = 5.0
-            max_amt = contract_info.get('max_amount')
-            if max_amt is None:
-                max_amt = 2_000_000
+            max_lev = contract_info.get('max_leverage', 100)
+            min_amt = contract_info.get('min_amount', 5.0)
+            max_amt = contract_info.get('max_amount', 2_000_000)
             
             line2 = f"📌 {max_lev}x / {min_amt:.0f}$ / {self.format_compact(max_amt)}"
             
-            if signal.get('volume_24h') is not None and signal['volume_24h'] > 0:
+            if signal.get('volume_24h') and signal['volume_24h'] is not None and signal['volume_24h'] > 0:
                 volume = signal['volume_24h']
                 if volume > 1_000_000:
                     line2 += f" / {volume/1_000_000:.1f}M"
@@ -1529,29 +1121,17 @@ class MultiExchangeScannerBot:
                     line2 += f" / {volume/1_000:.1f}K"
                 else:
                     line2 += f" / {volume:.0f}"
+            else:
+                line2 += f" / N/A"
             
-            funding_rate = signal.get('funding_rate')
-            if funding_rate is not None:
-                funding = funding_rate * 100
-                funding_emoji = "🟢" if funding > 0 else "🔴" if funding < 0 else "⚪"
-                line2 += f" / {funding_emoji} {funding:.3f}%"
+            funding_rate = signal.get('funding_rate', 0)
+            if funding_rate is None:
+                funding_rate = 0.0
+            funding = funding_rate * 100
+            funding_emoji = "🟢" if funding > 0 else "🔴" if funding < 0 else "⚪"
+            line2 += f" / {funding_emoji} {funding:.3f}%"
         else:
-            line2 = f"📌 100x / 5$ / 2.0M"
-            
-            if signal.get('volume_24h') is not None and signal['volume_24h'] > 0:
-                volume = signal['volume_24h']
-                if volume > 1_000_000:
-                    line2 += f" / {volume/1_000_000:.1f}M"
-                elif volume > 1_000:
-                    line2 += f" / {volume/1_000:.1f}K"
-                else:
-                    line2 += f" / {volume:.0f}"
-            
-            funding_rate = signal.get('funding_rate')
-            if funding_rate is not None:
-                funding = funding_rate * 100
-                funding_emoji = "🟢" if funding > 0 else "🔴" if funding < 0 else "⚪"
-                line2 += f" / {funding_emoji} {funding:.3f}%"
+            line2 = f"📌 100x / 5$ / 2.0M / N/A / ⚪ 0.000%"
         
         exchange_link = REF_LINKS.get(signal['exchange'], '#')
         line3 = f"💲 Trade: <a href='{exchange_link}'>{signal['exchange']}</a>"
@@ -1757,7 +1337,7 @@ class MultiExchangeScannerBot:
         try:
             if df is not None and not df.empty:
                 df = self.analyzer.calculate_indicators(df)
-                chart_buf = self.chart_generator.create_chart(df, signal, coin, TIMEFRAMES.get('current', '15m'))
+                chart_buf = self.chart_generator.create_chart(df, signal, coin)
                 
                 await self.telegram_bot.send_photo(
                     chat_id=TELEGRAM_CHAT_ID,
@@ -1775,12 +1355,6 @@ class MultiExchangeScannerBot:
                     reply_markup=keyboard
                 )
                 logger.info(f"✅ Отправлен сигнал: {signal['symbol']}")
-            
-            # Добавляем в статистику
-            if hasattr(self, 'stats'):
-                signal_type = 'pump' if signal.get('pump_dump') else 'regular'
-                self.stats.add_signal(signal, signal_type)
-                
         except Exception as e:
             logger.error(f"❌ Ошибка отправки: {e}")
     
@@ -1803,10 +1377,10 @@ class MultiExchangeScannerBot:
         try:
             if df is not None and not df.empty:
                 df = self.analyzer.calculate_indicators(df)
-                chart_buf = self.chart_generator.create_chart(df, signal, coin, TIMEFRAMES.get('current', '15m'))
+                chart_buf = self.chart_generator.create_chart(df, signal, coin)
                 
                 await self.telegram_bot.send_photo(
-                    chat_id=PUMP_CHAT_ID,
+                    chat_id=TELEGRAM_CHAT_ID,
                     photo=chart_buf,
                     caption=pump_data['message'],
                     parse_mode='HTML',
@@ -1815,17 +1389,12 @@ class MultiExchangeScannerBot:
                 logger.info(f"✅ Отправлен памп-сигнал с графиком: {signal['symbol']}")
             else:
                 await self.telegram_bot.send_message(
-                    chat_id=PUMP_CHAT_ID,
+                    chat_id=TELEGRAM_CHAT_ID,
                     text=pump_data['message'],
                     parse_mode='HTML',
                     reply_markup=pump_data['keyboard']
                 )
                 logger.info(f"✅ Отправлен памп-сигнал: {signal['symbol']}")
-            
-            # Добавляем в статистику
-            if hasattr(self, 'stats'):
-                self.stats.add_signal(signal, 'pump')
-                
         except Exception as e:
             logger.error(f"❌ Ошибка отправки пампа: {e}")
     
@@ -1849,18 +1418,6 @@ class MultiExchangeScannerBot:
                 for reason in signal['reasons']:
                     clean_reason = reason.replace("📊 ", "").replace("✅ ", "").replace("🔄 ", "")
                     lines.append(f"└ {clean_reason}")
-                
-                # Добавляем информацию о Фибоначчи если есть
-                if 'fibonacci' in signal:
-                    lines.append("\n📐 *ФИБОНАЧЧИ:*")
-                    for tf, levels in signal['fibonacci']['levels'].items():
-                        lines.append(f"└ {tf.upper()}: {len(levels)} уровней")
-                
-                # Добавляем информацию о Volume Profile если есть
-                if 'volume_profile' in signal:
-                    lines.append("\n📊 *VOLUME PROFILE:*")
-                    for tf, vp in signal['volume_profile']['levels'].items():
-                        lines.append(f"└ {tf.upper()}: POC={vp['poc']:.2f}")
             
             detailed = "\n".join(lines)
             
@@ -1874,42 +1431,10 @@ class MultiExchangeScannerBot:
             logger.error(f"Ошибка детального анализа {symbol}: {e}")
             return f"❌ Ошибка анализа: {e}", None
     
-    async def stats_updater_loop(self):
-        """Обновление статусов сигналов каждые 5 минут"""
-        while True:
-            await asyncio.sleep(STATS_SETTINGS['update_interval'])
-            
-            for signal_id, signal_data in self.stats.db['signals'].items():
-                if signal_data['status'] != 'pending':
-                    continue
-                
-                # Получаем текущую цену
-                for fetcher in self.fetchers.values():
-                    ticker = await fetcher.fetch_ticker(signal_data['symbol'])
-                    if ticker and ticker.get('last'):
-                        self.stats.update_signal(signal_id, ticker['last'])
-                        break
-
-    async def daily_report_loop(self):
-        """Ежедневный отчет в 20:00"""
-        while True:
-            now = datetime.now()
-            target_time = datetime.strptime(STATS_SETTINGS['daily_report_time'], '%H:%M').time()
-            target = datetime.combine(now.date(), target_time)
-            
-            if now > target:
-                target += timedelta(days=1)
-            
-            wait_seconds = (target - now).total_seconds()
-            await asyncio.sleep(wait_seconds)
-            
-            if hasattr(self, 'stats'):
-                await self.stats.send_daily_report()
-    
     async def run(self):
         logger.info("🤖 Мульти-биржевой бот запущен")
         logger.info(f"📊 Основной анализ: каждые {UPDATE_INTERVAL//60} мин")
-        logger.info(f"🚀 Памп-сканер: каждые {PUMP_SCAN_INTERVAL} сек")
+        logger.info(f"🚀 Памп-сканер: каждые {PUMP_SCAN_INTERVAL//60} мин")
         
         last_full_scan = 0
         
@@ -1953,23 +1478,20 @@ class TelegramHandler:
         self.app.add_handler(CommandHandler("scan", self.scan))
         self.app.add_handler(CommandHandler("status", self.status))
         self.app.add_handler(CommandHandler("help", self.help))
-        self.app.add_handler(CommandHandler("stats", self.stats_command))
         self.app.add_handler(CallbackQueryHandler(self.button))
-        self.app.add_handler(CallbackQueryHandler(self.stats_button_handler, pattern="^stats_"))
     
-    async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def start(self, update, context):
         await update.message.reply_text(
             "🤖 *Мульти-биржевой сканер*\n\n"
             "Активные биржи: BingX\n"
             "Команды:\n"
             "/scan - Ручное сканирование\n"
             "/status - Статус\n"
-            "/stats - Статистика сигналов\n"
             "/help - Помощь",
             parse_mode='Markdown'
         )
     
-    async def scan(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def scan(self, update, context):
         msg = await update.message.reply_text("🔍 Сканирую...")
         signals = await self.bot.scan_all()
         if signals:
@@ -1980,172 +1502,26 @@ class TelegramHandler:
         else:
             await msg.edit_text("❌ Сигналов не найдено")
     
-    async def status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def status(self, update, context):
         text = "*📡 Статус:*\n\n✅ BingX Futures: активен"
         await update.message.reply_text(text, parse_mode='Markdown')
     
-    async def help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def help(self, update, context):
         await update.message.reply_text(
             "*Помощь*\n\n"
             "📊 Анализ: RSI, MACD, EMA, VWAP\n"
             "🔥 Дивергенции, имбалансы, фракталы\n"
-            "📐 Фибоначчи (коррекции и расширения)\n"
-            "📊 Volume Profile (POC, HVN, Value Area)\n"
-            "🚀 Памп-сканер каждые 30 сек\n\n"
+            "🚀 Памп-сканер каждые 2 мин\n\n"
             "Команды:\n"
             "/scan - ручное сканирование\n"
-            "/status - состояние бота\n"
-            "/stats - статистика сигналов",
+            "/status - состояние бота",
             parse_mode='Markdown'
         )
     
-    async def stats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработка команд статистики"""
-        # Проверяем, что команда из группы статистики
-        if str(update.effective_chat.id) != STATS_SETTINGS['stats_chat_id']:
-            await update.message.reply_text("❌ Эта команда доступна только в группе статистики")
-            return
-        
-        if not hasattr(self.bot, 'stats'):
-            await update.message.reply_text("❌ Статистика не инициализирована")
-            return
-        
-        # Разбираем команду
-        text = update.message.text
-        parts = text.split()
-        
-        # По умолчанию
-        days = 7
-        signal_type = 'all'
-        coin = None
-        
-        if len(parts) > 1:
-            for part in parts[1:]:
-                if part.isdigit():
-                    days = int(part)
-                elif part.lower() in ['pump', 'pumps']:
-                    signal_type = 'pump'
-                elif part.lower() in ['regular', 'обычные']:
-                    signal_type = 'regular'
-                elif part.upper() in [p.split('/')[0] for p in PAIRS_TO_SCAN]:
-                    coin = part.upper()
-        
-        stats = self.bot.stats.get_statistics(
-            days=days, 
-            signal_type=signal_type,
-            coin=coin
-        )
-        
-        msg = self.bot.stats.format_stats_message(stats, days, signal_type, coin)
-        
-        keyboard = [
-            [InlineKeyboardButton("📊 Общая", callback_data="stats_7"),
-             InlineKeyboardButton("🚀 Пампы", callback_data="stats_pump_7")],
-            [InlineKeyboardButton("📈 По монетам", callback_data="stats_coins"),
-             InlineKeyboardButton("❓ Помощь", callback_data="stats_help")]
-        ]
-        
-        await update.message.reply_text(
-            msg, 
-            parse_mode='Markdown',
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-    
-    async def stats_button_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработка кнопок статистики"""
+    async def button(self, update, context):
         query = update.callback_query
         await query.answer()
         
-        data = query.data
-        
-        if data == "stats_7":
-            stats = self.bot.stats.get_statistics(days=7)
-            msg = self.bot.stats.format_stats_message(stats, 7)
-        elif data == "stats_pump_7":
-            stats = self.bot.stats.get_statistics(days=7, signal_type='pump')
-            msg = self.bot.stats.format_stats_message(stats, 7, signal_type='pump')
-        elif data == "stats_regular_7":
-            stats = self.bot.stats.get_statistics(days=7, signal_type='regular')
-            msg = self.bot.stats.format_stats_message(stats, 7, signal_type='regular')
-        elif data == "stats_coins":
-            # Показываем список монет
-            coins = set()
-            for signal in self.bot.stats.db['signals'].values():
-                coins.add(signal['coin'])
-            
-            msg = "📈 *Выберите монету:*\n\n"
-            keyboard = []
-            row = []
-            
-            for i, coin in enumerate(sorted(coins)[:12]):
-                row.append(InlineKeyboardButton(coin, callback_data=f"stats_coin_{coin}"))
-                if len(row) == 3:
-                    keyboard.append(row)
-                    row = []
-            if row:
-                keyboard.append(row)
-            
-            keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="stats_back")])
-            
-            await query.edit_message_text(
-                msg,
-                parse_mode='Markdown',
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-            return
-        elif data.startswith("stats_coin_"):
-            coin = data.replace("stats_coin_", "")
-            stats = self.bot.stats.get_statistics(days=7, coin=coin)
-            msg = self.bot.stats.format_stats_message(stats, 7, coin=coin)
-        elif data == "stats_help":
-            msg = """
-📚 *ПОМОЩЬ ПО СТАТИСТИКЕ*
-
-Вы можете нажимать кнопки или вводить команды:
-
-🔹 *Простые команды:*
-/stats - статистика за 7 дней
-/stats 30 - статистика за 30 дней
-/stats 1 - статистика за сегодня
-
-🔹 *По типу сигналов:*
-/stats pump - только пампы
-/stats regular - только обычные
-
-🔹 *По монетам:*
-/stats BTC - по Bitcoin
-/stats ETH 14 - по Ethereum за 14 дней
-
-🔹 *Примеры:*
-/stats 7 pump - пампы за неделю
-/stats 30 regular - обычные за месяц
-/stats 14 BTC - по BTC за 14 дней
-
-📌 *Совет:* Просто нажимайте кнопки! 👆
-"""
-        elif data == "stats_back":
-            stats = self.bot.stats.get_statistics(days=7)
-            msg = self.bot.stats.format_stats_message(stats, 7)
-        else:
-            return
-        
-        keyboard = [
-            [InlineKeyboardButton("📊 Общая", callback_data="stats_7"),
-             InlineKeyboardButton("🚀 Пампы", callback_data="stats_pump_7")],
-            [InlineKeyboardButton("📈 По монетам", callback_data="stats_coins"),
-             InlineKeyboardButton("❓ Помощь", callback_data="stats_help")]
-        ]
-        
-        await query.edit_message_text(
-            msg,
-            parse_mode='Markdown',
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-    
-    async def button(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработчик кнопок сигналов"""
-        query = update.callback_query
-        await query.answer()
         data = query.data
         logger.info(f"🖱️ Нажата кнопка: {data}")
         
@@ -2153,11 +1529,10 @@ class TelegramHandler:
             coin = data.replace("copy_", "")
             await context.bot.send_message(
                 chat_id=update.effective_chat.id,
-                text=f"<code>{coin}</code>",
-                parse_mode='HTML'
+                text=f"`{coin}`",
+                parse_mode='Markdown'
             )
             await query.answer(f"✅ {coin} скопирован")
-            return
         
         elif data.startswith("refresh_"):
             coin = data.replace("refresh_", "")
@@ -2167,36 +1542,30 @@ class TelegramHandler:
                 signal_data = self.bot.last_signals[coin]
                 signal = signal_data['signal']
                 
-                contract_info, df = None, None
+                contract_info = None
                 for fetcher in self.bot.fetchers.values():
                     if fetcher.name == signal['exchange']:
                         contract_info = await fetcher.fetch_contract_info(signal['symbol'])
-                        df = await fetcher.fetch_ohlcv(signal['symbol'], TIMEFRAMES.get('current', '15m'), limit=200)
                         break
                 
-                pump_percent = signal.get('pump_dump', [{}])[0].get('change_percent') if signal.get('pump_dump') else None
-                msg, keyboard = self.bot.format_message(signal, contract_info, pump_percent)
+                pump_percent = None
+                if signal.get('pump_dump') and len(signal['pump_dump']) > 0:
+                    pump_percent = signal['pump_dump'][0].get('change_percent')
                 
-                if df is not None and not df.empty:
-                    df = self.bot.analyzer.calculate_indicators(df)
-                    chart_buf = self.bot.chart_generator.create_chart(df, signal, coin, TIMEFRAMES.get('current', '15m'))
-                    await query.message.delete()
-                    await context.bot.send_photo(
-                        chat_id=update.effective_chat.id,
-                        photo=chart_buf,
-                        caption=msg,
-                        parse_mode='HTML',
-                        reply_markup=keyboard
-                    )
-                else:
-                    await query.edit_message_text(text=msg, parse_mode='HTML', reply_markup=keyboard)
+                msg, keyboard = self.bot.format_message(signal, contract_info, pump_percent)
+                await query.edit_message_text(
+                    text=msg,
+                    parse_mode='HTML',
+                    reply_markup=keyboard
+                )
                 await query.answer("🔄 Сигнал обновлен")
             else:
                 await query.edit_message_text(f"❌ Нет данных для {coin}")
-            return
         
         elif data.startswith("details_"):
             coin = data.replace("details_", "")
+            await query.edit_message_text(f"📊 Загружаю детальный анализ по {coin}...")
+            
             if coin in self.bot.last_signals:
                 signal_data = self.bot.last_signals[coin]
                 signal = signal_data['signal']
@@ -2205,33 +1574,57 @@ class TelegramHandler:
                 for fetcher in self.bot.fetchers.values():
                     if fetcher.name == signal['exchange']:
                         detailed, keyboard = await self.bot.get_detailed_analysis(
-                            fetcher, signal['symbol'], coin, signal_time
+                            fetcher, 
+                            signal['symbol'], 
+                            coin, 
+                            signal_time
                         )
+                        
                         await context.bot.send_message(
                             chat_id=update.effective_chat.id,
                             text=detailed,
-                            parse_mode='HTML',
+                            parse_mode='Markdown',
                             reply_markup=keyboard
                         )
+                        
+                        contract_info = await fetcher.fetch_contract_info(signal['symbol'])
+                        pump_percent = None
+                        if signal.get('pump_dump') and len(signal['pump_dump']) > 0:
+                            pump_percent = signal['pump_dump'][0].get('change_percent')
+                        
+                        msg, orig_keyboard = self.bot.format_message(signal, contract_info, pump_percent)
+                        await query.edit_message_text(
+                            text=msg,
+                            parse_mode='HTML',
+                            reply_markup=orig_keyboard
+                        )
                         await query.answer("📊 Детали загружены")
-                        return
-            await query.answer(f"❌ Нет данных для {coin}")
-            return
+                        break
+            else:
+                await query.edit_message_text(f"❌ Нет данных для {coin}")
         
         elif data.startswith("back_"):
             coin = data.replace("back_", "")
             if coin in self.bot.last_signals:
                 signal = self.bot.last_signals[coin]['signal']
+                
                 contract_info = None
                 for fetcher in self.bot.fetchers.values():
                     if fetcher.name == signal['exchange']:
                         contract_info = await fetcher.fetch_contract_info(signal['symbol'])
                         break
-                pump_percent = signal.get('pump_dump', [{}])[0].get('change_percent') if signal.get('pump_dump') else None
+                
+                pump_percent = None
+                if signal.get('pump_dump') and len(signal['pump_dump']) > 0:
+                    pump_percent = signal['pump_dump'][0].get('change_percent')
+                
                 msg, keyboard = self.bot.format_message(signal, contract_info, pump_percent)
-                await query.edit_message_text(text=msg, parse_mode='HTML', reply_markup=keyboard)
+                await query.edit_message_text(
+                    text=msg,
+                    parse_mode='HTML',
+                    reply_markup=keyboard
+                )
                 await query.answer("↩️ Возврат к сигналу")
-            return
     
     def run(self):
         self.app.run_polling()
