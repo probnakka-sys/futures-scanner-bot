@@ -1104,7 +1104,7 @@ class MultiTimeframeAnalyzer:
             reasons.append(f"Тренды согласованы ({alignment['trend_alignment']:.0f}%)")
             confidence += INDICATOR_WEIGHTS['trend_alignment']
         
-                # Анализ Фибоначчи
+        # Анализ Фибоначчи
         fib_analysis = None
         if self.fibonacci and FEATURES['advanced']['fibonacci']:
             fib_analysis = self.fibonacci.analyze_multi_timeframe(dataframes)
@@ -1122,7 +1122,7 @@ class MultiTimeframeAnalyzer:
                     reasons.append(signal)
                 confidence += vp_analysis['strength'] / 5
 
-                funding = metadata.get('funding_rate')
+        funding = metadata.get('funding_rate')
         if funding is not None and funding != 0:
             funding_pct = funding * 100
             if funding > 0.001:
@@ -1199,9 +1199,9 @@ class MultiTimeframeAnalyzer:
             **targets
         }
         
-        if 'fib_analysis' in locals() and fib_analysis:
+        if fib_analysis:
             result['fibonacci'] = fib_analysis
-        if 'vp_analysis' in locals() and vp_analysis:
+        if vp_analysis:
             result['volume_profile'] = vp_analysis
         
         return result
