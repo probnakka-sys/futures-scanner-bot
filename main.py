@@ -1637,7 +1637,7 @@ class MultiExchangeScannerBot:
         
         return message, InlineKeyboardMarkup(keyboard) if keyboard else None
     
-        async def scan_exchange(self, name: str, fetcher: BaseExchangeFetcher) -> List[Dict]:
+    async def scan_exchange(self, name: str, fetcher: BaseExchangeFetcher) -> List[Dict]:
         logger.info(f"🔍 Сканирую {name}...")
         signals = []
         
