@@ -920,8 +920,8 @@ class FibonacciAnalyzer:
         
         return result
     
-    def analyze_multi_timeframe(self, dataframes: Dict[str, pd.DataFrame]) -> Dict:
-    """Мультитаймфреймовый анализ Фибоначчи"""
+        def analyze_multi_timeframe(self, dataframes: Dict[str, pd.DataFrame]) -> Dict:
+        """Мультитаймфреймовый анализ Фибоначчи"""
         result = {'has_confluence': False, 'signals': [], 'strength': 0, 'levels': {}}
         
         # Словарь для перевода таймфреймов
