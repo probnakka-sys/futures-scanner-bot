@@ -924,38 +924,12 @@ class FibonacciAnalyzer:
         """Мультитаймфреймовый анализ Фибоначчи"""
         result = {'has_confluence': False, 'signals': [], 'strength': 0, 'levels': {}}
         
-        # Словарь для перевода таймфреймов
-        tf_translation = {
-            'monthly': 'месячный',
-            'weekly': 'недельный',
-            'daily': 'дневной',
-            'hourly': 'часовой',
-            'current': 'текущий'
-        }
-        
-        # Словарь для перевода направления
-        dir_translation = {
-            'support': 'поддержка',
-            'resistance': 'сопротивление'
-        }
-        
         for tf_name, df in dataframes.items():
             if df is None or df.empty:
                 continue
             
             tf_result = self.analyze(df, tf_name)
             if tf_result['has_signal']:
-                # Переводим сигналы
-                translated_signals = []
-                for signal in tf_result['signals']:
-                    # Заменяем английские названия на русские
-                    ru_signal = signal
-                    for eng, rus in tf_translation.items():
-                        ru_signal = ru_signal.replace(eng, rus)
-                    for eng, rus in dir_translation.items():
-                        ru_signal = ru_signal.replace(eng, rus)
-                    translated_signals.append(ru_signal)
-                
                 weight = 1.0
                 if tf_name == 'monthly':
                     weight = 3.0
@@ -966,7 +940,7 @@ class FibonacciAnalyzer:
                 elif tf_name == 'hourly':
                     weight = 1.5
                 
-                result['signals'].extend(translated_signals)
+                result['signals'].extend(tf_result['signals'])
                 result['strength'] += tf_result['strength'] * weight
                 result['levels'][tf_name] = tf_result['levels']
                 result['has_confluence'] = True
@@ -1839,13 +1813,6 @@ class FastPumpScanner:
             return f"{num:.0f}"
     
     def format_pump_message(self, signal: Dict, contract_info: Dict = None) -> Tuple[str, InlineKeyboardMarkup]:
-        # В начале метода format_pump_message добавьте получение фандинга
-        if 'funding_rate' not in signal and hasattr(self.fetcher, 'fetch_funding_rate'):
-            try:
-                funding = await self.fetcher.fetch_funding_rate(signal['symbol'])
-                signal['funding_rate'] = funding
-            except:
-                signal['funding_rate'] = 0.0
         coin = signal['symbol'].split('/')[0].replace('USDT', '')
         
         if signal.get('signal_type') == "PUMP":
@@ -2113,30 +2080,12 @@ class MultiExchangeScannerBot:
         line7 = f"💰 Цена текущая: {price_formatted}"
         
         # Потенциал для сигналов накопления
-        # Потенциал для сигналов накопления
         line_potential = ""
         if signal.get('signal_type') == 'accumulation' and signal.get('accumulation', {}).get('potential'):
             potential = signal['accumulation']['potential']
             if potential['has_potential']:
                 direction_emoji = "📈" if potential['target_pct'] > 0 else "📉"
-                # Форматируем цену цели с правильной точностью
-                if potential['target_price'] < 0.001:
-                    target_price_str = f"{potential['target_price']:.6f}".rstrip('0').rstrip('.')
-                elif potential['target_price'] < 1:
-                    target_price_str = f"{potential['target_price']:.4f}".rstrip('0').rstrip('.')
-                else:
-                    target_price_str = f"{potential['target_price']:.2f}"
-                
-                # Переводим название таймфрейма на русский
-                tf_ru = {
-                    'monthly': 'месячном',
-                    'weekly': 'недельном',
-                    'daily': 'дневном',
-                    'hourly': 'часовом',
-                    'current': 'текущем'
-                }.get(potential['timeframe'], potential['timeframe'])
-                
-                line_potential = f"{direction_emoji} Потенциал: {potential['target_pct']:+.2f}% до {target_price_str} ({potential['target_level']} на {tf_ru})"
+                line_potential = f"{direction_emoji} *Потенциал:* {potential['target_pct']:+.2f}% до {potential['target_level']}"
         
         line8 = ""
         if pump_percent and signal.get('pump_dump') and len(signal['pump_dump']) > 0:
