@@ -36,6 +36,8 @@ from config import (
     TELEGRAM_TOKEN,
     TELEGRAM_CHAT_ID,
     PUMP_CHAT_ID,
+    STATS_CHAT_ID,
+    ACCUMULATION_CHAT_ID,
     UPDATE_INTERVAL,
     PUMP_SCAN_INTERVAL,
     MIN_CONFIDENCE,
@@ -54,7 +56,10 @@ from config import (
     DISPLAY_SETTINGS,
     FIBONACCI_SETTINGS,
     VOLUME_PROFILE_SETTINGS,
-    STATS_SETTINGS
+    STATS_SETTINGS,
+    ACCUMULATION_SETTINGS,
+    ATR_SETTINGS,
+    PERFORMANCE_SETTINGS
 )
 
 # Импорт системы статистики
@@ -129,7 +134,6 @@ class CacheManager:
             if time.time() - timestamp < self.ttl:
                 return data
             else:
-                # Удаляем устаревшие данные
                 del self.cache[key]
         return None
     
@@ -142,6 +146,168 @@ class CacheManager:
         self.cache.clear()
         logger.info("🧹 Кэш очищен")
 
+# ============== АНАЛИЗАТОР НАКОПЛЕНИЯ ==============
+
+class AccumulationAnalyzer:
+    """
+    Анализатор фаз накопления/распределения
+    Находит моменты, когда крупные игроки собирают позицию перед импульсом
+    """
+    
+    def __init__(self, settings: Dict = None):
+        self.settings = settings or ACCUMULATION_SETTINGS
+        self.ad_threshold = self.settings.get('ad_threshold', 2.0)
+        self.volume_spike_threshold = self.settings.get('volume_spike_threshold', 2.0)
+        self.range_width_threshold = self.settings.get('range_width_threshold', 5.0)
+        self.min_signals = self.settings.get('min_signals', 2)
+        self.lookback = self.settings.get('lookback_period', 50)
+    
+    def calculate_ad_line(self, df: pd.DataFrame) -> pd.Series:
+        """Расчет линии накопления/распределения (A/D)"""
+        high_low = df['high'] - df['low']
+        high_low = high_low.replace(0, 0.001)
+        
+        money_flow_multiplier = ((df['close'] - df['low']) - (df['high'] - df['close'])) / high_low
+        money_flow_volume = money_flow_multiplier * df['volume']
+        return money_flow_volume.cumsum()
+    
+    def detect_ad_divergence(self, df: pd.DataFrame) -> Dict:
+        """Поиск дивергенции между ценой и A/D линией"""
+        df = df.copy()
+        df['ad_line'] = self.calculate_ad_line(df)
+        
+        recent = df.tail(20)
+        
+        price_lows = recent['close'].rolling(5).min()
+        ad_lows = recent['ad_line'].rolling(5).min()
+        
+        price_trend = price_lows.is_monotonic_decreasing
+        ad_trend = ad_lows.is_monotonic_increasing
+        
+        if price_trend and ad_trend:
+            strength = min(80, abs(price_lows.iloc[-1] - price_lows.iloc[0]) / price_lows.iloc[0] * 500)
+            return {
+                'accumulation': True,
+                'strength': strength,
+                'description': f"📈 Дивергенция: цена падает, A/D растет (сила {strength:.0f}%)"
+            }
+        
+        price_highs = recent['close'].rolling(5).max()
+        ad_highs = recent['ad_line'].rolling(5).max()
+        
+        price_trend_up = price_highs.is_monotonic_increasing
+        ad_trend_down = ad_highs.is_monotonic_decreasing
+        
+        if price_trend_up and ad_trend_down:
+            strength = min(80, abs(price_highs.iloc[-1] - price_highs.iloc[0]) / price_highs.iloc[0] * 500)
+            return {
+                'accumulation': True,
+                'distribution': True,
+                'strength': strength,
+                'description': f"📉 Распределение: цена растет, A/D падает (сила {strength:.0f}%)"
+            }
+        
+        return {'accumulation': False}
+    
+    def detect_volume_spikes_in_range(self, df: pd.DataFrame) -> Dict:
+        """Поиск всплесков объема внутри консолидации"""
+        recent = df.tail(self.lookback)
+        
+        range_high = recent['high'].max()
+        range_low = recent['low'].min()
+        current_price = df['close'].iloc[-1]
+        
+        range_width = (range_high - range_low) / range_low * 100
+        
+        if current_price <= range_high and current_price >= range_low and range_width < self.range_width_threshold:
+            avg_volume = recent['volume'].mean()
+            last_volume = recent['volume'].iloc[-5:].mean()
+            volume_ratio = last_volume / avg_volume if avg_volume > 0 else 1
+            
+            if volume_ratio > self.volume_spike_threshold:
+                strength = min(90, volume_ratio * 30)
+                return {
+                    'accumulation': True,
+                    'strength': strength,
+                    'description': f"📊 Аномальный объем x{volume_ratio:.1f} в консолидации (сила {strength:.0f}%)"
+                }
+        
+        return {'accumulation': False}
+    
+    def detect_silent_accumulation(self, df: pd.DataFrame) -> Dict:
+        """Поиск тихой аккумуляции"""
+        recent = df.tail(30)
+        
+        price_range = (recent['high'].max() - recent['low'].min()) / recent['close'].mean() * 100
+        
+        if price_range < 3:
+            volume_sma_5 = recent['volume'].tail(5).mean()
+            volume_sma_20 = recent['volume'].mean()
+            volume_ratio = volume_sma_5 / volume_sma_20 if volume_sma_20 > 0 else 1
+            
+            lows_increasing = recent['low'].tail(10).is_monotonic_increasing
+            
+            signals = 0
+            reasons = []
+            
+            if volume_ratio > 1.3:
+                signals += 1
+                reasons.append(f"объем +{(volume_ratio-1)*100:.0f}%")
+            
+            if lows_increasing:
+                signals += 1
+                reasons.append("минимумы растут")
+            
+            if signals >= 1:
+                strength = signals * 35
+                return {
+                    'accumulation': True,
+                    'strength': strength,
+                    'description': f"📦 Тихая аккумуляция: {', '.join(reasons)} (сила {strength:.0f}%)"
+                }
+        
+        return {'accumulation': False}
+    
+    def analyze(self, df: pd.DataFrame) -> Dict:
+        """Полный анализ накопления"""
+        result = {
+            'has_accumulation': False,
+            'signals': [],
+            'strength': 0,
+            'direction': None
+        }
+        
+        ad_div = self.detect_ad_divergence(df)
+        if ad_div.get('accumulation'):
+            result['has_accumulation'] = True
+            result['signals'].append(ad_div['description'])
+            result['strength'] = max(result['strength'], ad_div.get('strength', 0))
+            if ad_div.get('distribution'):
+                result['direction'] = 'SHORT'
+            else:
+                result['direction'] = 'LONG'
+        
+        volume_spike = self.detect_volume_spikes_in_range(df)
+        if volume_spike.get('accumulation'):
+            result['has_accumulation'] = True
+            result['signals'].append(volume_spike['description'])
+            result['strength'] = max(result['strength'], volume_spike.get('strength', 0))
+        
+        silent = self.detect_silent_accumulation(df)
+        if silent.get('accumulation'):
+            result['has_accumulation'] = True
+            result['signals'].append(silent['description'])
+            result['strength'] = max(result['strength'], silent.get('strength', 0))
+        
+        if result['has_accumulation'] and not result['direction']:
+            if 'vwap' in df.columns:
+                if df['close'].iloc[-1] > df['vwap'].iloc[-1]:
+                    result['direction'] = 'LONG'
+                else:
+                    result['direction'] = 'SHORT'
+        
+        return result
+
 # ============== ГЕНЕРАТОР ГРАФИКОВ ==============
 
 class ChartGenerator:
@@ -153,9 +319,7 @@ class ChartGenerator:
         self.style = 'dark_background'
         
     def create_chart(self, df: pd.DataFrame, signal: Dict, coin: str, timeframe: str = '15m') -> BytesIO:
-        """
-        Создание графика с ценой, индикаторами и целями
-        """
+        """Создание графика с ценой, индикаторами и целями"""
         plt.style.use(self.style)
         
         plot_df = df.tail(100).copy()
@@ -204,8 +368,18 @@ class ChartGenerator:
                        linestyle='--', linewidth=1.5, alpha=0.8,
                        label=f'Stop: {signal["stop_loss"]}')
         
-        # Убираем эмодзи из заголовка, чтобы избежать проблем со шрифтами
-        ax1.set_title(f'{coin} - {signal["direction"]} (TF: {timeframe}, уверенность {signal["confidence"]}%)', 
+        if signal.get('accumulation'):
+            emoji = "📦"
+        elif signal.get('pump_dump'):
+            emoji = "🚀"
+        elif 'LONG' in signal['direction']:
+            emoji = "🟢"
+        elif 'SHORT' in signal['direction']:
+            emoji = "🔴"
+        else:
+            emoji = "⚪"
+        
+        ax1.set_title(f'{emoji} {coin} - {signal["direction"]} (TF: {timeframe}, уверенность {signal["confidence"]}%)', 
                      fontsize=14, fontweight='bold', color='white')
         ax1.set_ylabel('Price (USDT)', color='white')
         ax1.legend(loc='upper left', fontsize=8, facecolor='#222222')
@@ -442,7 +616,6 @@ class SmartMoneyAnalyzer:
             'strength': 0
         }
         
-        # Ордер-блоки
         order_blocks = self.find_order_blocks(df)
         for ob in order_blocks:
             if ob['price_min'] <= current_price <= ob['price_max']:
@@ -450,7 +623,6 @@ class SmartMoneyAnalyzer:
                 result['signals'].append(ob['description'])
                 result['strength'] = max(result['strength'], ob['strength'])
         
-        # FVG
         fvg_list = self.find_fair_value_gaps(df)
         for fvg in fvg_list:
             if fvg['price_min'] <= current_price <= fvg['price_max']:
@@ -621,7 +793,6 @@ class FibonacciAnalyzer:
         """Анализ Фибоначчи на таймфрейме"""
         result = {'has_signal': False, 'signals': [], 'strength': 0, 'levels': {}, 'timeframe': timeframe}
         
-        # Бычье движение
         low_idx = self.find_swing_low(df)
         if low_idx:
             point_a = df['low'].iloc[low_idx]
@@ -635,7 +806,6 @@ class FibonacciAnalyzer:
                     result['strength'] = max(result['strength'], r['strength'])
                     result['levels'] = levels
         
-        # Медвежье движение
         high_idx = self.find_swing_high(df)
         if high_idx:
             point_a = df['high'].iloc[high_idx]
@@ -887,7 +1057,7 @@ class BingxFetcher(BaseExchangeFetcher):
             'secret': os.getenv('BINGX_SECRET_KEY'),
             'enableRateLimit': True,
             'options': {
-                'defaultType': 'swap',  # swap = фьючерсы
+                'defaultType': 'swap',
                 'adjustForTimeDifference': True
             }
         })
@@ -899,7 +1069,6 @@ class BingxFetcher(BaseExchangeFetcher):
             usdt_pairs = []
             
             for symbol, market in markets.items():
-                # Проверяем, что это фьючерсный рынок USDT
                 if (market['quote'] == 'USDT' and 
                     market['active'] and 
                     market['type'] in ['swap', 'future']):
@@ -989,12 +1158,16 @@ class MultiTimeframeAnalyzer:
         self.fractal = FractalAnalyzer(FRACTAL_SETTINGS) if FEATURES['advanced']['fractals'] else None
         self.fibonacci = None
         self.volume_profile = None
+        self.accumulation = None
     
     def set_fibonacci(self, fib_analyzer):
         self.fibonacci = fib_analyzer
     
     def set_volume_profile(self, vp_analyzer):
         self.volume_profile = vp_analyzer
+    
+    def set_accumulation(self, acc_analyzer):
+        self.accumulation = acc_analyzer
     
     def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         df['rsi'] = calculate_rsi(df['close'], INDICATOR_SETTINGS['rsi_period'])
@@ -1076,9 +1249,6 @@ class MultiTimeframeAnalyzer:
     
     def generate_signal(self, dataframes: Dict[str, pd.DataFrame], metadata: Dict, symbol: str, exchange: str) -> Optional[Dict]:
         logger.info(f"🔄 generate_signal начал работу для {symbol}")
-
-        # Получаем настройки ATR
-        from config import ATR_SETTINGS
         
         if 'current' not in dataframes or dataframes['current'].empty:
             logger.warning(f"⚠️ Нет current данных для {symbol}")
@@ -1096,6 +1266,7 @@ class MultiTimeframeAnalyzer:
         confidence = 50
         reasons = []
         direction = 'NEUTRAL'
+        signal_type = 'regular'
         
         if pd.notna(last['rsi']):
             if last['rsi'] < INDICATOR_SETTINGS['rsi_oversold']:
@@ -1143,7 +1314,6 @@ class MultiTimeframeAnalyzer:
             reasons.append(f"Тренды согласованы ({alignment['trend_alignment']:.0f}%)")
             confidence += INDICATOR_WEIGHTS['trend_alignment']
         
-        # Анализ Фибоначчи
         fib_analysis = None
         if self.fibonacci and FEATURES['advanced']['fibonacci']:
             logger.info(f"  🔍 {symbol} - Начинаю анализ Фибоначчи")
@@ -1153,18 +1323,22 @@ class MultiTimeframeAnalyzer:
                     reasons.append(signal)
                 confidence += fib_analysis['strength'] / 5
                 logger.info(f"  ✅ {symbol} - Фибоначчи: найдено {len(fib_analysis['signals'])} сигналов")
-
-        # Анализ Volume Profile
+        
         vp_analysis = None
-        if self.volume_profile and FEATURES['advanced']['volume_profile']:
-            logger.info(f"  🔍 {symbol} - Начинаю анализ Volume Profile")
-            vp_analysis = self.volume_profile.analyze_multi_timeframe(dataframes)
-            if vp_analysis['has_confluence']:
-                for signal in vp_analysis['signals']:
-                    reasons.append(signal)
-                confidence += vp_analysis['strength'] / 5
-                logger.info(f"  ✅ {symbol} - Volume Profile: найдено {len(vp_analysis['signals'])} сигналов")
-
+        
+        accumulation_analysis = None
+        if self.accumulation and FEATURES['advanced']['accumulation']:
+            logger.info(f"  🔍 {symbol} - Начинаю анализ накопления")
+            accumulation_analysis = self.accumulation.analyze(df)
+            if accumulation_analysis.get('has_accumulation'):
+                for signal in accumulation_analysis['signals']:
+                    reasons.append(f"📦 {signal}")
+                confidence += accumulation_analysis.get('strength', 0) / 5
+                signal_type = 'accumulation'
+                if accumulation_analysis.get('direction'):
+                    direction = accumulation_analysis['direction'] + ' 📈' if accumulation_analysis['direction'] == 'LONG' else 'SHORT 📉'
+                logger.info(f"  ✅ {symbol} - Накопление: найдено {len(accumulation_analysis['signals'])} сигналов")
+        
         funding = metadata.get('funding_rate')
         if funding is not None and funding != 0:
             funding_pct = funding * 100
@@ -1182,7 +1356,14 @@ class MultiTimeframeAnalyzer:
         bullish = sum(1 for r in reasons if any(k in r for k in bullish_keywords))
         bearish = sum(1 for r in reasons if any(k in r for k in bearish_keywords))
         
-        if bullish > bearish and confidence >= MIN_CONFIDENCE:
+        if accumulation_analysis and accumulation_analysis.get('direction'):
+            if accumulation_analysis['direction'] == 'LONG':
+                direction = 'LONG 📈 (накопление)'
+                reasons.append("📦 Ранний вход на стадии накопления")
+            else:
+                direction = 'SHORT 📉 (распределение)'
+                reasons.append("📦 Ранний вход на стадии распределения")
+        elif bullish > bearish and confidence >= MIN_CONFIDENCE:
             if alignment['weekly_trend'] == 'ВОСХОДЯЩИЙ 📈':
                 direction = 'Разворот LONG 📈'
                 reasons.append("Подтверждение разворота недельным трендом")
@@ -1197,7 +1378,6 @@ class MultiTimeframeAnalyzer:
         
         logger.info(f"  📊 {symbol} - Direction: {direction}, Confidence: {confidence}")
         
-        # Пересчитываем signal_strength и signal_power после всех изменений confidence
         signal_strength = (confidence + alignment['trend_alignment']) / 2
         
         signal_power = "⚡️"
@@ -1221,19 +1401,19 @@ class MultiTimeframeAnalyzer:
         targets = {}
         
         if 'LONG' in direction:
-            if current_price < 0.01:  # Для очень маленьких цен
+            if current_price < 0.01:
                 targets['target_1'] = round(current_price + atr * ATR_SETTINGS['long_target_1_mult'], 6)
                 targets['target_2'] = round(current_price + atr * ATR_SETTINGS['long_target_2_mult'], 6)
                 targets['stop_loss'] = round(current_price - atr * ATR_SETTINGS['long_stop_loss_mult'], 6)
-            elif current_price < 1.0:  # Для маленьких цен
+            elif current_price < 1.0:
                 targets['target_1'] = round(current_price + atr * ATR_SETTINGS['long_target_1_mult'], 4)
                 targets['target_2'] = round(current_price + atr * ATR_SETTINGS['long_target_2_mult'], 4)
                 targets['stop_loss'] = round(current_price - atr * ATR_SETTINGS['long_stop_loss_mult'], 4)
-            else:  # Для обычных цен
+            else:
                 targets['target_1'] = round(current_price + atr * ATR_SETTINGS['long_target_1_mult'], 2)
                 targets['target_2'] = round(current_price + atr * ATR_SETTINGS['long_target_2_mult'], 2)
                 targets['stop_loss'] = round(current_price - atr * ATR_SETTINGS['long_stop_loss_mult'], 2)
-        else:  # SHORT
+        else:
             if current_price < 0.01:
                 targets['target_1'] = round(current_price - atr * ATR_SETTINGS['short_target_1_mult'], 6)
                 targets['target_2'] = round(current_price - atr * ATR_SETTINGS['short_target_2_mult'], 6)
@@ -1254,6 +1434,7 @@ class MultiTimeframeAnalyzer:
             'exchange': exchange,
             'price': current_price,
             'direction': direction,
+            'signal_type': signal_type,
             'signal_power': signal_power,
             'confidence': round(confidence, 1),
             'signal_strength': round(signal_strength, 1),
@@ -1270,32 +1451,30 @@ class MultiTimeframeAnalyzer:
             result['fibonacci'] = fib_analysis
         if vp_analysis:
             result['volume_profile'] = vp_analysis
+        if accumulation_analysis:
+            result['accumulation'] = accumulation_analysis
         
         logger.info(f"✅ generate_signal успешно завершен для {symbol}")
         return result
 
-# ============== БЫСТРЫЙ ПАМП-СКАНЕР (ОПТИМИЗИРОВАННЫЙ) ==============
+# ============== БЫСТРЫЙ ПАМП-СКАНЕР ==============
 
 class FastPumpScanner:
     def __init__(self, fetcher: BaseExchangeFetcher, settings: Dict = None, analyzer=None):
         self.fetcher = fetcher
         self.settings = settings or PUMP_SCAN_SETTINGS
         self.analyzer = analyzer
-        self.threshold = self.settings.get('threshold', 4.0)
-        self.timeframes = self.settings.get('timeframes', ['1m', '3m', '5m', '15m'])
+        self.threshold = self.settings.get('threshold', 3.0)
+        self.timeframes = self.settings.get('timeframes', ['1m', '3m', '5m', '15m', '30m'])
         self.max_pairs = self.settings.get('max_pairs_to_scan', 600)
         self.last_pump_signals = {}
-        self.cache = CacheManager(ttl=30)  # Кэш на 30 секунд
+        self.cache = CacheManager(ttl=30)
         
-        # Настройки производительности из config
-        from config import PERFORMANCE_SETTINGS
         self.batch_size = PERFORMANCE_SETTINGS.get('pump_batch_size', 50)
         self.delay_between_batches = PERFORMANCE_SETTINGS.get('delay_between_batches', 0.5)
     
     async def scan_pair(self, pair: str) -> Optional[Dict]:
-        """Сканирование одной пары (для параллельного вызова)"""
         try:
-            # Проверяем кэш
             cache_key = f"{pair}_pump"
             cached = self.cache.get(cache_key)
             if cached:
@@ -1308,7 +1487,6 @@ class FastPumpScanner:
                 if df is None or len(df) < 10:
                     continue
                 
-                # Правильный расчет для каждого ТФ
                 bars_ago = 1
                 minutes = self._timeframe_to_minutes(tf)
                 
@@ -1320,8 +1498,7 @@ class FastPumpScanner:
                     signal_key = f"{pair}_{tf}"
                     last_time = self.last_pump_signals.get(signal_key)
                     
-                    # Проверяем cooldown
-                    if last_time and (datetime.now() - last_time).total_seconds() < 1800:
+                    if last_time and (datetime.now() - last_time).total_seconds() < (self.settings.get('cooldown_minutes', 10) * 60):
                         continue
                     
                     if self.analyzer:
@@ -1352,9 +1529,12 @@ class FastPumpScanner:
                                     'start_price': start_price,
                                     'end_price': current_price
                                 }]
-                                signal['signal_type'] = "PUMP" if change_percent > 0 else "DUMP"
                                 
-                                # Сохраняем в кэш и историю
+                                if change_percent > 0:
+                                    signal['signal_type'] = "PUMP"
+                                else:
+                                    signal['signal_type'] = "DUMP"
+                                
                                 self.cache.set(cache_key, signal)
                                 self.last_pump_signals[signal_key] = datetime.now()
                                 
@@ -1365,7 +1545,6 @@ class FastPumpScanner:
             return None
     
     async def scan_all_pairs(self) -> List[Dict]:
-        """Оптимизированное сканирование всех пар"""
         logger.info("🚀 ЗАПУСК БЫСТРОГО ПАМП-СКАНЕРА (ОПТИМИЗИРОВАННЫЙ)")
         
         try:
@@ -1379,27 +1558,23 @@ class FastPumpScanner:
             
             pump_signals = []
             
-            # Разбиваем на батчи для параллельной обработки
             batches = [scan_pairs[i:i+self.batch_size] for i in range(0, len(scan_pairs), self.batch_size)]
             
             for batch_num, batch in enumerate(batches):
                 logger.info(f"🔄 Обработка батча {batch_num + 1}/{len(batches)} ({len(batch)} пар)")
                 
-                # Параллельная обработка батча
                 tasks = [self.scan_pair(pair) for pair in batch]
                 batch_results = await asyncio.gather(*tasks)
                 
-                # Собираем результаты
                 for signal in batch_results:
                     if signal:
                         pump_signals.append(signal)
-                        logger.info(f"✅ Памп-сигнал: {signal['symbol']} {signal['pump_dump'][0]['change_percent']:+.1f}%")
+                        change = signal['pump_dump'][0]['change_percent']
+                        logger.info(f"✅ Памп-сигнал: {signal['symbol']} {change:+.1f}%")
                 
-                # Пауза между батчами
                 if batch_num < len(batches) - 1:
                     await asyncio.sleep(self.delay_between_batches)
             
-            # Сортируем по силе движения
             pump_signals.sort(key=lambda x: abs(x['pump_dump'][0]['change_percent']), reverse=True)
             logger.info(f"🎯 Памп-сканер: найдено {len(pump_signals)} сигналов")
             return pump_signals
@@ -1436,7 +1611,17 @@ class FastPumpScanner:
     def format_pump_message(self, signal: Dict, contract_info: Dict = None) -> Tuple[str, InlineKeyboardMarkup]:
         coin = signal['symbol'].split('/')[0].replace('USDT', '')
         
-        line1 = f"🚀 <code>{coin}</code> {signal['signal_type']} {signal['pump_dump'][0]['change_percent']:+.1f}% {signal['signal_power']}"
+        if signal.get('signal_type') == "PUMP":
+            signal_emoji = "🚀"
+            signal_text = f"PUMP {signal['pump_dump'][0]['change_percent']:+.1f}%"
+        elif signal.get('signal_type') == "DUMP":
+            signal_emoji = "📉"
+            signal_text = f"DUMP {signal['pump_dump'][0]['change_percent']:+.1f}%"
+        else:
+            signal_emoji = "📊"
+            signal_text = f"{signal['pump_dump'][0]['change_percent']:+.1f}%"
+        
+        line1 = f"{signal_emoji} <code>{coin}</code> {signal_text} {signal['signal_power']}"
         
         if contract_info:
             max_lev = contract_info.get('max_leverage', 100)
@@ -1541,29 +1726,31 @@ class MultiExchangeScannerBot:
         self.imbalance = ImbalanceAnalyzer(IMBALANCE_SETTINGS) if FEATURES['advanced']['imbalance'] else None
         self.liquidity = LiquidityAnalyzer(LIQUIDITY_SETTINGS) if FEATURES['advanced']['liquidity'] else None
         
-        # Инициализация дополнительных анализаторов
         if FEATURES['advanced']['fibonacci']:
             from config import FIBONACCI_SETTINGS
             self.fibonacci = FibonacciAnalyzer(FIBONACCI_SETTINGS)
             self.analyzer.set_fibonacci(self.fibonacci)
             logger.info("✅ Анализатор Фибоначчи инициализирован")
-
-        if FEATURES['advanced']['volume_profile']:
+        
+        if FEATURES['advanced']['volume_profile'] and VOLUME_PROFILE_SETTINGS.get('enabled', False):
             from config import VOLUME_PROFILE_SETTINGS
             self.volume_profile = VolumeProfileAnalyzer(VOLUME_PROFILE_SETTINGS)
             self.analyzer.set_volume_profile(self.volume_profile)
             logger.info("✅ Volume Profile анализатор инициализирован")
         
-        # Инициализация бирж
+        if FEATURES['advanced']['accumulation']:
+            from config import ACCUMULATION_SETTINGS
+            self.accumulation = AccumulationAnalyzer(ACCUMULATION_SETTINGS)
+            self.analyzer.set_accumulation(self.accumulation)
+            logger.info("✅ Анализатор накопления инициализирован")
+        
         if FEATURES['exchanges'].get('bingx', {}).get('enabled', False):
             self.fetchers['BingX'] = BingxFetcher()
         
-        # Инициализация статистики
         if STATS_SETTINGS['enabled'] and STATS_SETTINGS['stats_chat_id']:
             self.stats = SignalStatistics(self.telegram_bot, STATS_SETTINGS['stats_chat_id'])
             logger.info("✅ Система статистики инициализирована")
             
-            # Запускаем фоновые задачи
             asyncio.create_task(self.stats_updater_loop())
             asyncio.create_task(self.daily_report_loop())
     
@@ -1585,10 +1772,17 @@ class MultiExchangeScannerBot:
             return f"{num:.0f}"
     
     def format_message(self, signal: Dict, contract_info: Dict = None, pump_percent: float = None) -> Tuple[str, InlineKeyboardMarkup]:
-        if pump_percent:
-            main_emoji = '🚀'
+        if signal.get('signal_type') in ['PUMP', 'DUMP'] or pump_percent:
+            main_emoji = '🚀' if signal.get('signal_type') == 'PUMP' else '📉'
             coin = self.extract_coin(signal['symbol'])
-            pump_text = f" {signal['pump_dump'][0]['change_percent']:+.1f}%"
+            if signal.get('pump_dump'):
+                pump_text = f" {signal['pump_dump'][0]['change_percent']:+.1f}%"
+            else:
+                pump_text = f" {pump_percent:+.1f}%" if pump_percent else ""
+        elif signal.get('signal_type') == 'accumulation':
+            main_emoji = '📦'
+            coin = self.extract_coin(signal['symbol'])
+            pump_text = " НАКОПЛЕНИЕ"
         else:
             if 'LONG' in signal['direction']:
                 main_emoji = '🟢'
@@ -1800,7 +1994,7 @@ class MultiExchangeScannerBot:
                 except Exception as e:
                     logger.error(f"❌ Ошибка анализа {pair}: {e}")
                     continue
-                        
+                    
         except Exception as e:
             logger.error(f"❌ Ошибка сканирования {name}: {e}")
         
@@ -1829,7 +2023,7 @@ class MultiExchangeScannerBot:
         pump_signals = []
         for name, fetcher in self.fetchers.items():
             scanner = FastPumpScanner(fetcher, PUMP_SCAN_SETTINGS, self.analyzer)
-            signals = await scanner.scan_all_pairs()  # Теперь использует оптимизированный метод
+            signals = await scanner.scan_all_pairs()
             
             for signal in signals:
                 contract_info = await fetcher.fetch_contract_info(signal['symbol'])
@@ -1839,7 +2033,7 @@ class MultiExchangeScannerBot:
                     'message': msg,
                     'keyboard': keyboard
                 })
-    
+        
         pump_signals.sort(key=lambda x: abs(x['signal']['pump_dump'][0]['change_percent']), reverse=True)
         return pump_signals
     
@@ -1872,31 +2066,39 @@ class MultiExchangeScannerBot:
         
         msg, keyboard = self.format_message(signal, contract_info, pump_percent)
         
+        if signal.get('signal_type') == 'accumulation':
+            chat_id = ACCUMULATION_CHAT_ID
+            signal_type = 'accumulation'
+        elif signal.get('pump_dump'):
+            chat_id = PUMP_CHAT_ID
+            signal_type = 'pump'
+        else:
+            chat_id = TELEGRAM_CHAT_ID
+            signal_type = 'regular'
+        
         try:
             if df is not None and not df.empty:
                 df = self.analyzer.calculate_indicators(df)
                 chart_buf = self.chart_generator.create_chart(df, signal, coin, TIMEFRAMES.get('current', '15m'))
                 
                 await self.telegram_bot.send_photo(
-                    chat_id=TELEGRAM_CHAT_ID,
+                    chat_id=chat_id,
                     photo=chart_buf,
                     caption=msg,
                     parse_mode='HTML',
                     reply_markup=keyboard
                 )
-                logger.info(f"✅ Отправлен сигнал с графиком: {signal['symbol']}")
+                logger.info(f"✅ Отправлен {signal_type} сигнал с графиком: {signal['symbol']}")
             else:
                 await self.telegram_bot.send_message(
-                    chat_id=TELEGRAM_CHAT_ID,
+                    chat_id=chat_id,
                     text=msg,
                     parse_mode='HTML',
                     reply_markup=keyboard
                 )
-                logger.info(f"✅ Отправлен сигнал: {signal['symbol']}")
+                logger.info(f"✅ Отправлен {signal_type} сигнал: {signal['symbol']}")
             
-            # Добавляем в статистику
             if hasattr(self, 'stats'):
-                signal_type = 'pump' if signal.get('pump_dump') else 'regular'
                 self.stats.add_signal(signal, signal_type)
                 
         except Exception as e:
@@ -1940,12 +2142,58 @@ class MultiExchangeScannerBot:
                 )
                 logger.info(f"✅ Отправлен памп-сигнал: {signal['symbol']}")
             
-            # Добавляем в статистику
             if hasattr(self, 'stats'):
                 self.stats.add_signal(signal, 'pump')
                 
         except Exception as e:
             logger.error(f"❌ Ошибка отправки пампа: {e}")
+    
+    async def send_accumulation_signal(self, signal: Dict):
+        coin = self.extract_coin(signal['symbol'])
+        
+        self.last_signals[coin] = {
+            'symbol': signal['symbol'],
+            'signal': signal,
+            'time': datetime.now()
+        }
+        
+        contract_info = None
+        df = None
+        for fetcher in self.fetchers.values():
+            if fetcher.name == signal['exchange']:
+                contract_info = await fetcher.fetch_contract_info(signal['symbol'])
+                df = await fetcher.fetch_ohlcv(signal['symbol'], TIMEFRAMES.get('current', '15m'), limit=200)
+                break
+        
+        msg, keyboard = self.format_message(signal, contract_info)
+        
+        try:
+            if df is not None and not df.empty:
+                df = self.analyzer.calculate_indicators(df)
+                chart_buf = self.chart_generator.create_chart(df, signal, coin, TIMEFRAMES.get('current', '15m'))
+                
+                await self.telegram_bot.send_photo(
+                    chat_id=ACCUMULATION_CHAT_ID,
+                    photo=chart_buf,
+                    caption=msg,
+                    parse_mode='HTML',
+                    reply_markup=keyboard
+                )
+                logger.info(f"✅ Отправлен сигнал накопления с графиком: {signal['symbol']}")
+            else:
+                await self.telegram_bot.send_message(
+                    chat_id=ACCUMULATION_CHAT_ID,
+                    text=msg,
+                    parse_mode='HTML',
+                    reply_markup=keyboard
+                )
+                logger.info(f"✅ Отправлен сигнал накопления: {signal['symbol']}")
+            
+            if hasattr(self, 'stats'):
+                self.stats.add_signal(signal, 'accumulation')
+                
+        except Exception as e:
+            logger.error(f"❌ Ошибка отправки сигнала накопления: {e}")
     
     async def get_detailed_analysis(self, fetcher, symbol: str, coin: str, signal_time: str = None) -> Tuple[str, InlineKeyboardMarkup]:
         try:
@@ -1968,17 +2216,21 @@ class MultiExchangeScannerBot:
                     clean_reason = reason.replace("📊 ", "").replace("✅ ", "").replace("🔄 ", "")
                     lines.append(f"└ {clean_reason}")
                 
-                # Добавляем информацию о Фибоначчи если есть
                 if 'fibonacci' in signal:
                     lines.append("\n📐 *ФИБОНАЧЧИ:*")
                     for tf, levels in signal['fibonacci']['levels'].items():
                         lines.append(f"└ {tf.upper()}: {len(levels)} уровней")
                 
-                # Добавляем информацию о Volume Profile если есть
                 if 'volume_profile' in signal:
                     lines.append("\n📊 *VOLUME PROFILE:*")
                     for tf, vp in signal['volume_profile']['levels'].items():
                         lines.append(f"└ {tf.upper()}: POC={vp['poc']:.2f}")
+                
+                if 'accumulation' in signal:
+                    lines.append("\n📦 *НАКОПЛЕНИЕ:*")
+                    acc = signal['accumulation']
+                    for sig in acc.get('signals', [])[:3]:
+                        lines.append(f"└ {sig}")
             
             detailed = "\n".join(lines)
             
@@ -1993,23 +2245,23 @@ class MultiExchangeScannerBot:
             return f"❌ Ошибка анализа: {e}", None
     
     async def stats_updater_loop(self):
-        """Обновление статусов сигналов каждые 5 минут"""
         while True:
             await asyncio.sleep(STATS_SETTINGS['update_interval'])
             
+            if not hasattr(self, 'stats'):
+                continue
+                
             for signal_id, signal_data in self.stats.db['signals'].items():
                 if signal_data['status'] != 'pending':
                     continue
                 
-                # Получаем текущую цену
                 for fetcher in self.fetchers.values():
                     ticker = await fetcher.fetch_ticker(signal_data['symbol'])
                     if ticker and ticker.get('last'):
                         self.stats.update_signal(signal_id, ticker['last'])
                         break
-
+    
     async def daily_report_loop(self):
-        """Ежедневный отчет в 20:00"""
         while True:
             now = datetime.now()
             target_time = datetime.strptime(STATS_SETTINGS['daily_report_time'], '%H:%M').time()
@@ -2044,10 +2296,12 @@ class MultiExchangeScannerBot:
                 if current_time - last_full_scan >= UPDATE_INTERVAL:
                     signals = await self.scan_all()
                     if signals:
-                        for i, signal in enumerate(signals):
-                            await self.send_signal(signal)
-                            if i < len(signals) - 1:
-                                await asyncio.sleep(3)
+                        for signal in signals:
+                            if signal.get('signal_type') == 'accumulation':
+                                await self.send_accumulation_signal(signal)
+                            else:
+                                await self.send_signal(signal)
+                            await asyncio.sleep(3)
                     last_full_scan = current_time
                 
                 await asyncio.sleep(PUMP_SCAN_INTERVAL)
@@ -2072,17 +2326,23 @@ class TelegramHandler:
         self.app.add_handler(CommandHandler("status", self.status))
         self.app.add_handler(CommandHandler("help", self.help))
         self.app.add_handler(CommandHandler("stats", self.stats_command))
+        self.app.add_handler(CommandHandler("groups", self.groups_command))
         self.app.add_handler(CallbackQueryHandler(self.button))
         self.app.add_handler(CallbackQueryHandler(self.stats_button_handler, pattern="^stats_"))
     
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "🤖 *Мульти-биржевой сканер*\n\n"
-            "Активные биржи: BingX\n"
-            "Команды:\n"
+            "📊 *Доступные группы:*\n"
+            "• Основная группа - обычные сигналы (LONG/SHORT)\n"
+            "• Памп-группа - PUMP/DUMP сигналы\n"
+            "• Накопление - ранние сигналы до импульса\n"
+            "• Статистика - отчеты и метрики\n\n"
+            "📋 *Команды:*\n"
             "/scan - Ручное сканирование\n"
-            "/status - Статус\n"
+            "/status - Статус бота\n"
             "/stats - Статистика сигналов\n"
+            "/groups - Информация о группах\n"
             "/help - Помощь",
             parse_mode='Markdown'
         )
@@ -2093,33 +2353,51 @@ class TelegramHandler:
         if signals:
             await msg.edit_text(f"✅ Найдено {len(signals)} сигналов")
             for signal in signals:
-                await self.bot.send_signal(signal)
+                if signal.get('signal_type') == 'accumulation':
+                    await self.bot.send_accumulation_signal(signal)
+                else:
+                    await self.bot.send_signal(signal)
                 await asyncio.sleep(3)
         else:
             await msg.edit_text("❌ Сигналов не найдено")
     
     async def status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        text = "*📡 Статус:*\n\n✅ BingX Futures: активен"
+        text = "*📡 Статус:*\n\n"
+        text += f"✅ BingX Futures: активен\n"
+        text += f"📊 Групп: 4 (осн., памп, накопление, статистика)\n"
+        text += f"📈 Последних сигналов: {len(self.bot.last_signals)}"
+        await update.message.reply_text(text, parse_mode='Markdown')
+    
+    async def groups_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        text = "*📊 ГРУППЫ СИГНАЛОВ*\n\n"
+        text += "🔹 *Основная группа* - обычные LONG/SHORT сигналы\n"
+        text += "   Технический анализ, тренды, уровни\n\n"
+        text += "🔹 *Памп-группа* - PUMP/DUMP сигналы\n"
+        text += "   Движения >3%, импульсы и развороты\n\n"
+        text += "🔹 *Накопление* - ранние сигналы\n"
+        text += "   Дивергенции, аномальный объем, накопление\n\n"
+        text += "🔹 *Статистика* - отчеты и метрики\n"
+        text += "   Ежедневные отчеты, статистика по команде /stats"
+        
         await update.message.reply_text(text, parse_mode='Markdown')
     
     async def help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "*Помощь*\n\n"
-            "📊 Анализ: RSI, MACD, EMA, VWAP\n"
-            "🔥 Дивергенции, имбалансы, фракталы\n"
-            "📐 Фибоначчи (коррекции и расширения)\n"
-            "📊 Volume Profile (POC, HVN, Value Area)\n"
-            "🚀 Памп-сканер каждые 30 сек\n\n"
-            "Команды:\n"
+            "📊 *Анализ:* RSI, MACD, EMA, VWAP\n"
+            "🔥 *Дополнительно:* Дивергенции, имбалансы, фракталы\n"
+            "📐 *Фибоначчи:* Коррекции и расширения\n"
+            "📦 *Накопление:* Ранние сигналы до импульса\n"
+            "🚀 *Памп-сканер:* каждые 30 сек\n\n"
+            "📋 *Команды:*\n"
             "/scan - ручное сканирование\n"
             "/status - состояние бота\n"
-            "/stats - статистика сигналов",
+            "/stats - статистика сигналов\n"
+            "/groups - информация о группах",
             parse_mode='Markdown'
         )
     
     async def stats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработка команд статистики"""
-        # Проверяем, что команда из группы статистики
         if str(update.effective_chat.id) != STATS_SETTINGS['stats_chat_id']:
             await update.message.reply_text("❌ Эта команда доступна только в группе статистики")
             return
@@ -2128,11 +2406,9 @@ class TelegramHandler:
             await update.message.reply_text("❌ Статистика не инициализирована")
             return
         
-        # Разбираем команду
         text = update.message.text
         parts = text.split()
         
-        # По умолчанию
         days = 7
         signal_type = 'all'
         coin = None
@@ -2145,6 +2421,8 @@ class TelegramHandler:
                     signal_type = 'pump'
                 elif part.lower() in ['regular', 'обычные']:
                     signal_type = 'regular'
+                elif part.lower() in ['accumulation', 'накопление']:
+                    signal_type = 'accumulation'
                 elif part.upper() in [p.split('/')[0] for p in PAIRS_TO_SCAN]:
                     coin = part.upper()
         
@@ -2159,8 +2437,9 @@ class TelegramHandler:
         keyboard = [
             [InlineKeyboardButton("📊 Общая", callback_data="stats_7"),
              InlineKeyboardButton("🚀 Пампы", callback_data="stats_pump_7")],
-            [InlineKeyboardButton("📈 По монетам", callback_data="stats_coins"),
-             InlineKeyboardButton("❓ Помощь", callback_data="stats_help")]
+            [InlineKeyboardButton("📦 Накопление", callback_data="stats_accum_7"),
+             InlineKeyboardButton("📈 По монетам", callback_data="stats_coins")],
+            [InlineKeyboardButton("❓ Помощь", callback_data="stats_help")]
         ]
         
         await update.message.reply_text(
@@ -2170,7 +2449,6 @@ class TelegramHandler:
         )
     
     async def stats_button_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработка кнопок статистики"""
         query = update.callback_query
         await query.answer()
         
@@ -2185,8 +2463,10 @@ class TelegramHandler:
         elif data == "stats_regular_7":
             stats = self.bot.stats.get_statistics(days=7, signal_type='regular')
             msg = self.bot.stats.format_stats_message(stats, 7, signal_type='regular')
+        elif data == "stats_accum_7":
+            stats = self.bot.stats.get_statistics(days=7, signal_type='accumulation')
+            msg = self.bot.stats.format_stats_message(stats, 7, signal_type='accumulation')
         elif data == "stats_coins":
-            # Показываем список монет
             coins = set()
             for signal in self.bot.stats.db['signals'].values():
                 coins.add(signal['coin'])
@@ -2229,6 +2509,7 @@ class TelegramHandler:
 🔹 *По типу сигналов:*
 /stats pump - только пампы
 /stats regular - только обычные
+/stats accumulation - только накопление
 
 🔹 *По монетам:*
 /stats BTC - по Bitcoin
@@ -2236,7 +2517,7 @@ class TelegramHandler:
 
 🔹 *Примеры:*
 /stats 7 pump - пампы за неделю
-/stats 30 regular - обычные за месяц
+/stats 30 accumulation - накопление за месяц
 /stats 14 BTC - по BTC за 14 дней
 
 📌 *Совет:* Просто нажимайте кнопки! 👆
@@ -2250,8 +2531,9 @@ class TelegramHandler:
         keyboard = [
             [InlineKeyboardButton("📊 Общая", callback_data="stats_7"),
              InlineKeyboardButton("🚀 Пампы", callback_data="stats_pump_7")],
-            [InlineKeyboardButton("📈 По монетам", callback_data="stats_coins"),
-             InlineKeyboardButton("❓ Помощь", callback_data="stats_help")]
+            [InlineKeyboardButton("📦 Накопление", callback_data="stats_accum_7"),
+             InlineKeyboardButton("📈 По монетам", callback_data="stats_coins")],
+            [InlineKeyboardButton("❓ Помощь", callback_data="stats_help")]
         ]
         
         await query.edit_message_text(
@@ -2261,7 +2543,6 @@ class TelegramHandler:
         )
     
     async def button(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработчик кнопок сигналов"""
         query = update.callback_query
         await query.answer()
         data = query.data
@@ -2292,7 +2573,10 @@ class TelegramHandler:
                         df = await fetcher.fetch_ohlcv(signal['symbol'], TIMEFRAMES.get('current', '15m'), limit=200)
                         break
                 
-                pump_percent = signal.get('pump_dump', [{}])[0].get('change_percent') if signal.get('pump_dump') else None
+                pump_percent = None
+                if signal.get('pump_dump') and len(signal['pump_dump']) > 0:
+                    pump_percent = signal['pump_dump'][0].get('change_percent')
+                
                 msg, keyboard = self.bot.format_message(signal, contract_info, pump_percent)
                 
                 if df is not None and not df.empty:
@@ -2328,7 +2612,7 @@ class TelegramHandler:
                         await context.bot.send_message(
                             chat_id=update.effective_chat.id,
                             text=detailed,
-                            parse_mode='HTML',
+                            parse_mode='Markdown',
                             reply_markup=keyboard
                         )
                         await query.answer("📊 Детали загружены")
@@ -2345,9 +2629,15 @@ class TelegramHandler:
                     if fetcher.name == signal['exchange']:
                         contract_info = await fetcher.fetch_contract_info(signal['symbol'])
                         break
-                pump_percent = signal.get('pump_dump', [{}])[0].get('change_percent') if signal.get('pump_dump') else None
+                pump_percent = None
+                if signal.get('pump_dump') and len(signal['pump_dump']) > 0:
+                    pump_percent = signal['pump_dump'][0].get('change_percent')
                 msg, keyboard = self.bot.format_message(signal, contract_info, pump_percent)
-                await query.edit_message_text(text=msg, parse_mode='HTML', reply_markup=keyboard)
+                await query.edit_message_text(
+                    text=msg,
+                    parse_mode='HTML',
+                    reply_markup=keyboard
+                )
                 await query.answer("↩️ Возврат к сигналу")
             return
     
