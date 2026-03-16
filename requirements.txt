@@ -1,15 +1,10 @@
-ccxt
-python-telegram-bot
-pandas
-numpy
-python-dotenv
-matplotlib
-pillow
-aiohttp
-requests
-websockets
-python-bingx>=1.0.0 # Опционально, альтернативная библиотека
+ccxt>=4.2.0
+python-telegram-bot>=20.7
+pandas>=2.1.4
+pandas-ta>=0.3.14b0
+numpy>=1.24.0
+python-dotenv>=1.0.0
 matplotlib>=3.5.0
+aiohttp>=3.9.0
+websockets>=12.0
 bingx-leverages>=0.1.0
-websockets>=12.0  # Добавлено для WebSocket
-bingx>=0.0.2      # Опционально, для дополнительных функций
