@@ -85,6 +85,7 @@ class SignalStatistics:
         return signal_id
     
     def update_signal(self, signal_id: str, current_price: float):
+        """Обновление статуса сигнала по текущей цене"""
         if signal_id not in self.db['signals']:
             return
         
@@ -92,13 +93,16 @@ class SignalStatistics:
         if signal['status'] != 'pending':
             return
         
+        # Обновляем максимум/минимум
         signal['max_price'] = max(signal['max_price'], current_price)
         signal['min_price'] = min(signal['min_price'], current_price)
         
         old_status = signal['status']
         profit_pct = 0
         
-        if 'LONG' in signal['direction'] or 'Разворот LONG' in signal['direction'] or '(накопление)' in signal['direction']:
+        # Проверяем достижение целей для LONG позиции
+        if 'LONG' in signal['direction'] or 'Разворот LONG' in signal['direction'] or 'LONG' in str(signal.get('signal_type', '')):
+            # LONG позиция - прибыль при росте цены
             if signal['target_2'] and current_price >= signal['target_2']:
                 signal['status'] = 'victory'
                 signal['final_result'] = 'target_2_hit'
@@ -111,7 +115,8 @@ class SignalStatistics:
                 signal['status'] = 'loss'
                 signal['final_result'] = 'stop_loss'
                 profit_pct = ((signal['stop_loss'] - signal['entry_price']) / signal['entry_price']) * 100
-        else:
+        else:  # SHORT или Разворот SHORT
+            # SHORT позиция - прибыль при падении цены
             if signal['target_2'] and current_price <= signal['target_2']:
                 signal['status'] = 'victory'
                 signal['final_result'] = 'target_2_hit'
@@ -128,6 +133,7 @@ class SignalStatistics:
         signal['profit_percent'] = round(profit_pct, 2)
         signal['updated_at'] = datetime.now().isoformat()
         
+        # Если статус изменился, отправляем уведомление
         if old_status != signal['status'] and signal['status'] in ['victory', 'profit', 'loss']:
             asyncio.create_task(self.send_result_notification(signal_id))
         
