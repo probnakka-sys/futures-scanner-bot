@@ -369,15 +369,15 @@ class ChartGenerator:
                        label=f'Stop: {signal["stop_loss"]}')
         
         if signal.get('accumulation'):
-            emoji = "📦"
+            emoji = " "
         elif signal.get('pump_dump'):
-            emoji = "🚀"
+            emoji = " "
         elif 'LONG' in signal['direction']:
-            emoji = "🟢"
+            emoji = " "
         elif 'SHORT' in signal['direction']:
-            emoji = "🔴"
+            emoji = " "
         else:
-            emoji = "⚪"
+            emoji = " "
         
         ax1.set_title(f'{emoji} {coin} - {signal["direction"]} (TF: {timeframe}, уверенность {signal["confidence"]}%)', 
                      fontsize=14, fontweight='bold', color='white')
