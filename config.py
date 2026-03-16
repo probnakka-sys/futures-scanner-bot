@@ -9,8 +9,11 @@ load_dotenv()
 # ============== НАСТРОЙКИ БОТА ==============
 
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
-TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
-PUMP_CHAT_ID = os.getenv('PUMP_CHAT_ID', '')
+TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')  # Обычные сигналы
+PUMP_CHAT_ID = os.getenv('PUMP_CHAT_ID', '')      # Памп-сигналы
+STATS_CHAT_ID = os.getenv('STATS_CHAT_ID', '')    # Статистика
+ACCUMULATION_CHAT_ID = os.getenv('ACCUMULATION_CHAT_ID', '')  # Накопление
+
 UPDATE_INTERVAL = int(os.getenv('UPDATE_INTERVAL', 900))  # 15 минут для основного анализа
 PUMP_SCAN_INTERVAL = int(os.getenv('PUMP_SCAN_INTERVAL', 30))  # 30 секунд для памп-сканера
 MIN_CONFIDENCE = int(os.getenv('MIN_CONFIDENCE', 55))
@@ -28,25 +31,25 @@ REF_LINKS = {
 
 PUMP_SCAN_SETTINGS = {
     'enabled': True,
-    'threshold': 3.0,                          # % движения для сигнала (было 4.0)
+    'threshold': 3.0,                          # % движения для сигнала
     'instant_threshold': 2.0,                   # % за 1-2 минуты для мгновенного сигнала
-    'timeframes': ['1m', '3m', '5m', '15m', '30m'],  # Добавили 30m
-    'min_volume_usdt': 3000,                    # Мин. объем (было 5000)
+    'timeframes': ['1m', '3m', '5m', '15m', '30m'],
+    'min_volume_usdt': 3000,
     'max_pairs_to_scan': 600,
     'include_low_liquidity': True,
     'send_top_pumps': 999,
-    'cooldown_minutes': 10,                      # Защита от дублей (было 15)
+    'cooldown_minutes': 10,
 }
 
 # ============== НАСТРОЙКИ ATR (True Range) ==============
 
 ATR_SETTINGS = {
-    'long_target_1_mult': 2.0,      # Было 1.5 - увеличили для дальних целей
-    'long_target_2_mult': 4.0,      # Было 3.0 - увеличили
-    'long_stop_loss_mult': 1.2,     # Было 1.0 - чуть шире стоп
-    'short_target_1_mult': 2.0,     # Было 1.5
-    'short_target_2_mult': 4.0,     # Было 3.0
-    'short_stop_loss_mult': 1.2,    # Было 1.0
+    'long_target_1_mult': 2.0,
+    'long_target_2_mult': 4.0,
+    'long_stop_loss_mult': 1.2,
+    'short_target_1_mult': 2.0,
+    'short_target_2_mult': 4.0,
+    'short_stop_loss_mult': 1.2,
 }
 
 # ============== ПЕРЕКЛЮЧАТЕЛИ ФУНКЦИЙ ==============
@@ -92,7 +95,8 @@ FEATURES = {
         'order_blocks': True,
         'fractals': True,
         'smart_money': True,
-        'volume_profile': False,  # Временно отключено
+        'volume_profile': False,
+        'accumulation': True,  # Новый анализатор накопления
     },
     
     'testing': {
@@ -118,6 +122,7 @@ DISPLAY_SETTINGS = {
     'show_fractals': True,
     'show_fibonacci': True,
     'show_volume_profile': True,
+    'show_accumulation': True,  # Отображение накопления
     'show_exchange_link': True,
     
     'buttons': {
@@ -144,6 +149,16 @@ INDICATOR_SETTINGS = {
     'volume_sma_period': 20,
 }
 
+# ============== НАСТРОЙКИ НАКОПЛЕНИЯ ==============
+
+ACCUMULATION_SETTINGS = {
+    'ad_threshold': 2.0,           # Порог для A/D дивергенции
+    'volume_spike_threshold': 2.0,  # Аномальный объем x2
+    'range_width_threshold': 5.0,   # Макс. ширина диапазона для консолидации
+    'min_signals': 2,               # Минимум сигналов для подтверждения
+    'lookback_period': 50,          # Период для анализа
+}
+
 # ============== НАСТРОЙКИ ФИБОНАЧЧИ ==============
 
 FIBONACCI_SETTINGS = {
@@ -157,7 +172,7 @@ FIBONACCI_SETTINGS = {
 # ============== НАСТРОЙКИ VOLUME PROFILE ==============
 
 VOLUME_PROFILE_SETTINGS = {
-    'enabled': False,  # Отключено до исправления
+    'enabled': False,
     'lookback_bars': 100,
     'value_area_pct': 70,
     'min_hvn_strength': 2.0,
@@ -186,6 +201,7 @@ INDICATOR_WEIGHTS = {
     'fractals': 12,
     'smart_money': 25,
     'volume_profile': 25,
+    'accumulation': 30,  # Высокий вес для накопления
 }
 
 # ============== НАСТРОЙКИ СТАТИСТИКИ ==============
