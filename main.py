@@ -777,6 +777,7 @@ class FibonacciAnalyzer:
     - Коррекций (0.236, 0.382, 0.5, 0.618, 0.786, 0.86)
     - Расширений (0.18, 0.27, 0.618)
     - Правила 3 свечей для точки B
+    - Автоматический перевод терминов на русский язык
     """
     
     def __init__(self, settings: Dict = None):
@@ -787,6 +788,21 @@ class FibonacciAnalyzer:
                                                   [0.18, 0.27, 0.618])
         self.lookback_candles = self.settings.get('lookback_candles', 3)
         self.min_distance = self.settings.get('min_distance_pct', 0.5)
+        
+        # Словарь для перевода таймфреймов
+        self.tf_translation = {
+            'monthly': 'месячный',
+            'weekly': 'недельный',
+            'daily': 'дневной',
+            'hourly': 'часовой',
+            'current': 'текущий'
+        }
+        
+        # Словарь для перевода направления
+        self.dir_translation = {
+            'support': 'поддержка',
+            'resistance': 'сопротивление'
+        }
     
     def find_swing_low(self, df: pd.DataFrame, window: int = 5) -> Optional[int]:
         """Поиск локального минимума (точка A для бычьего движения)"""
@@ -879,11 +895,15 @@ class FibonacciAnalyzer:
                     strength = 95
                 
                 direction = 'support' if current_price < level_price else 'resistance'
+                
+                # Переводим направление на русский
+                direction_ru = self.dir_translation.get(direction, direction)
+                
                 reactions.append({
                     'level': key,
                     'price': level_price,
                     'strength': strength,
-                    'description': f"{level_data['description']} ({direction})"
+                    'description': f"{level_data['description']} ({direction_ru})"
                 })
         
         return reactions
@@ -892,6 +912,7 @@ class FibonacciAnalyzer:
         """Анализ Фибоначчи на таймфрейме"""
         result = {'has_signal': False, 'signals': [], 'strength': 0, 'levels': {}, 'timeframe': timeframe}
         
+        # Бычье движение
         low_idx = self.find_swing_low(df)
         if low_idx:
             point_a = df['low'].iloc[low_idx]
@@ -901,10 +922,15 @@ class FibonacciAnalyzer:
                 reactions = self.check_price_reaction(df['close'].iloc[-1], levels)
                 for r in reactions:
                     result['has_signal'] = True
-                    result['signals'].append(f"📐 {timeframe}: {r['description']}")
+                    
+                    # Переводим таймфрейм на русский
+                    tf_ru = self.tf_translation.get(timeframe, timeframe)
+                    
+                    result['signals'].append(f"📐 {tf_ru}: {r['description']}")
                     result['strength'] = max(result['strength'], r['strength'])
                     result['levels'] = levels
         
+        # Медвежье движение
         high_idx = self.find_swing_high(df)
         if high_idx:
             point_a = df['high'].iloc[high_idx]
@@ -914,22 +940,32 @@ class FibonacciAnalyzer:
                 reactions = self.check_price_reaction(df['close'].iloc[-1], levels)
                 for r in reactions:
                     result['has_signal'] = True
-                    result['signals'].append(f"📐 {timeframe}: {r['description']}")
+                    
+                    # Переводим таймфрейм на русский
+                    tf_ru = self.tf_translation.get(timeframe, timeframe)
+                    
+                    result['signals'].append(f"📐 {tf_ru}: {r['description']}")
                     result['strength'] = max(result['strength'], r['strength'])
                     result['levels'] = levels
         
         return result
     
     def analyze_multi_timeframe(self, dataframes: Dict[str, pd.DataFrame]) -> Dict:
-        """Мультитаймфреймовый анализ Фибоначчи"""
+        """Мультитаймфреймовый анализ Фибоначчи с переводом на русский"""
         result = {'has_confluence': False, 'signals': [], 'strength': 0, 'levels': {}}
         
-        for tf_name, df in dataframes.items():
-            if df is None or df.empty:
+        # Приоритет таймфреймов (от большего к меньшему)
+        tf_priority = ['monthly', 'weekly', 'daily', 'hourly', 'current']
+        
+        for tf_name in tf_priority:
+            if tf_name not in dataframes or dataframes[tf_name] is None:
                 continue
             
+            df = dataframes[tf_name]
             tf_result = self.analyze(df, tf_name)
+            
             if tf_result['has_signal']:
+                # Вес для старших таймфреймов
                 weight = 1.0
                 if tf_name == 'monthly':
                     weight = 3.0
@@ -940,6 +976,7 @@ class FibonacciAnalyzer:
                 elif tf_name == 'hourly':
                     weight = 1.5
                 
+                # Добавляем сигналы с уже переведенными таймфреймами
                 result['signals'].extend(tf_result['signals'])
                 result['strength'] += tf_result['strength'] * weight
                 result['levels'][tf_name] = tf_result['levels']
@@ -1333,6 +1370,15 @@ class MultiTimeframeAnalyzer:
         self.fibonacci = None
         self.volume_profile = None
         self.accumulation = None
+        
+        # Словарь для перевода таймфреймов
+        self.tf_translation = {
+            'monthly': 'месячный',
+            'weekly': 'недельный',
+            'daily': 'дневной',
+            'hourly': 'часовой',
+            'current': 'текущий'
+        }
     
     def set_fibonacci(self, fib_analyzer):
         self.fibonacci = fib_analyzer
@@ -1344,6 +1390,7 @@ class MultiTimeframeAnalyzer:
         self.accumulation = acc_analyzer
     
     def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Расчет всех технических индикаторов"""
         df['rsi'] = calculate_rsi(df['close'], INDICATOR_SETTINGS['rsi_period'])
         
         macd_line, signal_line, hist = calculate_macd(
@@ -1381,6 +1428,7 @@ class MultiTimeframeAnalyzer:
         return df
     
     def analyze_timeframe_alignment(self, dataframes: Dict[str, pd.DataFrame]) -> Dict:
+        """Анализ согласованности трендов на разных таймфреймах"""
         alignment = {
             'trend_alignment': 0,
             'hourly_trend': None,
@@ -1422,6 +1470,9 @@ class MultiTimeframeAnalyzer:
         return alignment
     
     def generate_signal(self, dataframes: Dict[str, pd.DataFrame], metadata: Dict, symbol: str, exchange: str) -> Optional[Dict]:
+        """
+        Генерация торгового сигнала на основе всех индикаторов
+        """
         logger.info(f"🔄 generate_signal начал работу для {symbol}")
         
         if 'current' not in dataframes or dataframes['current'].empty:
@@ -1435,13 +1486,14 @@ class MultiTimeframeAnalyzer:
         logger.info(f"  📊 {symbol} - Цена: {last['close']}, RSI: {last['rsi'] if pd.notna(last['rsi']) else 'N/A'}")
         
         alignment = self.analyze_timeframe_alignment(dataframes)
-        logger.info(f"  📊 {symbol} - Trend alignment: {alignment['trend_alignment']}%")
+        logger.info(f"  📊 {symbol} - Согласованность трендов: {alignment['trend_alignment']}%")
         
         confidence = 50
         reasons = []
         direction = 'NEUTRAL'
         signal_type = 'regular'
         
+        # ===== RSI =====
         if pd.notna(last['rsi']):
             if last['rsi'] < INDICATOR_SETTINGS['rsi_oversold']:
                 reasons.append(f"RSI перепродан ({last['rsi']:.1f})")
@@ -1450,6 +1502,7 @@ class MultiTimeframeAnalyzer:
                 reasons.append(f"RSI перекуплен ({last['rsi']:.1f})")
                 confidence += INDICATOR_WEIGHTS['rsi']
         
+        # ===== MACD =====
         if pd.notna(last['MACD_12_26_9']) and pd.notna(last['MACDs_12_26_9']):
             if last['MACD_12_26_9'] > last['MACDs_12_26_9'] and prev['MACD_12_26_9'] <= prev['MACDs_12_26_9']:
                 reasons.append("Бычье пересечение MACD")
@@ -1458,6 +1511,7 @@ class MultiTimeframeAnalyzer:
                 reasons.append("Медвежье пересечение MACD")
                 confidence += INDICATOR_WEIGHTS['macd']
         
+        # ===== EMA =====
         if last['ema_9'] > last['ema_21'] and prev['ema_9'] <= prev['ema_21']:
             reasons.append("Бычье пересечение EMA (9/21)")
             confidence += INDICATOR_WEIGHTS['ema_cross']
@@ -1465,10 +1519,12 @@ class MultiTimeframeAnalyzer:
             reasons.append("Медвежье пересечение EMA (9/21)")
             confidence += INDICATOR_WEIGHTS['ema_cross']
         
+        # ===== ОБЪЕМ =====
         if last['volume_ratio'] > 1.5:
             reasons.append(f"Объем x{last['volume_ratio']:.1f} от нормы")
             confidence += INDICATOR_WEIGHTS['volume']
         
+        # ===== VWAP =====
         if FEATURES['advanced']['vwap'] and 'vwap' in df.columns:
             if last['close'] > last['vwap']:
                 reasons.append(f"Цена выше VWAP ({last['vwap']:.2f})")
@@ -1477,6 +1533,7 @@ class MultiTimeframeAnalyzer:
                 reasons.append(f"Цена ниже VWAP ({last['vwap']:.2f})")
                 confidence += 10
         
+        # ===== СИГНАЛЫ ОТ СТАРШИХ ТАЙМФРЕЙМОВ =====
         for signal in alignment['signals']:
             reasons.append(f"{signal}")
             if "НЕДЕЛЬНЫЙ" in signal:
@@ -1484,10 +1541,12 @@ class MultiTimeframeAnalyzer:
             elif "Дневной" in signal:
                 confidence += INDICATOR_WEIGHTS['daily_trend']
         
+        # ===== СОГЛАСОВАННОСТЬ ТРЕНДОВ =====
         if alignment['trend_alignment'] > 70:
             reasons.append(f"Тренды согласованы ({alignment['trend_alignment']:.0f}%)")
             confidence += INDICATOR_WEIGHTS['trend_alignment']
         
+        # ===== АНАЛИЗ ФИБОНАЧЧИ =====
         fib_analysis = None
         if self.fibonacci and FEATURES['advanced']['fibonacci']:
             logger.info(f"  🔍 {symbol} - Начинаю анализ Фибоначчи")
@@ -1498,8 +1557,16 @@ class MultiTimeframeAnalyzer:
                 confidence += fib_analysis['strength'] / 5
                 logger.info(f"  ✅ {symbol} - Фибоначчи: найдено {len(fib_analysis['signals'])} сигналов")
         
+        # ===== VOLUME PROFILE (ВРЕМЕННО ОТКЛЮЧЕН) =====
         vp_analysis = None
+        # if self.volume_profile and FEATURES['advanced']['volume_profile']:
+        #     vp_analysis = self.volume_profile.analyze_multi_timeframe(dataframes)
+        #     if vp_analysis['has_confluence']:
+        #         for signal in vp_analysis['signals']:
+        #             reasons.append(signal)
+        #         confidence += vp_analysis['strength'] / 5
         
+        # ===== АНАЛИЗ НАКОПЛЕНИЯ =====
         accumulation_analysis = None
         if self.accumulation and FEATURES['advanced']['accumulation']:
             logger.info(f"  🔍 {symbol} - Начинаю анализ накопления")
@@ -1523,6 +1590,7 @@ class MultiTimeframeAnalyzer:
                     direction = accumulation_analysis['direction'] + ' 📈 (накопление)' if accumulation_analysis['direction'] == 'LONG' else 'SHORT 📉 (накопление)'
                 logger.info(f"  ✅ {symbol} - Накопление: найдено {len(accumulation_analysis['signals'])} сигналов")
         
+        # ===== ФАНДИНГ =====
         funding = metadata.get('funding_rate')
         if funding is not None and funding != 0:
             funding_pct = funding * 100
@@ -1535,6 +1603,7 @@ class MultiTimeframeAnalyzer:
                 if confidence > 60:
                     direction = 'LONG 📈'
         
+        # ===== ОПРЕДЕЛЕНИЕ НАПРАВЛЕНИЯ =====
         bullish_keywords = ['перепродан', 'Бычье', 'восходящий', 'негативный фандинг', 'выше VWAP']
         bearish_keywords = ['перекуплен', 'Медвежье', 'нисходящий', 'позитивный фандинг', 'ниже VWAP']
         bullish = sum(1 for r in reasons if any(k in r for k in bullish_keywords))
@@ -1556,8 +1625,9 @@ class MultiTimeframeAnalyzer:
             else:
                 direction = 'SHORT 📉'
         
-        logger.info(f"  📊 {symbol} - Direction: {direction}, Confidence: {confidence}")
+        logger.info(f"  📊 {symbol} - Направление: {direction}, Уверенность: {confidence}")
         
+        # ===== РАСЧЕТ СИЛЫ СИГНАЛА =====
         signal_strength = (confidence + alignment['trend_alignment']) / 2
         
         signal_power = "⚡️"
@@ -1576,6 +1646,7 @@ class MultiTimeframeAnalyzer:
             logger.info(f"⏭️ NEUTRAL сигнал для {symbol}")
             return None
         
+        # ===== РАСЧЕТ ЦЕЛЕЙ ПО ATR =====
         atr = last['atr'] if pd.notna(last['atr']) else (last['high'] - last['low']) * 0.3
         current_price = last['close']
         targets = {}
@@ -1631,8 +1702,9 @@ class MultiTimeframeAnalyzer:
                 targets['target_2'] = round(current_price - atr * ATR_SETTINGS['short_target_2_mult'], 2)
                 targets['stop_loss'] = round(current_price + atr * ATR_SETTINGS['short_stop_loss_mult'], 2)
         
-        logger.info(f"  📈 {symbol} - ATR: {atr}, Targets: {targets}")
+        logger.info(f"  📈 {symbol} - ATR: {atr}, Цели: {targets}")
         
+        # ===== ФОРМИРОВАНИЕ РЕЗУЛЬТАТА =====
         result = {
             'symbol': symbol,
             'exchange': exchange,
@@ -1669,16 +1741,197 @@ class FastPumpScanner:
         self.settings = settings or PUMP_SCAN_SETTINGS
         self.analyzer = analyzer
         self.threshold = self.settings.get('threshold', 3.0)
+        self.instant_threshold = self.settings.get('instant_threshold', 2.0)
         self.timeframes = self.settings.get('timeframes', ['1m', '3m', '5m', '15m', '30m'])
         self.max_pairs = self.settings.get('max_pairs_to_scan', 600)
         self.last_pump_signals = {}
         self.cache = CacheManager(ttl=30)
         
+        # WebSocket менеджер для гибридного подхода
+        try:
+            from websocket_manager import BingXWebSocketManager
+            self.ws_manager = BingXWebSocketManager(
+                os.getenv('BINGX_API_KEY'),
+                os.getenv('BINGX_SECRET_KEY')
+            )
+            self.websocket_available = True
+        except ImportError:
+            logger.warning("⚠️ WebSocketManager не инициализирован, используется только REST API")
+            self.ws_manager = None
+            self.websocket_available = False
+        
         self.batch_size = PERFORMANCE_SETTINGS.get('pump_batch_size', 50)
         self.delay_between_batches = PERFORMANCE_SETTINGS.get('delay_between_batches', 0.5)
+        
+        # Очередь для быстрых сигналов
+        self.instant_signals_queue = asyncio.Queue()
+        
+        logger.info(f"✅ FastPumpScanner инициализирован (WebSocket: {self.websocket_available})")
+    
+    async def start_websocket_monitoring(self, symbols: List[str]):
+        """
+        Запуск WebSocket мониторинга для приоритетных символов
+        """
+        if not self.websocket_available or not self.ws_manager:
+            logger.info("WebSocket мониторинг недоступен, используется REST API")
+            return
+        
+        # Берем топ-100 самых волатильных пар для WebSocket
+        priority_symbols = symbols[:100]
+        
+        # Запускаем WebSocket с callback
+        await self.ws_manager.connect_ticker_stream(
+            priority_symbols,
+            self.handle_instant_signal
+        )
+        
+        # Запускаем обработчик очереди
+        asyncio.create_task(self.process_instant_signals())
+        logger.info(f"📡 WebSocket мониторинг запущен для {len(priority_symbols)} пар")
+    
+    async def handle_instant_signal(self, signal_type: str, symbol: str, price: float, movement: Dict):
+        """
+        Обработка мгновенного сигнала от WebSocket
+        """
+        logger.info(f"⚡ Мгновенное движение {symbol}: {movement['change_percent']:+.1f}% за {movement['time_window']} сек")
+        
+        # Добавляем в очередь для обработки
+        await self.instant_signals_queue.put({
+            'symbol': symbol,
+            'price': price,
+            'movement': movement,
+            'time': datetime.now()
+        })
+    
+    async def process_instant_signals(self):
+        """
+        Обработка очереди мгновенных сигналов
+        """
+        while True:
+            try:
+                signal_data = await self.instant_signals_queue.get()
+                
+                # Отправляем быстрый предварительный сигнал
+                await self.send_flash_signal(signal_data)
+                
+                # Запускаем полный анализ в фоне
+                asyncio.create_task(self.confirm_signal(signal_data))
+                
+            except Exception as e:
+                logger.error(f"Ошибка обработки мгновенного сигнала: {e}")
+                await asyncio.sleep(1)
+    
+    async def send_flash_signal(self, signal_data: Dict):
+        """
+        Отправка быстрого предварительного сигнала
+        """
+        symbol = signal_data['symbol']
+        movement = signal_data['movement']
+        coin = symbol.split('/')[0].replace('USDT', '')
+        
+        direction_emoji = "🚀" if movement['change_percent'] > 0 else "📉"
+        
+        msg = (
+            f"⚡ {direction_emoji} <code>{coin}</code> {movement['change_percent']:+.1f}% за {movement['time_window']} сек\n"
+            f"⏳ Полный анализ через 3-5 секунд...\n"
+            f"💰 Цена: {signal_data['price']:.4f}"
+        )
+        
+        # Создаем простую клавиатуру
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton(f"📋 Копировать {coin}", callback_data=f"copy_{coin}")
+        ]])
+        
+        # Отправляем в памп-группу
+        try:
+            await self.fetcher.telegram_bot.send_message(
+                chat_id=PUMP_CHAT_ID,
+                text=msg,
+                parse_mode='HTML',
+                reply_markup=keyboard
+            )
+            logger.info(f"⚡ Отправлен мгновенный сигнал для {symbol}")
+        except Exception as e:
+            logger.error(f"Ошибка отправки мгновенного сигнала: {e}")
+    
+    async def confirm_signal(self, signal_data: Dict):
+        """
+        Подтверждение сигнала полным анализом
+        """
+        symbol = signal_data['symbol']
+        
+        # Ждем немного для накопления данных
+        await asyncio.sleep(3)
+        
+        try:
+            # Загружаем данные для полного анализа
+            dataframes = {}
+            for tf_name, tf_value in TIMEFRAMES.items():
+                limit_tf = 200 if tf_name == 'current' else 100
+                df_tf = await self.fetcher.fetch_ohlcv(symbol, tf_value, limit_tf)
+                if df_tf is not None and not df_tf.empty:
+                    df_tf = self.analyzer.calculate_indicators(df_tf)
+                    dataframes[tf_name] = df_tf
+            
+            if not dataframes:
+                logger.warning(f"⚠️ Нет данных для подтверждения {symbol}")
+                return
+            
+            # Получаем метаданные
+            funding = await self.fetcher.fetch_funding_rate(symbol)
+            ticker = await self.fetcher.fetch_ticker(symbol)
+            
+            metadata = {
+                'funding_rate': funding,
+                'volume_24h': ticker.get('volume_24h'),
+                'price_change_24h': ticker.get('percentage')
+            }
+            
+            # Генерируем полный сигнал
+            signal = self.analyzer.generate_signal(dataframes, metadata, symbol, self.fetcher.name)
+            
+            if signal and 'NEUTRAL' not in signal['direction']:
+                # Добавляем информацию о быстром движении
+                signal['pump_dump'] = [{
+                    'change_percent': signal_data['movement']['change_percent'],
+                    'time_window': signal_data['movement']['time_window'],
+                    'start_price': signal_data['movement']['start_price'],
+                    'end_price': signal_data['movement']['end_price']
+                }]
+                
+                if signal_data['movement']['change_percent'] > 0:
+                    signal['signal_type'] = "PUMP"
+                else:
+                    signal['signal_type'] = "DUMP"
+                
+                # Убедимся, что funding_rate не потерялся
+                signal['funding_rate'] = funding
+                
+                # Отправляем подтвержденный сигнал
+                contract_info = await self.fetcher.fetch_contract_info(symbol)
+                msg, keyboard = self.format_pump_message(signal, contract_info)
+                
+                # Отправляем как ответ на мгновенный сигнал или отдельно
+                try:
+                    await self.fetcher.telegram_bot.send_message(
+                        chat_id=PUMP_CHAT_ID,
+                        text=f"✅ ПОДТВЕРЖДЕНО\n\n{msg}",
+                        parse_mode='HTML',
+                        reply_markup=keyboard
+                    )
+                    logger.info(f"✅ Подтвержден сигнал для {symbol}")
+                except Exception as e:
+                    logger.error(f"Ошибка отправки подтвержденного сигнала: {e}")
+                
+        except Exception as e:
+            logger.error(f"❌ Ошибка подтверждения сигнала {symbol}: {e}")
     
     async def scan_pair(self, pair: str) -> Optional[Dict]:
+        """
+        Сканирование одной пары (для параллельного вызова)
+        """
         try:
+            # Проверяем кэш
             cache_key = f"{pair}_pump"
             cached = self.cache.get(cache_key)
             if cached:
@@ -1739,6 +1992,9 @@ class FastPumpScanner:
                                 else:
                                     signal['signal_type'] = "DUMP"
                                 
+                                # Убедимся, что funding_rate сохранен
+                                signal['funding_rate'] = funding
+                                
                                 self.cache.set(cache_key, signal)
                                 self.last_pump_signals[signal_key] = datetime.now()
                                 
@@ -1749,38 +2005,50 @@ class FastPumpScanner:
             return None
     
     async def scan_all_pairs(self) -> List[Dict]:
-        logger.info("🚀 ЗАПУСК БЫСТРОГО ПАМП-СКАНЕРА (ОПТИМИЗИРОВАННЫЙ)")
+        """
+        Оптимизированное сканирование всех пар с гибридным подходом
+        """
+        logger.info("🚀 ЗАПУСК БЫСТРОГО ПАМП-СКАНЕРА (ГИБРИДНЫЙ)")
         
         try:
             all_pairs = await self.fetcher.fetch_all_pairs()
             if not all_pairs:
                 return []
             
+            # Запускаем WebSocket мониторинг для быстрых сигналов
+            if self.websocket_available:
+                await self.start_websocket_monitoring(all_pairs)
+            
             scan_pairs = all_pairs[:self.max_pairs]
             random.shuffle(scan_pairs)
-            logger.info(f"📊 Памп-сканер: анализирую {len(scan_pairs)} пар")
+            logger.info(f"📊 Памп-сканер: анализирую {len(scan_pairs)} пар (WebSocket: {self.websocket_available})")
             
             pump_signals = []
             
+            # Разбиваем на батчи для параллельной обработки
             batches = [scan_pairs[i:i+self.batch_size] for i in range(0, len(scan_pairs), self.batch_size)]
             
             for batch_num, batch in enumerate(batches):
                 logger.info(f"🔄 Обработка батча {batch_num + 1}/{len(batches)} ({len(batch)} пар)")
                 
+                # Параллельная обработка батча
                 tasks = [self.scan_pair(pair) for pair in batch]
                 batch_results = await asyncio.gather(*tasks)
                 
+                # Собираем результаты
                 for signal in batch_results:
                     if signal:
                         pump_signals.append(signal)
                         change = signal['pump_dump'][0]['change_percent']
                         logger.info(f"✅ Памп-сигнал: {signal['symbol']} {change:+.1f}%")
                 
+                # Пауза между батчами
                 if batch_num < len(batches) - 1:
                     await asyncio.sleep(self.delay_between_batches)
             
+            # Сортируем по силе движения
             pump_signals.sort(key=lambda x: abs(x['pump_dump'][0]['change_percent']), reverse=True)
-            logger.info(f"🎯 Памп-сканер: найдено {len(pump_signals)} сигналов")
+            logger.info(f"🎯 Памп-сканер: найдено {len(pump_signals)} сигналов (WebSocket активен)")
             return pump_signals
             
         except Exception as e:
@@ -1788,6 +2056,7 @@ class FastPumpScanner:
             return []
     
     def _get_power_text(self, strength: float) -> str:
+        """Определение текста силы сигнала"""
         if strength >= 90:
             return "🔥🔥🔥 ОЧЕНЬ СИЛЬНЫЙ"
         elif strength >= 75:
@@ -1798,9 +2067,11 @@ class FastPumpScanner:
             return "⚡ СЛАБЫЙ"
     
     def _timeframe_to_minutes(self, tf: str) -> int:
+        """Конвертация таймфрейма в минуты"""
         return {'1m': 1, '3m': 3, '5m': 5, '15m': 15, '30m': 30, '1h': 60}.get(tf, 15)
     
     def _format_compact(self, num: float) -> str:
+        """Форматирование больших чисел"""
         if num is None:
             return "N/A"
         if num > 1_000_000_000:
@@ -1813,8 +2084,12 @@ class FastPumpScanner:
             return f"{num:.0f}"
     
     def format_pump_message(self, signal: Dict, contract_info: Dict = None) -> Tuple[str, InlineKeyboardMarkup]:
+        """
+        Форматирование памп-сигнала для отправки
+        """
         coin = signal['symbol'].split('/')[0].replace('USDT', '')
         
+        # Определяем эмодзи и тип сигнала
         if signal.get('signal_type') == "PUMP":
             signal_emoji = "🚀"
             signal_text = f"PUMP {signal['pump_dump'][0]['change_percent']:+.1f}%"
@@ -1827,24 +2102,55 @@ class FastPumpScanner:
         
         line1 = f"{signal_emoji} <code>{coin}</code> {signal_text} {signal['signal_power']}"
         
+        # Параметры контракта
         if contract_info:
-            max_lev = contract_info.get('max_leverage', 100)
-            min_amt = contract_info.get('min_amount', 5.0)
-            max_amt = contract_info.get('max_amount', 2_000_000)
+            max_lev = contract_info.get('max_leverage')
+            if max_lev is None or max_lev > 200:
+                max_lev = 100
             
-            volume_str = ""
-            if signal.get('volume_24h') and signal['volume_24h'] is not None and signal['volume_24h'] > 0:
-                vol = signal['volume_24h']
-                if vol > 1_000_000:
-                    volume_str = f" / {vol/1_000_000:.1f}M"
-                elif vol > 1_000:
-                    volume_str = f" / {vol/1_000:.1f}K"
+            min_amt = contract_info.get('min_amount')
+            if min_amt is None or min_amt > 1000:
+                min_amt = 5.0
+            
+            max_amt = contract_info.get('max_amount')
+            if max_amt is None or max_amt > 10_000_000:
+                max_amt = 2_000_000
+            
+            line2 = f"📌 {max_lev}x / {min_amt:.0f}$ / {self._format_compact(max_amt)}"
+            
+            # Объем 24ч
+            if signal.get('volume_24h') is not None and signal['volume_24h'] > 0:
+                volume = signal['volume_24h']
+                if volume > 1_000_000:
+                    line2 += f" / {volume/1_000_000:.1f}M"
+                elif volume > 1_000:
+                    line2 += f" / {volume/1_000:.1f}K"
                 else:
-                    volume_str = f" / {vol:.0f}"
+                    line2 += f" / {volume:.0f}"
             
-            line2 = f"📌 {max_lev}x / {min_amt:.0f}$ / {self._format_compact(max_amt)}{volume_str} / ⚪ 0.000%"
+            # Фандинг
+            funding_rate = signal.get('funding_rate')
+            if funding_rate is not None:
+                funding = funding_rate * 100
+                funding_emoji = "🟢" if funding > 0 else "🔴" if funding < 0 else "⚪"
+                line2 += f" / {funding_emoji} {funding:.3f}%"
         else:
-            line2 = "📌 100x / 5$ / 2.0M / N/A / ⚪ 0.000%"
+            line2 = f"📌 100x / 5$ / 2.0M"
+            
+            if signal.get('volume_24h') is not None and signal['volume_24h'] > 0:
+                volume = signal['volume_24h']
+                if volume > 1_000_000:
+                    line2 += f" / {volume/1_000_000:.1f}M"
+                elif volume > 1_000:
+                    line2 += f" / {volume/1_000:.1f}K"
+                else:
+                    line2 += f" / {volume:.0f}"
+            
+            funding_rate = signal.get('funding_rate')
+            if funding_rate is not None:
+                funding = funding_rate * 100
+                funding_emoji = "🟢" if funding > 0 else "🔴" if funding < 0 else "⚪"
+                line2 += f" / {funding_emoji} {funding:.3f}%"
         
         exchange_link = REF_LINKS.get(signal['exchange'], '#')
         line3 = f"💲 Trade: <a href='{exchange_link}'>{signal['exchange']}</a>"
@@ -1853,6 +2159,7 @@ class FastPumpScanner:
         line5 = f"📊 Направление: {signal['direction']}"
         line6 = f"🕓 Таймфрейм: {signal.get('timeframe', '15m')}"
         
+        # Форматирование цены
         if signal['price'] < 0.001:
             price_formatted = f"{signal['price']:.8f}".rstrip('0').rstrip('.')
             start_formatted = f"{signal['pump_dump'][0]['start_price']:.8f}".rstrip('0').rstrip('.')
@@ -1863,10 +2170,19 @@ class FastPumpScanner:
         line7 = f"💰 Цена текущая: {price_formatted}"
         line8 = f"📈 Рост: {start_formatted} → {price_formatted}"
         
+        # Форматирование целей
         if signal.get('target_1') and signal.get('target_2') and signal.get('stop_loss'):
-            t1 = f"{signal['target_1']:.8f}".rstrip('0').rstrip('.') if signal['target_1'] < 0.001 else f"{signal['target_1']:.4f}"
-            t2 = f"{signal['target_2']:.8f}".rstrip('0').rstrip('.') if signal['target_2'] < 0.001 else f"{signal['target_2']:.4f}"
-            sl = f"{signal['stop_loss']:.8f}".rstrip('0').rstrip('.') if signal['stop_loss'] < 0.001 else f"{signal['stop_loss']:.4f}"
+            def format_target(price):
+                if price < 0.001:
+                    return f"{price:.8f}".rstrip('0').rstrip('.')
+                elif price < 1:
+                    return f"{price:.4f}".rstrip('0').rstrip('.')
+                else:
+                    return f"{price:.2f}"
+            
+            t1 = format_target(signal['target_1'])
+            t2 = format_target(signal['target_2'])
+            sl = format_target(signal['stop_loss'])
             line9 = f"🎯 Цели: {t1} | {t2} | SL {sl}"
         else:
             line9 = "🎯 Цели: N/A | N/A | SL N/A"
@@ -1874,6 +2190,7 @@ class FastPumpScanner:
         line10 = ""
         line11 = "💡 Причины:"
         
+        # Очистка причин от эмодзи
         clean_reasons = []
         for reason in signal['reasons'][:3]:
             clean_reason = reason
@@ -1897,6 +2214,7 @@ class FastPumpScanner:
         lines = [line1, line2, line3, line4, line5, line6, line7, line8, line9, line10, line11] + reasons_lines
         message = "\n".join(lines)
         
+        # Кнопки
         keyboard = []
         row1 = []
         if DISPLAY_SETTINGS['buttons']['copy']:
@@ -2085,7 +2403,24 @@ class MultiExchangeScannerBot:
             potential = signal['accumulation']['potential']
             if potential['has_potential']:
                 direction_emoji = "📈" if potential['target_pct'] > 0 else "📉"
-                line_potential = f"{direction_emoji} *Потенциал:* {potential['target_pct']:+.2f}% до {potential['target_level']}"
+                # Форматируем цену цели с правильной точностью
+                if potential['target_price'] < 0.001:
+                    target_price_str = f"{potential['target_price']:.6f}".rstrip('0').rstrip('.')
+                elif potential['target_price'] < 1:
+                    target_price_str = f"{potential['target_price']:.4f}".rstrip('0').rstrip('.')
+                else:
+                    target_price_str = f"{potential['target_price']:.2f}"
+                
+                # Переводим название таймфрейма на русский
+                tf_ru = {
+                    'monthly': 'месячном',
+                    'weekly': 'недельном',
+                    'daily': 'дневном',
+                    'hourly': 'часовом',
+                    'current': 'текущем'
+                }.get(potential['timeframe'], potential['timeframe'])
+                
+                line_potential = f"{direction_emoji} Потенциал: {potential['target_pct']:+.2f}% до {target_price_str} ({potential['target_level']} на {tf_ru})"
         
         line8 = ""
         if pump_percent and signal.get('pump_dump') and len(signal['pump_dump']) > 0:
@@ -2140,7 +2475,7 @@ class MultiExchangeScannerBot:
             clean_reason = clean_reason.replace("🔴 ", "")
             clean_reason = clean_reason.replace("⚪️ ", "")
             clean_reason = clean_reason.replace("⚪ ", "")
-            clean_reason = clean_reason.replace("📦 ", "")  # Для накопления
+            clean_reason = clean_reason.replace("📦 ", "")
             clean_reason = clean_reason.strip()
             clean_reasons.append(clean_reason)
         
@@ -2290,6 +2625,9 @@ class MultiExchangeScannerBot:
             
             for signal in signals:
                 contract_info = await fetcher.fetch_contract_info(signal['symbol'])
+                # Убедимся, что funding_rate не потерялся
+                if 'funding_rate' not in signal:
+                    signal['funding_rate'] = await fetcher.fetch_funding_rate(signal['symbol'])
                 msg, keyboard = scanner.format_pump_message(signal, contract_info)
                 pump_signals.append({
                     'signal': signal,
