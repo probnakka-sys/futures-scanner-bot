@@ -31,14 +31,20 @@ REF_LINKS = {
 
 PUMP_SCAN_SETTINGS = {
     'enabled': True,
-    'threshold': 3.0,                          # % движения для сигнала
-    'instant_threshold': 2.0,                   # % за 1-2 минуты для мгновенного сигнала
+    'threshold': 3.0,                          # % движения для REST API
+    'instant_threshold': 1.0,                   # ⚡ СНИЖЕН ДО 1% для WebSocket (было 2.0)
+    'shitcoin_instant_threshold': 0.8,           # Для щиткоинов еще ниже
     'timeframes': ['1m', '3m', '5m', '15m', '30m'],
     'min_volume_usdt': 3000,
     'max_pairs_to_scan': 600,
     'include_low_liquidity': True,
     'send_top_pumps': 999,
     'cooldown_minutes': 10,
+    
+    # Новые настройки для WebSocket
+    'websocket_top_pairs': 100,                   # Сколько пар в WebSocket
+    'shitcoin_volume_threshold': 1_000_000,       # Объем < 1M$ = щиткоин
+    'websocket_reconnect_delay': 5,               # Задержка перед переподключением
 }
 
 # ============== НАСТРОЙКИ ATR (True Range) ==============
