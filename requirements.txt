@@ -8,6 +8,8 @@ pillow
 aiohttp
 requests
 websockets
-python-bingx>=1.0.0
+python-bingx>=1.0.0 # Опционально, альтернативная библиотека
 matplotlib>=3.5.0
 bingx-leverages>=0.1.0
+websockets>=12.0  # Добавлено для WebSocket
+bingx>=0.0.2      # Опционально, для дополнительных функций
