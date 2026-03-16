@@ -2085,6 +2085,21 @@ class FastPumpScanner:
                                 
                                 signal['funding_rate'] = funding
                                 
+                                # ✅ ДОБАВЛЯЕМ ОТПРАВКУ В TELEGRAM
+                                try:
+                                    contract_info = await self.fetcher.fetch_contract_info(pair)
+                                    msg, keyboard = self.format_pump_message(signal, contract_info)
+                                    
+                                    await self.fetcher.telegram_bot.send_message(
+                                        chat_id=PUMP_CHAT_ID,
+                                        text=msg,
+                                        parse_mode='HTML',
+                                        reply_markup=keyboard
+                                    )
+                                    logger.info(f"✅ Отправлен памп-сигнал: {pair}")
+                                except Exception as e:
+                                    logger.error(f"❌ Ошибка отправки сигнала {pair}: {e}")
+                                
                                 self.cache.set(cache_key, signal)
                                 self.last_pump_signals[signal_key] = datetime.now()
                                 
