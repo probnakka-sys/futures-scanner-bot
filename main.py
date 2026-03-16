@@ -1736,10 +1736,11 @@ class MultiTimeframeAnalyzer:
 # ============== БЫСТРЫЙ ПАМП-СКАНЕР ==============
 
 class FastPumpScanner:
-    def __init__(self, fetcher: BaseExchangeFetcher, settings: Dict = None, analyzer=None):
+    def __init__(self, fetcher: BaseExchangeFetcher, settings: Dict = None, analyzer=None, telegram_bot=None):
         self.fetcher = fetcher
         self.settings = settings or PUMP_SCAN_SETTINGS
         self.analyzer = analyzer
+        self.telegram_bot = telegram_bot  # ✅ Добавляем telegram_bot
         self.threshold = self.settings.get('threshold', 3.0)
         self.instant_threshold = self.settings.get('instant_threshold', 1.0)  # Снижено до 1%
         self.shitcoin_instant_threshold = self.settings.get('shitcoin_instant_threshold', 0.8)  # Для щиткоинов 0.8%
@@ -2090,7 +2091,7 @@ class FastPumpScanner:
                                     contract_info = await self.fetcher.fetch_contract_info(pair)
                                     msg, keyboard = self.format_pump_message(signal, contract_info)
                                     
-                                    await self.fetcher.telegram_bot.send_message(
+                                    await self.telegram_bot.send_message(
                                         chat_id=PUMP_CHAT_ID,
                                         text=msg,
                                         parse_mode='HTML',
@@ -2725,7 +2726,7 @@ class MultiExchangeScannerBot:
         
         pump_signals = []
         for name, fetcher in self.fetchers.items():
-            scanner = FastPumpScanner(fetcher, PUMP_SCAN_SETTINGS, self.analyzer)
+            scanner = FastPumpScanner(fetcher, PUMP_SCAN_SETTINGS, self.analyzer, self.telegram_bot)
             signals = await scanner.scan_all_pairs()
             
             for signal in signals:
