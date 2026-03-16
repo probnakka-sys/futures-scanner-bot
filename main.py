@@ -1736,7 +1736,7 @@ class MultiTimeframeAnalyzer:
 # ============== БЫСТРЫЙ ПАМП-СКАНЕР ==============
 
 class FastPumpScanner:
-    def __init__(self, fetcher: BaseExchangeFetcher, settings: Dict = None, analyzer=None, telegram_bot=None):
+    def __init__(self, fetcher: BaseExchangeFetcher, settings: Dict = None, analyzer=None, telegram_bot=None, chart_generator=None):
         self.fetcher = fetcher
         self.settings = settings or PUMP_SCAN_SETTINGS
         self.analyzer = analyzer
@@ -2742,11 +2742,18 @@ class MultiExchangeScannerBot:
     
     async def fast_pump_scan(self) -> List[Dict]:
         if not FEATURES['advanced']['pump_dump']:
-            return []
-        
+        return []
+    
         pump_signals = []
         for name, fetcher in self.fetchers.items():
-            scanner = FastPumpScanner(fetcher, PUMP_SCAN_SETTINGS, self.analyzer, self.telegram_bot, self.chart_generator)
+            # ✅ Передаем ВСЕ необходимые параметры
+            scanner = FastPumpScanner(
+                fetcher, 
+                PUMP_SCAN_SETTINGS, 
+                self.analyzer,
+                self.telegram_bot,
+                self.chart_generator  # Добавляем chart_generator
+            )
             signals = await scanner.scan_all_pairs()
             
             for signal in signals:
