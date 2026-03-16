@@ -2072,58 +2072,58 @@ class FastPumpScanner:
                             signal = self.analyzer.generate_signal(dataframes, metadata, pair, self.fetcher.name)
                             
                             if signal and 'NEUTRAL' not in signal['direction']:
-                            signal['pump_dump'] = [{
-                                'change_percent': change_percent,
-                                'time_window': minutes,
-                                'start_price': start_price,
-                                'end_price': current_price
-                            }]
-                            
-                            if change_percent > 0:
-                                signal['signal_type'] = "PUMP"
-                            else:
-                                signal['signal_type'] = "DUMP"
-                            
-                            signal['funding_rate'] = funding
-                            
-                            # ✅ ОТПРАВЛЯЕМ СИГНАЛ С ГРАФИКОМ!
-                            try:
-                                contract_info = await self.fetcher.fetch_contract_info(pair)
-                                msg, keyboard = self.format_pump_message(signal, contract_info)
+                                signal['pump_dump'] = [{
+                                    'change_percent': change_percent,
+                                    'time_window': minutes,
+                                    'start_price': start_price,
+                                    'end_price': current_price
+                                }]
                                 
-                                # Загружаем данные для графика
-                                df = await self.fetcher.fetch_ohlcv(pair, TIMEFRAMES.get('current', '15m'), limit=200)
-                                
-                                coin = pair.split('/')[0].replace('USDT', '')
-                                
-                                if df is not None and not df.empty:
-                                    df = self.analyzer.calculate_indicators(df)
-                                    chart_buf = self.analyzer.chart_generator.create_chart(df, signal, coin, TIMEFRAMES.get('current', '15m'))
-                                    
-                                    await self.telegram_bot.send_photo(
-                                        chat_id=PUMP_CHAT_ID,
-                                        photo=chart_buf,
-                                        caption=msg,
-                                        parse_mode='HTML',
-                                        reply_markup=keyboard
-                                    )
-                                    logger.info(f"✅ Отправлен памп-сигнал с графиком: {pair}")
+                                if change_percent > 0:
+                                    signal['signal_type'] = "PUMP"
                                 else:
-                                    await self.telegram_bot.send_message(
-                                        chat_id=PUMP_CHAT_ID,
-                                        text=msg,
-                                        parse_mode='HTML',
-                                        reply_markup=keyboard
-                                    )
-                                    logger.info(f"✅ Отправлен памп-сигнал (без графика): {pair}")
+                                    signal['signal_type'] = "DUMP"
+                                
+                                signal['funding_rate'] = funding
+                                
+                                # ✅ ОТПРАВЛЯЕМ СИГНАЛ С ГРАФИКОМ!
+                                try:
+                                    contract_info = await self.fetcher.fetch_contract_info(pair)
+                                    msg, keyboard = self.format_pump_message(signal, contract_info)
                                     
-                            except Exception as e:
-                                logger.error(f"❌ Ошибка отправки сигнала {pair}: {e}")
-                            
-                            self.cache.set(cache_key, signal)
-                            self.last_pump_signals[signal_key] = datetime.now()
-                            
-                            return signal
+                                    # Загружаем данные для графика
+                                    df = await self.fetcher.fetch_ohlcv(pair, TIMEFRAMES.get('current', '15m'), limit=200)
+                                    
+                                    coin = pair.split('/')[0].replace('USDT', '')
+                                    
+                                    if df is not None and not df.empty:
+                                        df = self.analyzer.calculate_indicators(df)
+                                        chart_buf = self.analyzer.chart_generator.create_chart(df, signal, coin, TIMEFRAMES.get('current', '15m'))
+                                        
+                                        await self.telegram_bot.send_photo(
+                                            chat_id=PUMP_CHAT_ID,
+                                            photo=chart_buf,
+                                            caption=msg,
+                                            parse_mode='HTML',
+                                            reply_markup=keyboard
+                                        )
+                                        logger.info(f"✅ Отправлен памп-сигнал с графиком: {pair}")
+                                    else:
+                                        await self.telegram_bot.send_message(
+                                            chat_id=PUMP_CHAT_ID,
+                                            text=msg,
+                                            parse_mode='HTML',
+                                            reply_markup=keyboard
+                                        )
+                                        logger.info(f"✅ Отправлен памп-сигнал (без графика): {pair}")
+                                        
+                                except Exception as e:
+                                    logger.error(f"❌ Ошибка отправки сигнала {pair}: {e}")
+                                
+                                self.cache.set(cache_key, signal)
+                                self.last_pump_signals[signal_key] = datetime.now()
+                                
+                                return signal
             return None
         except Exception as e:
             logger.error(f"Ошибка сканирования {pair}: {e}")
