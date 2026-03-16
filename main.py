@@ -1741,13 +1741,16 @@ class FastPumpScanner:
         self.settings = settings or PUMP_SCAN_SETTINGS
         self.analyzer = analyzer
         self.threshold = self.settings.get('threshold', 3.0)
-        self.instant_threshold = self.settings.get('instant_threshold', 2.0)
+        self.instant_threshold = self.settings.get('instant_threshold', 1.0)  # Снижено до 1%
+        self.shitcoin_instant_threshold = self.settings.get('shitcoin_instant_threshold', 0.8)  # Для щиткоинов 0.8%
+        self.shitcoin_volume_threshold = self.settings.get('shitcoin_volume_threshold', 1_000_000)  # 1M$ = порог щиткоина
         self.timeframes = self.settings.get('timeframes', ['1m', '3m', '5m', '15m', '30m'])
         self.max_pairs = self.settings.get('max_pairs_to_scan', 600)
+        self.websocket_top_pairs = self.settings.get('websocket_top_pairs', 100)
         self.last_pump_signals = {}
         self.cache = CacheManager(ttl=30)
         
-        # WebSocket менеджер для гибридного подхода
+        # WebSocket менеджер
         try:
             from websocket_manager import BingXWebSocketManager
             self.ws_manager = BingXWebSocketManager(
@@ -1755,30 +1758,49 @@ class FastPumpScanner:
                 os.getenv('BINGX_SECRET_KEY')
             )
             self.websocket_available = True
-        except ImportError:
-            logger.warning("⚠️ WebSocketManager не инициализирован, используется только REST API")
+            logger.info("✅ WebSocket менеджер инициализирован")
+        except ImportError as e:
+            logger.warning(f"⚠️ WebSocketManager не инициализирован: {e}")
             self.ws_manager = None
             self.websocket_available = False
         
         self.batch_size = PERFORMANCE_SETTINGS.get('pump_batch_size', 50)
         self.delay_between_batches = PERFORMANCE_SETTINGS.get('delay_between_batches', 0.5)
+        self.websocket_reconnect_delay = self.settings.get('websocket_reconnect_delay', 5)
         
         # Очередь для быстрых сигналов
         self.instant_signals_queue = asyncio.Queue()
         
         logger.info(f"✅ FastPumpScanner инициализирован (WebSocket: {self.websocket_available})")
+        logger.info(f"   Пороги: мейджоры {self.instant_threshold}%, щиткоины {self.shitcoin_instant_threshold}%")
     
     async def start_websocket_monitoring(self, symbols: List[str]):
         """
-        Запуск WebSocket мониторинга для приоритетных символов
+        Запуск WebSocket мониторинга с приоритетом на щиткоины
         """
         if not self.websocket_available or not self.ws_manager:
             logger.info("WebSocket мониторинг недоступен, используется REST API")
             return
         
-        # Берем топ-100 самых волатильных пар для WebSocket
-        priority_symbols = symbols[:100]
+        # Получаем щиткоины с малым объемом
+        shitcoins = await self._get_volatile_shitcoins(symbols)
         
+        # Берем топ-5 мейджоров для контроля
+        majors = ['BTC/USDT:USDT', 'ETH/USDT:USDT', 'BNB/USDT:USDT', 'SOL/USDT:USDT', 'XRP/USDT:USDT']
+        
+        # Объединяем: сначала все щиткоины, потом мейджоры
+        all_priority = shitcoins + [m for m in majors if m not in shitcoins]
+        
+        # Ограничиваем до 100 пар
+        priority_symbols = all_priority[:self.websocket_top_pairs]
+        
+        shitcoin_count = sum(1 for s in priority_symbols if s in shitcoins)
+        major_count = len(priority_symbols) - shitcoin_count
+        
+        logger.info(f"🎯 WebSocket мониторинг: {len(priority_symbols)} пар")
+        logger.info(f"   - Щиткоины: {shitcoin_count} (объем < {self.shitcoin_volume_threshold/1_000_000:.1f}M$)")
+        logger.info(f"   - Мейджоры: {major_count}")
+
         # Запускаем WebSocket с callback
         await self.ws_manager.connect_ticker_stream(
             priority_symbols,
@@ -1787,21 +1809,83 @@ class FastPumpScanner:
         
         # Запускаем обработчик очереди
         asyncio.create_task(self.process_instant_signals())
-        logger.info(f"📡 WebSocket мониторинг запущен для {len(priority_symbols)} пар")
+        logger.info(f"📡 WebSocket мониторинг запущен")
+    
+    async def _get_volatile_shitcoins(self, all_symbols: List[str]) -> List[str]:
+        """
+        Определение самых волатильных щиткоинов на основе объема
+        """
+        shitcoins = []
+        volumes = []
+        
+        logger.info("🔍 Сканирую щиткоины...")
+        
+        # Черный список мейджоров
+        blacklist = ['BTC', 'ETH', 'BNB', 'SOL', 'XRP', 'ADA', 'DOGE', 'DOT', 'LINK', 'MATIC', 'AVAX', 'UNI', 'SHIB']
+        
+        # Проверяем объемы (берем первые 300 пар для скорости)
+        for symbol in all_symbols[:300]:
+            try:
+                coin = symbol.split('/')[0].upper()
+                
+                # Пропускаем мейджоры
+                if coin in blacklist:
+                    continue
+                
+                ticker = await self.fetcher.fetch_ticker(symbol)
+                volume = ticker.get('volume_24h', 0)
+                
+                # Если объем меньше порога - это щиткоин
+                if volume < self.shitcoin_volume_threshold:
+                    shitcoins.append(symbol)
+                    volumes.append((symbol, volume))
+            except Exception as e:
+                continue
+        
+        # Сортируем по объему (от самых маленьких - самых волатильных)
+        volumes.sort(key=lambda x: x[1])
+        top_shitcoins = [s for s, v in volumes[:150]]  # берем 150 самых маленьких
+        
+        logger.info(f"🎯 Найдено {len(top_shitcoins)} щиткоинов с объемом < {self.shitcoin_volume_threshold/1_000_000:.1f}M$")
+        return top_shitcoins
     
     async def handle_instant_signal(self, signal_type: str, symbol: str, price: float, movement: Dict):
         """
-        Обработка мгновенного сигнала от WebSocket
+        Обработка мгновенного сигнала от WebSocket с разными порогами
         """
-        logger.info(f"⚡ Мгновенное движение {symbol}: {movement['change_percent']:+.1f}% за {movement['time_window']} сек")
-        
-        # Добавляем в очередь для обработки
-        await self.instant_signals_queue.put({
-            'symbol': symbol,
-            'price': price,
-            'movement': movement,
-            'time': datetime.now()
-        })
+        try:
+            # Определяем, щиткоин или нет
+            is_shitcoin = False
+            try:
+                ticker = await self.fetcher.fetch_ticker(symbol)
+                volume = ticker.get('volume_24h', 1_000_000)
+                if volume < self.shitcoin_volume_threshold:
+                    is_shitcoin = True
+            except:
+                pass
+            
+            # Выбираем порог срабатывания
+            if is_shitcoin:
+                threshold = self.shitcoin_instant_threshold
+                coin_type = "Щиткоин"
+            else:
+                threshold = self.instant_threshold
+                coin_type = "Мейджор"
+            
+            # Проверяем по порогу
+            if abs(movement['change_percent']) >= threshold:
+                logger.info(f"⚡ {coin_type} {symbol}: {movement['change_percent']:+.1f}% за {movement['time_window']:.1f} сек")
+                
+                # Добавляем в очередь для обработки
+                await self.instant_signals_queue.put({
+                    'symbol': symbol,
+                    'price': price,
+                    'movement': movement,
+                    'is_shitcoin': is_shitcoin,
+                    'time': datetime.now()
+                })
+        except Exception as e:
+            logger.error(f"Ошибка обработки мгновенного сигнала: {e}")
     
     async def process_instant_signals(self):
         """
@@ -1818,23 +1902,30 @@ class FastPumpScanner:
                 asyncio.create_task(self.confirm_signal(signal_data))
                 
             except Exception as e:
-                logger.error(f"Ошибка обработки мгновенного сигнала: {e}")
+                logger.error(f"Ошибка обработки очереди: {e}")
                 await asyncio.sleep(1)
     
     async def send_flash_signal(self, signal_data: Dict):
         """
-        Отправка быстрого предварительного сигнала
+        Отправка быстрого предварительного сигнала (0-2 секунды)
         """
         symbol = signal_data['symbol']
         movement = signal_data['movement']
         coin = symbol.split('/')[0].replace('USDT', '')
+        is_shitcoin = signal_data.get('is_shitcoin', False)
         
-        direction_emoji = "🚀" if movement['change_percent'] > 0 else "📉"
+        # Эмодзи для щиткоинов - ⚡, для мейджоров - 🚀
+        if is_shitcoin:
+            direction_emoji = "⚡"
+            coin_type = " [ЩИТКОИН]"
+        else:
+            direction_emoji = "🚀" if movement['change_percent'] > 0 else "📉"
+            coin_type = ""
         
         msg = (
-            f"⚡ {direction_emoji} <code>{coin}</code> {movement['change_percent']:+.1f}% за {movement['time_window']} сек\n"
+            f"{direction_emoji} <code>{coin}</code>{coin_type} {movement['change_percent']:+.1f}% за {movement['time_window']:.1f} сек\n"
             f"⏳ Полный анализ через 3-5 секунд...\n"
-            f"💰 Цена: {signal_data['price']:.4f}"
+            f"💰 Цена: {signal_data['price']:.6f}"
         )
         
         # Создаем простую клавиатуру
@@ -1850,7 +1941,7 @@ class FastPumpScanner:
                 parse_mode='HTML',
                 reply_markup=keyboard
             )
-            logger.info(f"⚡ Отправлен мгновенный сигнал для {symbol}")
+            logger.info(f"⚡ Отправлен мгновенный сигнал для {symbol} (щиткоин: {is_shitcoin})")
         except Exception as e:
             logger.error(f"Ошибка отправки мгновенного сигнала: {e}")
     
@@ -1911,7 +2002,7 @@ class FastPumpScanner:
                 contract_info = await self.fetcher.fetch_contract_info(symbol)
                 msg, keyboard = self.format_pump_message(signal, contract_info)
                 
-                # Отправляем как ответ на мгновенный сигнал или отдельно
+                # Отправляем подтвержденный сигнал
                 try:
                     await self.fetcher.telegram_bot.send_message(
                         chat_id=PUMP_CHAT_ID,
@@ -1928,7 +2019,7 @@ class FastPumpScanner:
     
     async def scan_pair(self, pair: str) -> Optional[Dict]:
         """
-        Сканирование одной пары (для параллельного вызова)
+        Сканирование одной пары (для параллельного вызова REST API)
         """
         try:
             # Проверяем кэш
@@ -1992,7 +2083,6 @@ class FastPumpScanner:
                                 else:
                                     signal['signal_type'] = "DUMP"
                                 
-                                # Убедимся, что funding_rate сохранен
                                 signal['funding_rate'] = funding
                                 
                                 self.cache.set(cache_key, signal)
@@ -2040,7 +2130,7 @@ class FastPumpScanner:
                     if signal:
                         pump_signals.append(signal)
                         change = signal['pump_dump'][0]['change_percent']
-                        logger.info(f"✅ Памп-сигнал: {signal['symbol']} {change:+.1f}%")
+                        logger.info(f"✅ Памп-сигнал (REST): {signal['symbol']} {change:+.1f}%")
                 
                 # Пауза между батчами
                 if batch_num < len(batches) - 1:
