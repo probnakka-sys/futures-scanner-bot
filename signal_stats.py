@@ -11,20 +11,16 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# ============== НАСТРОЙКИ СТАТИСТИКИ ==============
-
 STATS_SETTINGS = {
     'enabled': True,
     'stats_chat_id': os.getenv('STATS_CHAT_ID', ''),
     'daily_report_time': '20:00',
-    'update_interval': 300,  # 5 минут
-    'history_days': 90,       # храним 90 дней
+    'update_interval': 300,
+    'history_days': 90,
     'db_file': 'signals_database.json'
 }
 
 class SignalStatistics:
-    """Система статистики сигналов с поддержкой кнопок и команд"""
-    
     def __init__(self, bot, stats_chat_id: str):
         self.bot = bot
         self.stats_chat_id = stats_chat_id
@@ -32,7 +28,6 @@ class SignalStatistics:
         self.load_database()
     
     def load_database(self):
-        """Загрузка базы сигналов"""
         try:
             with open(self.db_file, 'r', encoding='utf-8') as f:
                 self.db = json.load(f)
@@ -41,7 +36,7 @@ class SignalStatistics:
                 'signals': {},
                 'statistics': {
                     'total_signals': 0,
-                    'by_type': {'regular': 0, 'pump': 0},
+                    'by_type': {'regular': 0, 'pump': 0, 'accumulation': 0},
                     'by_power': {},
                     'by_pair': {},
                     'daily_stats': {}
@@ -50,7 +45,6 @@ class SignalStatistics:
             self.save_database()
     
     def save_database(self):
-        """Сохранение базы сигналов"""
         try:
             with open(self.db_file, 'w', encoding='utf-8') as f:
                 json.dump(self.db, f, indent=2, ensure_ascii=False)
@@ -58,15 +52,9 @@ class SignalStatistics:
             logger.error(f"Ошибка сохранения базы: {e}")
     
     def add_signal(self, signal: Dict, signal_type: str = 'regular') -> str:
-        """Добавление нового сигнала в базу"""
         signal_id = f"{signal['symbol']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         
-        # Очищаем старые сигналы
         self.cleanup_old_signals()
-        
-        # Определяем тип сигнала
-        if signal.get('pump_dump'):
-            signal_type = 'pump'
         
         self.db['signals'][signal_id] = {
             'id': signal_id,
@@ -90,7 +78,6 @@ class SignalStatistics:
             'profit_percent': 0
         }
         
-        # Обновляем статистику
         self.db['statistics']['total_signals'] += 1
         self.db['statistics']['by_type'][signal_type] += 1
         
@@ -98,7 +85,6 @@ class SignalStatistics:
         return signal_id
     
     def update_signal(self, signal_id: str, current_price: float):
-        """Обновление статуса сигнала по текущей цене"""
         if signal_id not in self.db['signals']:
             return
         
@@ -106,16 +92,13 @@ class SignalStatistics:
         if signal['status'] != 'pending':
             return
         
-        # Обновляем максимум/минимум
         signal['max_price'] = max(signal['max_price'], current_price)
         signal['min_price'] = min(signal['min_price'], current_price)
         
         old_status = signal['status']
         profit_pct = 0
         
-        # Проверяем достижение целей
-        if 'LONG' in signal['direction'] or 'Разворот LONG' in signal['direction']:
-            # LONG позиция - прибыль при росте цены
+        if 'LONG' in signal['direction'] or 'Разворот LONG' in signal['direction'] or '(накопление)' in signal['direction']:
             if signal['target_2'] and current_price >= signal['target_2']:
                 signal['status'] = 'victory'
                 signal['final_result'] = 'target_2_hit'
@@ -128,8 +111,7 @@ class SignalStatistics:
                 signal['status'] = 'loss'
                 signal['final_result'] = 'stop_loss'
                 profit_pct = ((signal['stop_loss'] - signal['entry_price']) / signal['entry_price']) * 100
-        else:  # SHORT или Разворот SHORT
-            # SHORT позиция - прибыль при падении цены
+        else:
             if signal['target_2'] and current_price <= signal['target_2']:
                 signal['status'] = 'victory'
                 signal['final_result'] = 'target_2_hit'
@@ -146,14 +128,12 @@ class SignalStatistics:
         signal['profit_percent'] = round(profit_pct, 2)
         signal['updated_at'] = datetime.now().isoformat()
         
-        # Если статус изменился, отправляем уведомление
         if old_status != signal['status'] and signal['status'] in ['victory', 'profit', 'loss']:
             asyncio.create_task(self.send_result_notification(signal_id))
         
         self.save_database()
     
     def cleanup_old_signals(self):
-        """Удаление старых сигналов"""
         cutoff = datetime.now() - timedelta(days=STATS_SETTINGS['history_days'])
         to_delete = []
         
@@ -167,16 +147,15 @@ class SignalStatistics:
     
     def get_statistics(self, days: int = 7, signal_type: str = 'all', 
                       coin: str = None, power_filter: str = None) -> Dict:
-        """Получение статистики за период с фильтрами"""
         cutoff = datetime.now() - timedelta(days=days)
         
         stats = {
             'total': 0,
-            'victory': 0,     # цель 2
-            'profit': 0,      # цель 1
-            'loss': 0,        # стоп
+            'victory': 0,
+            'profit': 0,
+            'loss': 0,
             'pending': 0,
-            'by_type': {'regular': 0, 'pump': 0},
+            'by_type': {'regular': 0, 'pump': 0, 'accumulation': 0},
             'by_power': defaultdict(lambda: {'total': 0, 'victory': 0, 'profit': 0, 'loss': 0}),
             'by_pair': defaultdict(lambda: {'total': 0, 'success': 0, 'profit_sum': 0}),
             'total_profit': 0,
@@ -188,29 +167,22 @@ class SignalStatistics:
             if created < cutoff:
                 continue
             
-            # Фильтр по типу
             if signal_type != 'all' and signal['type'] != signal_type:
                 continue
-            
-            # Фильтр по монете
             if coin and signal['coin'] != coin:
                 continue
-            
-            # Фильтр по силе
             if power_filter and signal['signal_power'] != power_filter:
                 continue
             
             stats['total'] += 1
             stats['by_type'][signal['type']] += 1
             
-            # Статистика по статусам
             if signal['status'] in ['victory', 'profit', 'loss']:
                 stats[signal['status']] += 1
                 stats['total_profit'] += signal.get('profit_percent', 0)
             elif signal['status'] == 'pending':
                 stats['pending'] += 1
             
-            # Статистика по силе сигнала
             power = signal['signal_power']
             stats['by_power'][power]['total'] += 1
             if signal['status'] in ['victory', 'profit']:
@@ -220,7 +192,6 @@ class SignalStatistics:
             elif signal['status'] == 'loss':
                 stats['by_power'][power]['loss'] += 1
             
-            # Статистика по парам
             pair = signal['coin']
             stats['by_pair'][pair]['total'] += 1
             if signal['status'] in ['victory', 'profit']:
@@ -236,15 +207,14 @@ class SignalStatistics:
     
     def format_stats_message(self, stats: Dict, days: int, 
                             signal_type: str = 'all', coin: str = None) -> str:
-        """Форматирование статистики в читаемое сообщение"""
-        
-        # Заголовок
         if coin:
             title = f"📊 СТАТИСТИКА ПО {coin} ЗА {days} ДНЕЙ"
         elif signal_type == 'regular':
             title = f"📊 ОБЫЧНЫЕ СИГНАЛЫ ЗА {days} ДНЕЙ"
         elif signal_type == 'pump':
             title = f"🚀 ПАМП-СИГНАЛЫ ЗА {days} ДНЕЙ"
+        elif signal_type == 'accumulation':
+            title = f"📦 НАКОПЛЕНИЕ ЗА {days} ДНЕЙ"
         else:
             title = f"📊 ОБЩАЯ СТАТИСТИКА ЗА {days} ДНЕЙ"
         
@@ -260,13 +230,12 @@ class SignalStatistics:
         msg += f"📊 Win Rate: {stats['win_rate']}%\n"
         msg += f"💵 Средняя прибыль: {stats['avg_profit']}%\n\n"
         
-        # Статистика по типам если общая
         if signal_type == 'all':
             msg += f"*По типам сигналов:*\n"
             msg += f"📊 Обычные: {stats['by_type']['regular']}\n"
-            msg += f"🚀 Пампы: {stats['by_type']['pump']}\n\n"
+            msg += f"🚀 Пампы: {stats['by_type']['pump']}\n"
+            msg += f"📦 Накопление: {stats['by_type']['accumulation']}\n\n"
         
-        # Статистика по силе
         if stats['by_power']:
             msg += f"*По силе сигнала:*\n"
             for power, data in stats['by_power'].items():
@@ -276,7 +245,6 @@ class SignalStatistics:
                     msg += f"{power}: {win}/{data['total']} ({rate:.1f}%)\n"
             msg += "\n"
         
-        # Лучшие монеты
         if not coin and stats['by_pair']:
             top_pairs = sorted(stats['by_pair'].items(), 
                               key=lambda x: x[1]['success']/x[1]['total'] if x[1]['total']>0 else 0, 
@@ -290,7 +258,6 @@ class SignalStatistics:
         return msg
     
     async def send_daily_report(self):
-        """Ежедневный отчет в группу статистики"""
         stats = self.get_statistics(days=1)
         
         if stats['total'] == 0:
@@ -300,14 +267,16 @@ class SignalStatistics:
         msg += f"\n\n📌 /stats - общая статистика"
         msg += f"\n📌 /stats pump - только пампы"
         msg += f"\n📌 /stats regular - только обычные"
+        msg += f"\n📌 /stats accumulation - только накопление"
         
         from telegram import InlineKeyboardButton, InlineKeyboardMarkup
         
         keyboard = [
             [InlineKeyboardButton("📊 Общая", callback_data="stats_7"),
              InlineKeyboardButton("🚀 Пампы", callback_data="stats_pump_7")],
-            [InlineKeyboardButton("📈 По монетам", callback_data="stats_coins"),
-             InlineKeyboardButton("❓ Помощь", callback_data="stats_help")]
+            [InlineKeyboardButton("📦 Накопление", callback_data="stats_accum_7"),
+             InlineKeyboardButton("📈 По монетам", callback_data="stats_coins")],
+            [InlineKeyboardButton("❓ Помощь", callback_data="stats_help")]
         ]
         
         await self.bot.send_message(
@@ -318,7 +287,6 @@ class SignalStatistics:
         )
     
     async def send_result_notification(self, signal_id: str):
-        """Уведомление о результате сигнала"""
         signal = self.db['signals'][signal_id]
         
         emoji = {
@@ -329,7 +297,13 @@ class SignalStatistics:
         
         msg = f"{emoji} *Сигнал завершен*\n\n"
         msg += f"Монета: `{signal['coin']}`\n"
-        msg += f"Тип: {'🚀 Памп' if signal['type'] == 'pump' else '📊 Обычный'}\n"
+        msg += f"Тип: "
+        if signal['type'] == 'pump':
+            msg += f"🚀 Памп\n"
+        elif signal['type'] == 'accumulation':
+            msg += f"📦 Накопление\n"
+        else:
+            msg += f"📊 Обычный\n"
         msg += f"Направление: {signal['direction']}\n"
         msg += f"Вход: {signal['entry_price']}\n"
         msg += f"Результат: {signal['final_result']}\n"
