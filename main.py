@@ -922,59 +922,59 @@ class FibonacciAnalyzer:
     
     def analyze_multi_timeframe(self, dataframes: Dict[str, pd.DataFrame]) -> Dict:
     """Мультитаймфреймовый анализ Фибоначчи"""
-    result = {'has_confluence': False, 'signals': [], 'strength': 0, 'levels': {}}
-    
-    # Словарь для перевода таймфреймов
-    tf_translation = {
-        'monthly': 'месячный',
-        'weekly': 'недельный',
-        'daily': 'дневной',
-        'hourly': 'часовой',
-        'current': 'текущий'
-    }
-    
-    # Словарь для перевода направления
-    dir_translation = {
-        'support': 'поддержка',
-        'resistance': 'сопротивление'
-    }
-    
-    for tf_name, df in dataframes.items():
-        if df is None or df.empty:
-            continue
+        result = {'has_confluence': False, 'signals': [], 'strength': 0, 'levels': {}}
         
-        tf_result = self.analyze(df, tf_name)
-        if tf_result['has_signal']:
-            # Переводим сигналы
-            translated_signals = []
-            for signal in tf_result['signals']:
-                # Заменяем английские названия на русские
-                ru_signal = signal
-                for eng, rus in tf_translation.items():
-                    ru_signal = ru_signal.replace(eng, rus)
-                for eng, rus in dir_translation.items():
-                    ru_signal = ru_signal.replace(eng, rus)
-                translated_signals.append(ru_signal)
+        # Словарь для перевода таймфреймов
+        tf_translation = {
+            'monthly': 'месячный',
+            'weekly': 'недельный',
+            'daily': 'дневной',
+            'hourly': 'часовой',
+            'current': 'текущий'
+        }
+        
+        # Словарь для перевода направления
+        dir_translation = {
+            'support': 'поддержка',
+            'resistance': 'сопротивление'
+        }
+        
+        for tf_name, df in dataframes.items():
+            if df is None or df.empty:
+                continue
             
-            weight = 1.0
-            if tf_name == 'monthly':
-                weight = 3.0
-            elif tf_name == 'weekly':
-                weight = 2.5
-            elif tf_name == 'daily':
-                weight = 2.0
-            elif tf_name == 'hourly':
-                weight = 1.5
-            
-            result['signals'].extend(translated_signals)
-            result['strength'] += tf_result['strength'] * weight
-            result['levels'][tf_name] = tf_result['levels']
-            result['has_confluence'] = True
-    
-    if result['strength'] > 100:
-        result['strength'] = 100
-    
-    return result
+            tf_result = self.analyze(df, tf_name)
+            if tf_result['has_signal']:
+                # Переводим сигналы
+                translated_signals = []
+                for signal in tf_result['signals']:
+                    # Заменяем английские названия на русские
+                    ru_signal = signal
+                    for eng, rus in tf_translation.items():
+                        ru_signal = ru_signal.replace(eng, rus)
+                    for eng, rus in dir_translation.items():
+                        ru_signal = ru_signal.replace(eng, rus)
+                    translated_signals.append(ru_signal)
+                
+                weight = 1.0
+                if tf_name == 'monthly':
+                    weight = 3.0
+                elif tf_name == 'weekly':
+                    weight = 2.5
+                elif tf_name == 'daily':
+                    weight = 2.0
+                elif tf_name == 'hourly':
+                    weight = 1.5
+                
+                result['signals'].extend(translated_signals)
+                result['strength'] += tf_result['strength'] * weight
+                result['levels'][tf_name] = tf_result['levels']
+                result['has_confluence'] = True
+        
+        if result['strength'] > 100:
+            result['strength'] = 100
+        
+        return result
 
 # ============== АНАЛИЗАТОР VOLUME PROFILE ==============
 
