@@ -2742,23 +2742,21 @@ class MultiExchangeScannerBot:
     
     async def fast_pump_scan(self) -> List[Dict]:
         if not FEATURES['advanced']['pump_dump']:
-        return []
-    
+            return []
+        
         pump_signals = []
         for name, fetcher in self.fetchers.items():
-            # ✅ Передаем ВСЕ необходимые параметры
             scanner = FastPumpScanner(
                 fetcher, 
                 PUMP_SCAN_SETTINGS, 
                 self.analyzer,
                 self.telegram_bot,
-                self.chart_generator  # Добавляем chart_generator
+                self.chart_generator
             )
             signals = await scanner.scan_all_pairs()
             
             for signal in signals:
                 contract_info = await fetcher.fetch_contract_info(signal['symbol'])
-                # Убедимся, что funding_rate не потерялся
                 if 'funding_rate' not in signal:
                     signal['funding_rate'] = await fetcher.fetch_funding_rate(signal['symbol'])
                 msg, keyboard = scanner.format_pump_message(signal, contract_info)
