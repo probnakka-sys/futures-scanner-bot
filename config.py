@@ -16,7 +16,7 @@ ACCUMULATION_CHAT_ID = os.getenv('ACCUMULATION_CHAT_ID', '')  # Накоплен
 
 UPDATE_INTERVAL = int(os.getenv('UPDATE_INTERVAL', 900))  # 15 минут для основного анализа
 PUMP_SCAN_INTERVAL = int(os.getenv('PUMP_SCAN_INTERVAL', 30))  # 30 секунд для памп-сканера
-MIN_CONFIDENCE = int(os.getenv('MIN_CONFIDENCE', 55))
+MIN_CONFIDENCE = int(os.getenv('MIN_CONFIDENCE', 65))
 TIMEFRAME = os.getenv('TIMEFRAME', '15m')
 PAIRS_TO_SCAN = int(os.getenv('PAIRS_TO_SCAN', 50))
 
@@ -44,12 +44,12 @@ PUMP_SCAN_SETTINGS = {
 # ============== НАСТРОЙКИ ATR (True Range) ==============
 
 ATR_SETTINGS = {
-    'long_target_1_mult': 2.0,
-    'long_target_2_mult': 4.0,
-    'long_stop_loss_mult': 1.2,
-    'short_target_1_mult': 2.0,
-    'short_target_2_mult': 4.0,
-    'short_stop_loss_mult': 1.2,
+    'long_target_1_mult': 2.5,
+    'long_target_2_mult': 5.0,
+    'long_stop_loss_mult': 1.8,
+    'short_target_1_mult': 2.5,
+    'short_target_2_mult': 5.0,
+    'short_stop_loss_mult': 1.8,
 }
 
 # ============== ПЕРЕКЛЮЧАТЕЛИ ФУНКЦИЙ ==============
