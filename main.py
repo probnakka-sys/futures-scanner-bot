@@ -1741,6 +1741,7 @@ class FastPumpScanner:
         self.settings = settings or PUMP_SCAN_SETTINGS
         self.analyzer = analyzer
         self.telegram_bot = telegram_bot  # ✅ Добавляем telegram_bot
+        self.chart_generator = chart_generator  # ✅ Добавляем chart_generator
         self.threshold = self.settings.get('threshold', 3.0)
         self.instant_threshold = self.settings.get('instant_threshold', 1.0)  # Снижено до 1%
         self.shitcoin_instant_threshold = self.settings.get('shitcoin_instant_threshold', 0.8)  # Для щиткоинов 0.8%
@@ -2098,7 +2099,7 @@ class FastPumpScanner:
                                     
                                     if df is not None and not df.empty:
                                         df = self.analyzer.calculate_indicators(df)
-                                        chart_buf = self.analyzer.chart_generator.create_chart(df, signal, coin, TIMEFRAMES.get('current', '15m'))
+                                        chart_buf = self.chart_generator.create_chart(df, signal, coin, TIMEFRAMES.get('current', '15m'))
                                         
                                         await self.telegram_bot.send_photo(
                                             chat_id=PUMP_CHAT_ID,
@@ -2745,7 +2746,7 @@ class MultiExchangeScannerBot:
         
         pump_signals = []
         for name, fetcher in self.fetchers.items():
-            scanner = FastPumpScanner(fetcher, PUMP_SCAN_SETTINGS, self.analyzer, self.telegram_bot)
+            scanner = FastPumpScanner(fetcher, PUMP_SCAN_SETTINGS, self.analyzer, self.telegram_bot, self.chart_generator)
             signals = await scanner.scan_all_pairs()
             
             for signal in signals:
