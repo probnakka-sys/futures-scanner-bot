@@ -268,6 +268,105 @@ class AccumulationAnalyzer:
         
         return {'accumulation': False}
     
+    def calculate_potential(self, df: pd.DataFrame, dataframes: Dict[str, pd.DataFrame]) -> Dict:
+        """
+        Расчет потенциала роста до ближайшей сильной зоны на старших ТФ
+        """
+        current_price = df['close'].iloc[-1]
+        potential = {
+            'has_potential': False,
+            'target_price': None,
+            'target_pct': 0,
+            'target_level': '',
+            'timeframe': '',
+            'reasons': []
+        }
+        
+        # Анализируем старшие таймфреймы
+        target_tfs = ['hourly', 'daily', 'weekly', 'monthly']
+        
+        for tf_name in target_tfs:
+            if tf_name not in dataframes or dataframes[tf_name] is None:
+                continue
+            
+            tf_df = dataframes[tf_name]
+            
+            # Ищем ближайшие сильные уровни
+            levels = self._find_strong_levels(tf_df)
+            
+            for level in levels:
+                level_price = level['price']
+                level_type = level['type']
+                
+                # Для LONG ищем уровень сопротивления выше цены
+                if level_price > current_price:
+                    distance = ((level_price - current_price) / current_price) * 100
+                    
+                    # Если расстояние разумное (не больше 50%)
+                    if distance < 50:
+                        if not potential['target_price'] or level_price < potential['target_price']:
+                            potential['has_potential'] = True
+                            potential['target_price'] = level_price
+                            potential['target_pct'] = round(distance, 2)
+                            potential['target_level'] = f"{level_type} на {tf_name}"
+                            potential['timeframe'] = tf_name
+                            potential['reasons'].append(
+                                f"🎯 До {level_type} на {tf_name}: +{distance:.2f}%"
+                            )
+                
+                # Для SHORT ищем уровень поддержки ниже цены
+                elif level_price < current_price:
+                    distance = ((current_price - level_price) / current_price) * 100
+                    
+                    if distance < 50:
+                        if not potential['target_price'] or level_price > potential['target_price']:
+                            potential['has_potential'] = True
+                            potential['target_price'] = level_price
+                            potential['target_pct'] = round(distance, 2)
+                            potential['target_level'] = f"{level_type} на {tf_name}"
+                            potential['timeframe'] = tf_name
+                            potential['reasons'].append(
+                                f"🎯 До {level_type} на {tf_name}: -{distance:.2f}%"
+                            )
+        
+        return potential
+    
+    def _find_strong_levels(self, df: pd.DataFrame) -> List[Dict]:
+        """Поиск сильных уровней на таймфрейме"""
+        levels = []
+        
+        # EMA уровни
+        if 'ema_50' in df.columns:
+            levels.append({
+                'price': df['ema_50'].iloc[-1],
+                'type': 'EMA 50',
+                'strength': 70
+            })
+        if 'ema_200' in df.columns:
+            levels.append({
+                'price': df['ema_200'].iloc[-1],
+                'type': 'EMA 200',
+                'strength': 90
+            })
+        
+        # Локальные экстремумы
+        recent = df.tail(50)
+        swing_high = recent['high'].max()
+        swing_low = recent['low'].min()
+        
+        levels.append({
+            'price': swing_high,
+            'type': 'Локальный максимум',
+            'strength': 60
+        })
+        levels.append({
+            'price': swing_low,
+            'type': 'Локальный минимум',
+            'strength': 60
+        })
+        
+        return levels
+    
     def analyze(self, df: pd.DataFrame) -> Dict:
         """Полный анализ накопления"""
         result = {
@@ -1061,6 +1160,19 @@ class BingxFetcher(BaseExchangeFetcher):
                 'adjustForTimeDifference': True
             }
         })
+        
+        # Инициализация кэша плеч
+        try:
+            from leverage_cache import LeverageCache
+            self.leverage_cache = LeverageCache(
+                os.getenv('BINGX_API_KEY'),
+                os.getenv('BINGX_SECRET_KEY')
+            )
+            logger.info("✅ BingX Leverages клиент инициализирован")
+        except Exception as e:
+            logger.warning(f"⚠️ LeverageCache не инициализирован: {e}")
+            self.leverage_cache = None
+        
         logger.info("✅ BingX Futures инициализирован")
     
     async def fetch_all_pairs(self) -> List[str]:
@@ -1116,35 +1228,97 @@ class BingxFetcher(BaseExchangeFetcher):
             return {}
     
     async def fetch_contract_info(self, symbol: str) -> Dict:
+        """Получение информации о контракте с защитой от некорректных данных"""
         try:
             markets = await self.exchange.load_markets()
             market = markets.get(symbol, {})
             limits = market.get('limits', {})
             
+            # Получаем реальное плечо из кэша если доступно
             max_leverage = 100
-            min_amount = 5.0
-            max_amount = 2_000_000
+            if self.leverage_cache:
+                try:
+                    max_leverage = await self.leverage_cache.get_leverage(symbol)
+                except Exception as e:
+                    logger.debug(f"Ошибка получения плеча из кэша для {symbol}: {e}")
             
-            if limits.get('leverage'):
-                max_leverage = limits['leverage'].get('max', 100)
+            # Если плечо некорректное - определяем по монете
+            if max_leverage > 200 or max_leverage < 1:
+                coin = symbol.split('/')[0].upper()
+                if coin in ['BTC', 'ETH']:
+                    max_leverage = 125
+                elif coin in ['BNB', 'SOL', 'XRP', 'ADA', 'DOGE', 'DOT', 'LINK']:
+                    max_leverage = 75
+                elif coin in ['SHIB', 'PEPE', 'DOGS', 'NOT', 'BONK', 'WIF']:
+                    max_leverage = 50
+                else:
+                    max_leverage = 50
+            
+            # Минимальная сумма входа - защита от дурака
+            min_amount = 5.0
             if limits.get('amount'):
-                min_amount = limits['amount'].get('min', 5.0)
-                max_amount = limits['amount'].get('max', 2_000_000)
+                raw_min = limits['amount'].get('min', 5.0)
+                # Если минималка слишком большая (>500$) - игнорируем
+                if raw_min < 500:
+                    min_amount = raw_min
+                else:
+                    logger.debug(f"Слишком большая минималка {raw_min} для {symbol}, использую 5$")
+            
+            # Для мемкоинов иногда минималка выше
+            coin = symbol.split('/')[0].upper()
+            if coin in ['SHIB', 'PEPE', 'DOGS', 'BONK'] and min_amount < 10:
+                min_amount = 10.0
+            
+            # Максимальная сумма
+            max_amount = 2_000_000
+            if limits.get('amount') and limits['amount'].get('max'):
+                raw_max = limits['amount'].get('max', 2_000_000)
+                # Ограничиваем разумными пределами
+                if raw_max < 50_000_000:
+                    max_amount = raw_max
+            
+            # Получаем лимиты позиций из tiers если доступно
+            if self.leverage_cache:
+                try:
+                    position_limits = await self.leverage_cache.get_position_limits(symbol)
+                    if position_limits.get('max_position'):
+                        max_amount = min(position_limits['max_position'], max_amount)
+                except Exception as e:
+                    logger.debug(f"Ошибка получения position limits для {symbol}: {e}")
             
             return {
                 'max_leverage': max_leverage,
-                'min_amount': min_amount,
-                'max_amount': max_amount,
+                'min_amount': round(min_amount, 2),
+                'max_amount': int(max_amount),
                 'has_data': True
             }
+            
         except Exception as e:
-            logger.debug(f"Нет данных контракта для {symbol}, использую стандартные")
+            logger.error(f"Ошибка получения контракта {symbol}: {e}")
+            
+            # Fallback значения с защитой
+            coin = symbol.split('/')[0].upper()
+            
+            if coin in ['BTC', 'ETH']:
+                max_leverage = 125
+            elif coin in ['BNB', 'SOL', 'XRP', 'ADA']:
+                max_leverage = 75
+            else:
+                max_leverage = 50
+            
             return {
-                'max_leverage': 100,
+                'max_leverage': max_leverage,
                 'min_amount': 5.0,
                 'max_amount': 2_000_000,
                 'has_data': False
             }
+    
+    async def fetch_open_interest(self, symbol: str) -> Optional[float]:
+        try:
+            oi = await self.exchange.fetch_open_interest(symbol)
+            return oi.get('openInterestAmount', 0)
+        except:
+            return None
     
     async def close(self):
         await self.exchange.close()
@@ -1330,13 +1504,23 @@ class MultiTimeframeAnalyzer:
         if self.accumulation and FEATURES['advanced']['accumulation']:
             logger.info(f"  🔍 {symbol} - Начинаю анализ накопления")
             accumulation_analysis = self.accumulation.analyze(df)
+            
             if accumulation_analysis.get('has_accumulation'):
                 for signal in accumulation_analysis['signals']:
                     reasons.append(f"📦 {signal}")
                 confidence += accumulation_analysis.get('strength', 0) / 5
                 signal_type = 'accumulation'
+                
+                # Добавляем расчет потенциала
+                potential = self.accumulation.calculate_potential(df, dataframes)
+                if potential['has_potential']:
+                    accumulation_analysis['potential'] = potential
+                    for reason in potential['reasons']:
+                        reasons.append(reason)
+                    logger.info(f"  📈 {symbol} - Потенциал: {potential['target_pct']}%")
+                
                 if accumulation_analysis.get('direction'):
-                    direction = accumulation_analysis['direction'] + ' 📈' if accumulation_analysis['direction'] == 'LONG' else 'SHORT 📉'
+                    direction = accumulation_analysis['direction'] + ' 📈 (накопление)' if accumulation_analysis['direction'] == 'LONG' else 'SHORT 📉 (накопление)'
                 logger.info(f"  ✅ {symbol} - Накопление: найдено {len(accumulation_analysis['signals'])} сигналов")
         
         funding = metadata.get('funding_rate')
@@ -1356,13 +1540,9 @@ class MultiTimeframeAnalyzer:
         bullish = sum(1 for r in reasons if any(k in r for k in bullish_keywords))
         bearish = sum(1 for r in reasons if any(k in r for k in bearish_keywords))
         
-        if accumulation_analysis and accumulation_analysis.get('direction'):
-            if accumulation_analysis['direction'] == 'LONG':
-                direction = 'LONG 📈 (накопление)'
-                reasons.append("📦 Ранний вход на стадии накопления")
-            else:
-                direction = 'SHORT 📉 (распределение)'
-                reasons.append("📦 Ранний вход на стадии распределения")
+        if accumulation_analysis and accumulation_analysis.get('direction') and accumulation_analysis.get('has_accumulation'):
+            # Для накопления оставляем направление из анализатора
+            pass
         elif bullish > bearish and confidence >= MIN_CONFIDENCE:
             if alignment['weekly_trend'] == 'ВОСХОДЯЩИЙ 📈':
                 direction = 'Разворот LONG 📈'
@@ -1401,27 +1581,51 @@ class MultiTimeframeAnalyzer:
         targets = {}
         
         if 'LONG' in direction:
-            if current_price < 0.01:
+            if current_price < 0.0001:
+                targets['target_1'] = round(current_price + atr * ATR_SETTINGS['long_target_1_mult'], 8)
+                targets['target_2'] = round(current_price + atr * ATR_SETTINGS['long_target_2_mult'], 8)
+                targets['stop_loss'] = round(current_price - atr * ATR_SETTINGS['long_stop_loss_mult'], 8)
+            elif current_price < 0.001:
                 targets['target_1'] = round(current_price + atr * ATR_SETTINGS['long_target_1_mult'], 6)
                 targets['target_2'] = round(current_price + atr * ATR_SETTINGS['long_target_2_mult'], 6)
                 targets['stop_loss'] = round(current_price - atr * ATR_SETTINGS['long_stop_loss_mult'], 6)
-            elif current_price < 1.0:
+            elif current_price < 0.01:
+                targets['target_1'] = round(current_price + atr * ATR_SETTINGS['long_target_1_mult'], 5)
+                targets['target_2'] = round(current_price + atr * ATR_SETTINGS['long_target_2_mult'], 5)
+                targets['stop_loss'] = round(current_price - atr * ATR_SETTINGS['long_stop_loss_mult'], 5)
+            elif current_price < 0.1:
                 targets['target_1'] = round(current_price + atr * ATR_SETTINGS['long_target_1_mult'], 4)
                 targets['target_2'] = round(current_price + atr * ATR_SETTINGS['long_target_2_mult'], 4)
                 targets['stop_loss'] = round(current_price - atr * ATR_SETTINGS['long_stop_loss_mult'], 4)
+            elif current_price < 1.0:
+                targets['target_1'] = round(current_price + atr * ATR_SETTINGS['long_target_1_mult'], 3)
+                targets['target_2'] = round(current_price + atr * ATR_SETTINGS['long_target_2_mult'], 3)
+                targets['stop_loss'] = round(current_price - atr * ATR_SETTINGS['long_stop_loss_mult'], 3)
             else:
                 targets['target_1'] = round(current_price + atr * ATR_SETTINGS['long_target_1_mult'], 2)
                 targets['target_2'] = round(current_price + atr * ATR_SETTINGS['long_target_2_mult'], 2)
                 targets['stop_loss'] = round(current_price - atr * ATR_SETTINGS['long_stop_loss_mult'], 2)
         else:
-            if current_price < 0.01:
+            if current_price < 0.0001:
+                targets['target_1'] = round(current_price - atr * ATR_SETTINGS['short_target_1_mult'], 8)
+                targets['target_2'] = round(current_price - atr * ATR_SETTINGS['short_target_2_mult'], 8)
+                targets['stop_loss'] = round(current_price + atr * ATR_SETTINGS['short_stop_loss_mult'], 8)
+            elif current_price < 0.001:
                 targets['target_1'] = round(current_price - atr * ATR_SETTINGS['short_target_1_mult'], 6)
                 targets['target_2'] = round(current_price - atr * ATR_SETTINGS['short_target_2_mult'], 6)
                 targets['stop_loss'] = round(current_price + atr * ATR_SETTINGS['short_stop_loss_mult'], 6)
-            elif current_price < 1.0:
+            elif current_price < 0.01:
+                targets['target_1'] = round(current_price - atr * ATR_SETTINGS['short_target_1_mult'], 5)
+                targets['target_2'] = round(current_price - atr * ATR_SETTINGS['short_target_2_mult'], 5)
+                targets['stop_loss'] = round(current_price + atr * ATR_SETTINGS['short_stop_loss_mult'], 5)
+            elif current_price < 0.1:
                 targets['target_1'] = round(current_price - atr * ATR_SETTINGS['short_target_1_mult'], 4)
                 targets['target_2'] = round(current_price - atr * ATR_SETTINGS['short_target_2_mult'], 4)
                 targets['stop_loss'] = round(current_price + atr * ATR_SETTINGS['short_stop_loss_mult'], 4)
+            elif current_price < 1.0:
+                targets['target_1'] = round(current_price - atr * ATR_SETTINGS['short_target_1_mult'], 3)
+                targets['target_2'] = round(current_price - atr * ATR_SETTINGS['short_target_2_mult'], 3)
+                targets['stop_loss'] = round(current_price + atr * ATR_SETTINGS['short_stop_loss_mult'], 3)
             else:
                 targets['target_1'] = round(current_price - atr * ATR_SETTINGS['short_target_1_mult'], 2)
                 targets['target_2'] = round(current_price - atr * ATR_SETTINGS['short_target_2_mult'], 2)
@@ -1726,6 +1930,7 @@ class MultiExchangeScannerBot:
         self.imbalance = ImbalanceAnalyzer(IMBALANCE_SETTINGS) if FEATURES['advanced']['imbalance'] else None
         self.liquidity = LiquidityAnalyzer(LIQUIDITY_SETTINGS) if FEATURES['advanced']['liquidity'] else None
         
+        # Инициализация дополнительных анализаторов
         if FEATURES['advanced']['fibonacci']:
             from config import FIBONACCI_SETTINGS
             self.fibonacci = FibonacciAnalyzer(FIBONACCI_SETTINGS)
@@ -1738,19 +1943,23 @@ class MultiExchangeScannerBot:
             self.analyzer.set_volume_profile(self.volume_profile)
             logger.info("✅ Volume Profile анализатор инициализирован")
         
+        # Инициализация анализатора накопления
         if FEATURES['advanced']['accumulation']:
             from config import ACCUMULATION_SETTINGS
             self.accumulation = AccumulationAnalyzer(ACCUMULATION_SETTINGS)
             self.analyzer.set_accumulation(self.accumulation)
             logger.info("✅ Анализатор накопления инициализирован")
         
+        # Инициализация бирж
         if FEATURES['exchanges'].get('bingx', {}).get('enabled', False):
             self.fetchers['BingX'] = BingxFetcher()
         
+        # Инициализация статистики
         if STATS_SETTINGS['enabled'] and STATS_SETTINGS['stats_chat_id']:
             self.stats = SignalStatistics(self.telegram_bot, STATS_SETTINGS['stats_chat_id'])
             logger.info("✅ Система статистики инициализирована")
             
+            # Запускаем фоновые задачи
             asyncio.create_task(self.stats_updater_loop())
             asyncio.create_task(self.daily_report_loop())
     
@@ -1772,6 +1981,7 @@ class MultiExchangeScannerBot:
             return f"{num:.0f}"
     
     def format_message(self, signal: Dict, contract_info: Dict = None, pump_percent: float = None) -> Tuple[str, InlineKeyboardMarkup]:
+        # Определяем эмодзи и тип сигнала
         if signal.get('signal_type') in ['PUMP', 'DUMP'] or pump_percent:
             main_emoji = '🚀' if signal.get('signal_type') == 'PUMP' else '📉'
             coin = self.extract_coin(signal['symbol'])
@@ -1795,15 +2005,18 @@ class MultiExchangeScannerBot:
         
         line1 = f"{main_emoji} <code>{coin}</code>{pump_text} {signal['signal_power']}"
         
+        # Параметры контракта
         if contract_info:
             max_lev = contract_info.get('max_leverage')
-            if max_lev is None:
+            if max_lev is None or max_lev > 200:
                 max_lev = 100
+            
             min_amt = contract_info.get('min_amount')
-            if min_amt is None:
+            if min_amt is None or min_amt > 1000:
                 min_amt = 5.0
+            
             max_amt = contract_info.get('max_amount')
-            if max_amt is None:
+            if max_amt is None or max_amt > 10_000_000:
                 max_amt = 2_000_000
             
             line2 = f"📌 {max_lev}x / {min_amt:.0f}$ / {self.format_compact(max_amt)}"
@@ -1847,11 +2060,32 @@ class MultiExchangeScannerBot:
         line5 = f"📊 Направление: {signal['direction']}"
         line6 = f"🕓 Таймфрейм: {TIMEFRAMES.get('current', '15m')}"
         
-        if signal['price'] < 0.001:
-            price_formatted = f"{signal['price']:.8f}".rstrip('0').rstrip('.')
+        # Форматирование цены с правильной точностью
+        if signal['price'] < 0.00001:
+            price_formatted = f"{signal['price']:.8f}"
+        elif signal['price'] < 0.0001:
+            price_formatted = f"{signal['price']:.7f}"
+        elif signal['price'] < 0.001:
+            price_formatted = f"{signal['price']:.6f}"
+        elif signal['price'] < 0.01:
+            price_formatted = f"{signal['price']:.5f}"
+        elif signal['price'] < 0.1:
+            price_formatted = f"{signal['price']:.4f}"
+        elif signal['price'] < 1:
+            price_formatted = f"{signal['price']:.3f}"
         else:
             price_formatted = f"{signal['price']:.2f}"
+        
+        price_formatted = price_formatted.rstrip('0').rstrip('.') if '.' in price_formatted else price_formatted
         line7 = f"💰 Цена текущая: {price_formatted}"
+        
+        # Потенциал для сигналов накопления
+        line_potential = ""
+        if signal.get('signal_type') == 'accumulation' and signal.get('accumulation', {}).get('potential'):
+            potential = signal['accumulation']['potential']
+            if potential['has_potential']:
+                direction_emoji = "📈" if potential['target_pct'] > 0 else "📉"
+                line_potential = f"{direction_emoji} *Потенциал:* {potential['target_pct']:+.2f}% до {potential['target_level']}"
         
         line8 = ""
         if pump_percent and signal.get('pump_dump') and len(signal['pump_dump']) > 0:
@@ -1860,11 +2094,31 @@ class MultiExchangeScannerBot:
             if start_price < 0.001:
                 start_formatted = f"{start_price:.8f}".rstrip('0').rstrip('.')
             else:
-                start_formatted = f"{start_price:.2f}"
+                start_formatted = f"{start_price:.4f}"
             line8 = f"📈 Рост: {start_formatted} → {price_formatted}"
         
         if signal.get('target_1') and signal.get('target_2') and signal.get('stop_loss'):
-            line9 = f"🎯 Цели: {signal['target_1']} | {signal['target_2']} | SL {signal['stop_loss']}"
+            # Форматируем цели с правильной точностью
+            def format_target(price):
+                if price < 0.00001:
+                    return f"{price:.8f}".rstrip('0').rstrip('.')
+                elif price < 0.0001:
+                    return f"{price:.7f}".rstrip('0').rstrip('.')
+                elif price < 0.001:
+                    return f"{price:.6f}".rstrip('0').rstrip('.')
+                elif price < 0.01:
+                    return f"{price:.5f}".rstrip('0').rstrip('.')
+                elif price < 0.1:
+                    return f"{price:.4f}".rstrip('0').rstrip('.')
+                elif price < 1:
+                    return f"{price:.3f}".rstrip('0').rstrip('.')
+                else:
+                    return f"{price:.2f}"
+            
+            t1 = format_target(signal['target_1'])
+            t2 = format_target(signal['target_2'])
+            sl = format_target(signal['stop_loss'])
+            line9 = f"🎯 Цели: {t1} | {t2} | SL {sl}"
         else:
             line9 = "🎯 Цели: N/A | N/A | SL N/A"
         
@@ -1886,19 +2140,28 @@ class MultiExchangeScannerBot:
             clean_reason = clean_reason.replace("🔴 ", "")
             clean_reason = clean_reason.replace("⚪️ ", "")
             clean_reason = clean_reason.replace("⚪ ", "")
+            clean_reason = clean_reason.replace("📦 ", "")  # Для накопления
             clean_reason = clean_reason.strip()
             clean_reasons.append(clean_reason)
         
         reasons_lines = [f"     {r}" for r in clean_reasons]
         
+        # Собираем строки в правильном порядке
         lines = [line1, line2, line3, line4, line5, line6, line7]
+        
+        # Добавляем потенциал сразу после текущей цены
+        if line_potential:
+            lines.append(line_potential)
+        
         if line8:
             lines.append(line8)
+        
         lines.extend([line9, line10, line11])
         lines.extend(reasons_lines)
         
         message = "\n".join(lines)
         
+        # Кнопки
         keyboard = []
         row1 = []
         if DISPLAY_SETTINGS['buttons']['copy']:
@@ -2231,6 +2494,9 @@ class MultiExchangeScannerBot:
                     acc = signal['accumulation']
                     for sig in acc.get('signals', [])[:3]:
                         lines.append(f"└ {sig}")
+                    if acc.get('potential', {}).get('has_potential'):
+                        pot = acc['potential']
+                        lines.append(f"└ Потенциал: {pot['target_pct']:+.2f}% до {pot['target_level']}")
             
             detailed = "\n".join(lines)
             
