@@ -2131,104 +2131,104 @@ class FastPumpScanner:
             return None
     
     async def scan_all_pairs(self) -> List[Dict]:
-    """
-    Оптимизированное сканирование всех пар с гибридным подходом
-    """
-    logger.info("🚀 ЗАПУСК БЫСТРОГО ПАМП-СКАНЕРА (ГИБРИДНЫЙ)")
-    
-    try:
-        all_pairs = await self.fetcher.fetch_all_pairs()
-        if not all_pairs:
-            return []
+        """
+        Оптимизированное сканирование всех пар с гибридным подходом
+        """
+        logger.info("🚀 ЗАПУСК БЫСТРОГО ПАМП-СКАНЕРА (ГИБРИДНЫЙ)")
         
-        # ✅ Загружаем настройки умных повторов
-        from config import SMART_REPEAT_SETTINGS
-        smart_repeat = SMART_REPEAT_SETTINGS
-        
-        # ✅ Словарь для отслеживания последних сигналов по монетам
-        last_signals = {}  # coin: {'time': datetime, 'change': float, 'direction': str}
-        
-        # Запускаем WebSocket мониторинг для быстрых сигналов
-        if self.websocket_available:
-            await self.start_websocket_monitoring(all_pairs)
-        
-        scan_pairs = all_pairs[:self.max_pairs]
-        random.shuffle(scan_pairs)
-        logger.info(f"📊 Памп-сканер: анализирую {len(scan_pairs)} пар (WebSocket: {self.websocket_available})")
-        
-        pump_signals = []
-        
-        # Разбиваем на батчи для параллельной обработки
-        batches = [scan_pairs[i:i+self.batch_size] for i in range(0, len(scan_pairs), self.batch_size)]
-        
-        for batch_num, batch in enumerate(batches):
-            logger.info(f"🔄 Обработка батча {batch_num + 1}/{len(batches)} ({len(batch)} пар)")
+        try:
+            all_pairs = await self.fetcher.fetch_all_pairs()
+            if not all_pairs:
+                return []
             
-            # Параллельная обработка батча
-            tasks = [self.scan_pair(pair) for pair in batch]
-            batch_results = await asyncio.gather(*tasks)
+            # ✅ Загружаем настройки умных повторов
+            from config import SMART_REPEAT_SETTINGS
+            smart_repeat = SMART_REPEAT_SETTINGS
             
-            # Собираем результаты с умной фильтрацией
-            for signal in batch_results:
-                if not signal:
-                    continue
+            # ✅ Словарь для отслеживания последних сигналов по монетам
+            last_signals = {}  # coin: {'time': datetime, 'change': float, 'direction': str}
+            
+            # Запускаем WebSocket мониторинг для быстрых сигналов
+            if self.websocket_available:
+                await self.start_websocket_monitoring(all_pairs)
+            
+            scan_pairs = all_pairs[:self.max_pairs]
+            random.shuffle(scan_pairs)
+            logger.info(f"📊 Памп-сканер: анализирую {len(scan_pairs)} пар (WebSocket: {self.websocket_available})")
+            
+            pump_signals = []
+            
+            # Разбиваем на батчи для параллельной обработки
+            batches = [scan_pairs[i:i+self.batch_size] for i in range(0, len(scan_pairs), self.batch_size)]
+            
+            for batch_num, batch in enumerate(batches):
+                logger.info(f"🔄 Обработка батча {batch_num + 1}/{len(batches)} ({len(batch)} пар)")
                 
-                coin = signal['symbol'].split('/')[0]
-                current_change = abs(signal['pump_dump'][0]['change_percent'])
-                current_direction = 'LONG' if signal['pump_dump'][0]['change_percent'] > 0 else 'SHORT'
+                # Параллельная обработка батча
+                tasks = [self.scan_pair(pair) for pair in batch]
+                batch_results = await asyncio.gather(*tasks)
                 
-                # ===== УМНАЯ ЛОГИКА ПОВТОРОВ =====
-                if smart_repeat['enabled'] and coin in last_signals:
-                    last = last_signals[coin]
-                    time_diff = (datetime.now() - last['time']).total_seconds() / 60  # в минутах
+                # Собираем результаты с умной фильтрацией
+                for signal in batch_results:
+                    if not signal:
+                        continue
                     
-                    # Базовая проверка cooldown
-                    if time_diff < smart_repeat['cooldown_minutes']:
-                        # Проверяем, разрешены ли повторы при усилении
-                        if smart_repeat['allow_stronger_moves']:
-                            # Вычисляем порог усиления
-                            required_strength = last['change'] * smart_repeat['strength_multiplier']
-                            
-                            # Проверяем, усилилось ли движение
-                            if current_change > required_strength:
-                                # Проверяем минимальное время до повтора
-                                if time_diff >= smart_repeat['min_time_for_repeat']:
-                                    logger.info(f"⚡ УСИЛЕНИЕ {coin}: {last['change']:.1f}% → {current_change:.1f}% (разрешен повтор)")
+                    coin = signal['symbol'].split('/')[0]
+                    current_change = abs(signal['pump_dump'][0]['change_percent'])
+                    current_direction = 'LONG' if signal['pump_dump'][0]['change_percent'] > 0 else 'SHORT'
+                    
+                    # ===== УМНАЯ ЛОГИКА ПОВТОРОВ =====
+                    if smart_repeat['enabled'] and coin in last_signals:
+                        last = last_signals[coin]
+                        time_diff = (datetime.now() - last['time']).total_seconds() / 60  # в минутах
+                        
+                        # Базовая проверка cooldown
+                        if time_diff < smart_repeat['cooldown_minutes']:
+                            # Проверяем, разрешены ли повторы при усилении
+                            if smart_repeat['allow_stronger_moves']:
+                                # Вычисляем порог усиления
+                                required_strength = last['change'] * smart_repeat['strength_multiplier']
+                                
+                                # Проверяем, усилилось ли движение
+                                if current_change > required_strength:
+                                    # Проверяем минимальное время до повтора
+                                    if time_diff >= smart_repeat['min_time_for_repeat']:
+                                        logger.info(f"⚡ УСИЛЕНИЕ {coin}: {last['change']:.1f}% → {current_change:.1f}% (разрешен повтор)")
+                                    else:
+                                        logger.info(f"⏳ {coin} усилился, но слишком рано ({time_diff:.0f} мин < {smart_repeat['min_time_for_repeat']} мин)")
+                                        continue
                                 else:
-                                    logger.info(f"⏳ {coin} усилился, но слишком рано ({time_diff:.0f} мин < {smart_repeat['min_time_for_repeat']} мин)")
+                                    logger.info(f"⏭️ {coin} повтор: нужно > {required_strength:.1f}%, есть {current_change:.1f}%")
                                     continue
                             else:
-                                logger.info(f"⏭️ {coin} повтор: нужно > {required_strength:.1f}%, есть {current_change:.1f}%")
+                                logger.info(f"⏭️ {coin} повтор: cooldown {time_diff:.0f} мин")
                                 continue
                         else:
-                            logger.info(f"⏭️ {coin} повтор: cooldown {time_diff:.0f} мин")
-                            continue
-                    else:
-                        logger.info(f"📌 {coin} повтор после {time_diff:.0f} мин (cooldown истек)")
+                            logger.info(f"📌 {coin} повтор после {time_diff:.0f} мин (cooldown истек)")
+                    
+                    # ✅ Сохраняем сигнал в историю
+                    last_signals[coin] = {
+                        'time': datetime.now(),
+                        'change': current_change,
+                        'direction': current_direction,
+                        'symbol': signal['symbol']
+                    }
+                    
+                    pump_signals.append(signal)
+                    logger.info(f"✅ Памп-сигнал (REST): {signal['symbol']} {signal['pump_dump'][0]['change_percent']:+.1f}%")
                 
-                # ✅ Сохраняем сигнал в историю
-                last_signals[coin] = {
-                    'time': datetime.now(),
-                    'change': current_change,
-                    'direction': current_direction,
-                    'symbol': signal['symbol']
-                }
-                
-                pump_signals.append(signal)
-                logger.info(f"✅ Памп-сигнал (REST): {signal['symbol']} {signal['pump_dump'][0]['change_percent']:+.1f}%")
+                # Пауза между батчами
+                if batch_num < len(batches) - 1:
+                    await asyncio.sleep(self.delay_between_batches)
             
-            # Пауза между батчами
-            if batch_num < len(batches) - 1:
-                await asyncio.sleep(self.delay_between_batches)
-        
-        # Сортируем по силе движения
-        pump_signals.sort(key=lambda x: abs(x['pump_dump'][0]['change_percent']), reverse=True)
-        logger.info(f"🎯 Памп-сканер: найдено {len(pump_signals)} сигналов (WebSocket активен)")
-        return pump_signals
-        
-    except Exception as e:
-        logger.error(f"❌ Ошибка памп-сканера: {e}")
-        return []
+            # Сортируем по силе движения
+            pump_signals.sort(key=lambda x: abs(x['pump_dump'][0]['change_percent']), reverse=True)
+            logger.info(f"🎯 Памп-сканер: найдено {len(pump_signals)} сигналов (WebSocket активен)")
+            return pump_signals
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка памп-сканера: {e}")
+            return []
     
     def _get_power_text(self, strength: float) -> str:
         """Определение текста силы сигнала"""
