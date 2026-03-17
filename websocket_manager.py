@@ -69,7 +69,7 @@ class BingXWebSocketManager:
                     # Основной цикл получения сообщений
                     while self.running:
                         try:
-                            message = await asyncio.wait_for(ws.recv(), timeout=30)
+                            message = await asyncio.wait_for(ws.recv(), timeout=60)
                             await self._handle_message(message, callback, stream_name)
                         except asyncio.TimeoutError:
                             # Отправляем ping для поддержания соединения
@@ -145,14 +145,14 @@ class BingXWebSocketManager:
                 self.price_history[symbol].pop(0)
             
             # Проверяем на быстрое движение
-            instant_signal = self._check_instant_movement(symbol)
+            instant_signal = await self._check_instant_movement(symbol)
             if instant_signal:
                 await callback('instant', symbol, current_price, instant_signal)
             
         except Exception as e:
             logger.error(f"Ошибка обработки тикера: {e}")
     
-    def _check_instant_movement(self, symbol: str) -> Optional[Dict]:
+    async def _check_instant_movement(self, symbol: str) -> Optional[Dict]:
         """
         Проверка на мгновенное движение (1-2 секунды)
         """
@@ -171,13 +171,37 @@ class BingXWebSocketManager:
         if time_diff < 5:
             change_percent = (newest['price'] - oldest['price']) / oldest['price'] * 100
             
-            # Если движение больше порога (например 2%)
-            if abs(change_percent) >= 2.0:
+            # ✅ Берем пороги из настроек
+            from config import PUMP_SCAN_SETTINGS
+            
+            # Определяем, щиткоин или нет по объему
+            is_shitcoin = False
+            try:
+                # Если есть доступ к fetcher, можно проверить объем
+                if hasattr(self, 'fetcher'):
+                    ticker = await self.fetcher.fetch_ticker(symbol)
+                    volume = ticker.get('volume_24h', 1_000_000)
+                    shitcoin_threshold = PUMP_SCAN_SETTINGS.get('shitcoin_volume_threshold', 500_000)
+                    if volume < shitcoin_threshold:
+                        is_shitcoin = True
+            except:
+                pass
+            
+            # Выбираем порог в зависимости от типа монеты
+            if is_shitcoin:
+                threshold = PUMP_SCAN_SETTINGS.get('shitcoin_instant_threshold', 1.5)
+            else:
+                threshold = PUMP_SCAN_SETTINGS.get('instant_threshold', 2.0)
+            
+            # Если движение больше порога
+            if abs(change_percent) >= threshold:
                 return {
                     'change_percent': change_percent,
                     'time_window': round(time_diff, 1),
                     'start_price': oldest['price'],
-                    'end_price': newest['price']
+                    'end_price': newest['price'],
+                    'is_shitcoin': is_shitcoin,
+                    'threshold_used': threshold
                 }
         
         return None
