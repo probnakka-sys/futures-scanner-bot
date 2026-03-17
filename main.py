@@ -1599,10 +1599,10 @@ class MultiTimeframeAnalyzer:
         # ===== EMA =====
         if last['ema_9'] > last['ema_21'] and prev['ema_9'] <= prev['ema_21']:
             reasons.append("Бычье пересечение EMA (9/21)")
-            confidence += INDICATOR_WEIGHTS['ema_cross']
+            confidence += INDICATOR_WEIGHTS['ema_cross_current']
         elif last['ema_9'] < last['ema_21'] and prev['ema_9'] >= prev['ema_21']:
             reasons.append("Медвежье пересечение EMA (9/21)")
-            confidence += INDICATOR_WEIGHTS['ema_cross']
+            confidence += INDICATOR_WEIGHTS['ema_cross_current']
         
         # ===== ОБЪЕМ =====
         if last['volume_ratio'] > 1.5:
