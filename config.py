@@ -45,7 +45,7 @@ PUMP_SCAN_SETTINGS = {
     
     # Новые настройки для WebSocket
     'websocket_top_pairs': 200,                   # Сколько пар в WebSocket
-    'shitcoin_volume_threshold': 500_000,         # Объем < 1M$ = щиткоин
+    'shitcoin_volume_threshold': 1500_000,        # Объем < 0.5M$ = щиткоин
     'websocket_reconnect_delay': 5,               # Задержка перед переподключением
 }
 
@@ -56,7 +56,7 @@ SMART_REPEAT_SETTINGS = {
     'cooldown_minutes': 15,                       # Базовый cooldown
     'allow_stronger_moves': True,                 # Разрешать повторы при усилении
     'strength_multiplier': 1.3,                   # 1.5 = усиление на 50%
-    'min_time_for_repeat': 5,                    # Минимум минут до повтора
+    'min_time_for_repeat': 5,                     # Минимум минут до повтора
 }
 
 # ============== НАСТРОЙКИ ATR (True Range) ==============
