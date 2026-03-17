@@ -1431,44 +1431,129 @@ class MultiTimeframeAnalyzer:
         """Анализ согласованности трендов на разных таймфреймах"""
         alignment = {
             'trend_alignment': 0,
+            'current_trend': None,
             'hourly_trend': None,
+            'four_hourly_trend': None,
             'daily_trend': None,
             'weekly_trend': None,
+            'monthly_trend': None,
             'signals': []
         }
         
-        if 'hourly' in dataframes and not dataframes['hourly'].empty:
-            df_h = dataframes['hourly'].iloc[-1]
-            alignment['hourly_trend'] = 'ВОСХОДЯЩИЙ 📈' if df_h['ema_9'] > df_h['ema_21'] else 'НИСХОДЯЩИЙ 📉'
+        # Словарь для перевода
+        tf_names = {
+            'current': '15-минутный',
+            'hourly': 'часовой',
+            'four_hourly': '4-часовой',
+            'daily': 'дневной',
+            'weekly': 'недельный',
+            'monthly': 'месячный'
+        }
         
-        if 'daily' in dataframes and not dataframes['daily'].empty:
-            df_d = dataframes['daily'].iloc[-1]
-            if df_d['close'] > df_d['ema_200']:
-                alignment['daily_trend'] = 'ВОСХОДЯЩИЙ 📈'
-                if df_d['ema_9'] > df_d['ema_21']:
-                    alignment['signals'].append("Дневной тренд восходящий (выше EMA 200)")
-            else:
-                alignment['daily_trend'] = 'НИСХОДЯЩИЙ 📉'
-                if df_d['ema_9'] < df_d['ema_21']:
-                    alignment['signals'].append("Дневной тренд нисходящий (ниже EMA 200)")
+        # Анализируем каждый таймфрейм
+        for tf_name in ['current', 'hourly', 'four_hourly', 'daily', 'weekly', 'monthly']:
+            if tf_name not in dataframes or dataframes[tf_name] is None or dataframes[tf_name].empty:
+                continue
+            
+            df = dataframes[tf_name]
+            last = df.iloc[-1]
+            
+            # Определяем тренд по EMA 9 и 21
+            if pd.notna(last.get('ema_9')) and pd.notna(last.get('ema_21')):
+                trend = 'ВОСХОДЯЩИЙ' if last['ema_9'] > last['ema_21'] else 'НИСХОДЯЩИЙ'
+                alignment[f'{tf_name}_trend'] = trend
+                
+                # Добавляем сигнал для сильных трендов (БЕЗ ЭМОДЗИ)
+                if tf_name in ['weekly', 'monthly'] and last['ema_9'] > last['ema_200']:
+                    alignment['signals'].append(f"{tf_names[tf_name].upper()} ТРЕНД ВОСХОДЯЩИЙ (выше EMA 200)")
+                elif tf_name in ['weekly', 'monthly'] and last['ema_9'] < last['ema_200']:
+                    alignment['signals'].append(f"{tf_names[tf_name].upper()} ТРЕНД НИСХОДЯЩИЙ (ниже EMA 200)")
         
-        if 'weekly' in dataframes and not dataframes['weekly'].empty:
-            df_w = dataframes['weekly'].iloc[-1]
-            if df_w['close'] > df_w['ema_200']:
-                alignment['weekly_trend'] = 'ВОСХОДЯЩИЙ 📈'
-                alignment['signals'].append("НЕДЕЛЬНЫЙ ТРЕНД ВОСХОДЯЩИЙ (сильный сигнал)")
-            else:
-                alignment['weekly_trend'] = 'НИСХОДЯЩИЙ 📉'
-                alignment['signals'].append("НЕДЕЛЬНЫЙ ТРЕНД НИСХОДЯЩИЙ (сильный сигнал)")
+        # Считаем согласованность
+        trends = []
+        for tf_name in ['current', 'hourly', 'four_hourly', 'daily', 'weekly', 'monthly']:
+            if alignment.get(f'{tf_name}_trend'):
+                trends.append(alignment[f'{tf_name}_trend'])
         
-        trends = [t for t in [alignment['hourly_trend'], alignment['daily_trend'], alignment['weekly_trend']] if t]
         if trends:
-            bullish = trends.count('ВОСХОДЯЩИЙ 📈')
-            bearish = trends.count('НИСХОДЯЩИЙ 📉')
+            bullish = trends.count('ВОСХОДЯЩИЙ')
+            bearish = trends.count('НИСХОДЯЩИЙ')
             alignment['trend_alignment'] = (max(bullish, bearish) / len(trends)) * 100
+            
+            # Добавляем сигнал о согласованности (БЕЗ ЭМОДЗИ)
+            if alignment['trend_alignment'] >= 80 and len(trends) >= 3:
+                direction = "бычий" if bullish > bearish else "медвежий"
+                alignment['signals'].append(f"Тренды согласованы: {alignment['trend_alignment']:.0f}% ({direction}, {len(trends)} ТФ)")
         
         return alignment
     
+    def analyze_fvg_multi_timeframe(self, dataframes: Dict[str, pd.DataFrame], current_price: float) -> Dict:
+        """
+        Анализ FVG на всех таймфреймах с весами
+        """
+        result = {'has_fvg': False, 'signals': [], 'strength': 0}
+        
+        # Приоритет таймфреймов от старшего к младшему
+        tf_priority = ['monthly', 'weekly', 'daily', 'four_hourly', 'hourly', 'current']
+        
+        # Веса для каждого таймфрейма
+        tf_weights = {
+            'monthly': 4.0,
+            'weekly': 3.5,
+            'daily': 2.5,
+            'four_hourly': 2.0,
+            'hourly': 1.5,
+            'current': 1.0
+        }
+        
+        # Словарь для перевода названий
+        tf_names_ru = {
+            'monthly': 'месячный',
+            'weekly': 'недельный',
+            'daily': 'дневной',
+            'four_hourly': '4-часовой',
+            'hourly': 'часовой',
+            'current': '15-минутный'
+        }
+        
+        for tf_name in tf_priority:
+            if tf_name not in dataframes or dataframes[tf_name] is None:
+                continue
+            
+            df = dataframes[tf_name]
+            
+            # Создаем временный SMC анализатор для этого ТФ
+            smc_temp = SmartMoneyAnalyzer(SMC_SETTINGS)
+            fvg_list = smc_temp.find_fair_value_gaps(df)
+            
+            for fvg in fvg_list:
+                # Проверяем, находится ли текущая цена в зоне FVG
+                if fvg['price_min'] <= current_price <= fvg['price_max']:
+                    result['has_fvg'] = True
+                    
+                    # Добавляем сигнал с переводом на русский (БЕЗ ЭМОДЗИ)
+                    tf_ru = tf_names_ru.get(tf_name, tf_name)
+                    direction = "бычий" if fvg['type'] == 'bullish' else "медвежий"
+                    
+                    # Форматируем размер FVG
+                    size_text = f"{fvg.get('size', 0):.2f}%" if 'size' in fvg else ""
+                    
+                    signal_text = f"FVG на {tf_ru}: {direction}"
+                    if size_text:
+                        signal_text += f" ({size_text})"
+                    
+                    result['signals'].append(signal_text)
+                    
+                    # Увеличиваем силу с весом таймфрейма
+                    result['strength'] += fvg['strength'] * tf_weights.get(tf_name, 1.0)
+                    
+                    logger.info(f"    ✅ Найден FVG на {tf_name}: {direction}")
+        
+        # Ограничиваем силу 100%
+        if result['strength'] > 100:
+            result['strength'] = 100
+        
+        return result
     def generate_signal(self, dataframes: Dict[str, pd.DataFrame], metadata: Dict, symbol: str, exchange: str) -> Optional[Dict]:
         """
         Генерация торгового сигнала на основе всех индикаторов
@@ -1533,16 +1618,26 @@ class MultiTimeframeAnalyzer:
                 reasons.append(f"Цена ниже VWAP ({last['vwap']:.2f})")
                 confidence += 10
         
-        # ===== СИГНАЛЫ ОТ СТАРШИХ ТАЙМФРЕЙМОВ =====
+        # ===== ТРЕНДЫ (ОБНОВЛЕННАЯ ВЕРСИЯ) =====
         for signal in alignment['signals']:
-            reasons.append(f"{signal}")
-            if "НЕДЕЛЬНЫЙ" in signal:
+            reasons.append(signal)  # БЕЗ эмодзи
+            if "НЕДЕЛЬНЫЙ" in signal or "МЕСЯЧНЫЙ" in signal:
                 confidence += INDICATOR_WEIGHTS['weekly_trend']
             elif "Дневной" in signal:
                 confidence += INDICATOR_WEIGHTS['daily_trend']
-        
+            else:
+                confidence += 5
+
         # ===== СОГЛАСОВАННОСТЬ ТРЕНДОВ =====
-        if alignment['trend_alignment'] > 70:
+        if alignment['trend_alignment'] > 70 and len([t for t in [
+            alignment.get('current_trend'),
+            alignment.get('hourly_trend'),
+            alignment.get('four_hourly_trend'),
+            alignment.get('daily_trend'),
+            alignment.get('weekly_trend'),
+            alignment.get('monthly_trend')
+        ] if t]) >= 3:
+            
             reasons.append(f"Тренды согласованы ({alignment['trend_alignment']:.0f}%)")
             confidence += INDICATOR_WEIGHTS['trend_alignment']
         
@@ -1590,6 +1685,16 @@ class MultiTimeframeAnalyzer:
                     direction = accumulation_analysis['direction'] + ' 📈 (накопление)' if accumulation_analysis['direction'] == 'LONG' else 'SHORT 📉 (накопление)'
                 logger.info(f"  ✅ {symbol} - Накопление: найдено {len(accumulation_analysis['signals'])} сигналов")
         
+        # ===== FVG МУЛЬТИТАЙМФРЕЙМОВЫЙ АНАЛИЗ =====
+        if FEATURES['advanced']['smart_money']:
+            logger.info(f"  🔍 {symbol} - Анализ FVG на всех таймфреймах")
+            fvg_analysis = self.analyze_fvg_multi_timeframe(dataframes, last['close'])
+            if fvg_analysis['has_fvg']:
+                for signal in fvg_analysis['signals']:
+                    reasons.append(signal)  # Просто сигнал, без эмодзи
+                confidence += fvg_analysis['strength'] / 5
+                logger.info(f"  ✅ {symbol} - Найдено FVG: {len(fvg_analysis['signals'])} на разных ТФ")
+
         # ===== ФАНДИНГ =====
         funding = metadata.get('funding_rate')
         if funding is not None and funding != 0:
@@ -2364,11 +2469,13 @@ class FastPumpScanner:
         
         line10 = ""
         line11 = "💡 Причины:"
-        
+
         # Очистка причин от эмодзи
         clean_reasons = []
-        for reason in signal['reasons'][:3]:
+        for reason in signal['reasons'][:6]:  # до 6 причин
             clean_reason = reason
+            
+            # Убираем все эмодзи
             clean_reason = clean_reason.replace("📊 ", "")
             clean_reason = clean_reason.replace("✅ ", "")
             clean_reason = clean_reason.replace("🔄 ", "")
@@ -2381,12 +2488,32 @@ class FastPumpScanner:
             clean_reason = clean_reason.replace("🔴 ", "")
             clean_reason = clean_reason.replace("⚪️ ", "")
             clean_reason = clean_reason.replace("⚪ ", "")
+            clean_reason = clean_reason.replace("📦 ", "")
+            clean_reason = clean_reason.replace("📐 ", "")
+            clean_reason = clean_reason.replace("💰 ", "")
+            clean_reason = clean_reason.replace("🎯 ", "")
+            clean_reason = clean_reason.replace("📌 ", "")
+            clean_reason = clean_reason.replace("💡 ", "")
+            
             clean_reason = clean_reason.strip()
             clean_reasons.append(clean_reason)
-        
-        reasons_lines = [f"     {r}" for r in clean_reasons]
-        
-        lines = [line1, line2, line3, line4, line5, line6, line7, line8, line9, line10, line11] + reasons_lines
+
+        # Формируем строки с 3 пробелами перед каждой причиной
+        reasons_lines = [f"   {r}" for r in clean_reasons]  # 3 пробела
+
+        # Собираем сообщение
+        lines = [line1, line2, line3, line4, line5, line6, line7]
+
+        # Добавляем потенциал если есть
+        if line_potential:
+            lines.append(line_potential)
+
+        if line8:
+            lines.append(line8)
+
+        lines.extend([line9, line10, line11])
+        lines.extend(reasons_lines)  # Добавляем причины с 3 пробелами
+
         message = "\n".join(lines)
         
         # Кнопки
@@ -2473,7 +2600,91 @@ class MultiExchangeScannerBot:
         else:
             return f"{num:.0f}"
     
-    def format_message(self, signal: Dict, contract_info: Dict = None, pump_percent: float = None) -> Tuple[str, InlineKeyboardMarkup]:
+    # ============== НОВЫЕ ФУНКЦИИ ДЛЯ ПОНЯТНЫХ ОПИСАНИЙ ==============
+    
+    def get_volume_description(self, volume_ratio: float) -> str:
+        """
+        Преобразует числовое значение объема в понятное текстовое описание
+        """
+        if volume_ratio >= 5.0:
+            return f"🔥 АНОМАЛЬНЫЙ объем (x{volume_ratio:.1f})"
+        elif volume_ratio >= 3.0:
+            return f"⚡ ОЧЕНЬ СИЛЬНЫЙ объем (x{volume_ratio:.1f})"
+        elif volume_ratio >= 2.0:
+            return f"✅ СИЛЬНЫЙ объем (x{volume_ratio:.1f})"
+        elif volume_ratio >= 1.5:
+            return f"📊 ПОВЫШЕННЫЙ объем (x{volume_ratio:.1f})"
+        else:
+            return f"📉 обычный объем (x{volume_ratio:.1f})"
+    
+    def get_vwap_description(self, price: float, vwap: float) -> str:
+        """
+        Преобразует положение цены относительно VWAP в понятное описание
+        """
+        if vwap is None or vwap == 0:
+            return ""
+        
+        diff_percent = (price - vwap) / vwap * 100
+        
+        if price > vwap:
+            if diff_percent > 5:
+                return f"🔥 Цена значительно ВЫШЕ справедливой (VWAP +{diff_percent:.1f}%)"
+            elif diff_percent > 2:
+                return f"⚡ Цена ВЫШЕ справедливой (VWAP +{diff_percent:.1f}%)"
+            else:
+                return f"✅ Цена чуть ВЫШЕ справедливой (VWAP +{diff_percent:.1f}%)"
+        else:
+            if diff_percent < -5:
+                return f"🔥 Цена значительно НИЖЕ справедливой (VWAP {diff_percent:.1f}%)"
+            elif diff_percent < -2:
+                return f"⚡ Цена НИЖЕ справедливой (VWAP {diff_percent:.1f}%)"
+            else:
+                return f"📉 Цена чуть НИЖЕ справедливой (VWAP {diff_percent:.1f}%)"
+    
+    def get_rsi_description(self, rsi: float) -> str:
+        """
+        Описание состояния RSI
+        """
+        if rsi >= 80:
+            return f"🔥 RSI перекуплен ({rsi:.1f}) - сильный сигнал на продажу"
+        elif rsi >= 70:
+            return f"⚡ RSI перекуплен ({rsi:.1f}) - возможна коррекция"
+        elif rsi <= 20:
+            return f"🔥 RSI перепродан ({rsi:.1f}) - сильный сигнал на покупку"
+        elif rsi <= 30:
+            return f"⚡ RSI перепродан ({rsi:.1f}) - возможен отскок"
+        elif 40 <= rsi <= 60:
+            return f"📊 RSI нейтральный ({rsi:.1f})"
+        else:
+            return f"📉 RSI {rsi:.1f}"
+    
+    def get_funding_description(self, funding_rate: float) -> str:
+        """
+        Описание ставки фондирования
+        """
+        if funding_rate is None:
+            return ""
+        
+        funding_pct = funding_rate * 100
+        
+        if funding_pct > 0.05:
+            return f"🔥 Очень высокий позитивный фандинг ({funding_pct:.3f}%) - шортисты переплачивают"
+        elif funding_pct > 0.01:
+            return f"⚡ Высокий позитивный фандинг ({funding_pct:.3f}%) - рынок перегрет"
+        elif funding_pct > 0.001:
+            return f"✅ Позитивный фандинг ({funding_pct:.3f}%)"
+        elif funding_pct < -0.05:
+            return f"🔥 Очень высокий негативный фандинг ({funding_pct:.3f}%) - лонгисты переплачивают"
+        elif funding_pct < -0.01:
+            return f"⚡ Высокий негативный фандинг ({funding_pct:.3f}%) - рынок перегрет"
+        elif funding_pct < -0.001:
+            return f"📉 Негативный фандинг ({funding_pct:.3f}%)"
+        else:
+            return f"⚪ Фандинг нейтральный ({funding_pct:.3f}%)"
+    
+    # ============== ОСНОВНОЙ МЕТОД ФОРМАТИРОВАНИЯ ==============
+    
+    def format_message(self, signal: Dict, contract_info: Dict = None, pump_percent: float = None, df: pd.DataFrame = None) -> Tuple[str, InlineKeyboardMarkup]:
         # Определяем эмодзи и тип сигнала
         if signal.get('signal_type') in ['PUMP', 'DUMP'] or pump_percent:
             main_emoji = '🚀' if signal.get('signal_type') == 'PUMP' else '📉'
@@ -2514,6 +2725,7 @@ class MultiExchangeScannerBot:
             
             line2 = f"📌 {max_lev}x / {min_amt:.0f}$ / {self.format_compact(max_amt)}"
             
+            # Объем 24ч с понятным описанием
             if signal.get('volume_24h') is not None and signal['volume_24h'] > 0:
                 volume = signal['volume_24h']
                 if volume > 1_000_000:
@@ -2523,6 +2735,7 @@ class MultiExchangeScannerBot:
                 else:
                     line2 += f" / {volume:.0f}"
             
+            # Фандинг
             funding_rate = signal.get('funding_rate')
             if funding_rate is not None:
                 funding = funding_rate * 100
@@ -2635,8 +2848,10 @@ class MultiExchangeScannerBot:
         line10 = ""
         line11 = "💡 Причины:"
         
+        # ===== ОЧИЩАЕМ И ФОРМИРУЕМ ПРИЧИНЫ =====
         clean_reasons = []
-        for reason in signal['reasons'][:4]:
+        
+        for reason in signal['reasons'][:6]:  # Увеличили до 6 причин
             clean_reason = reason
             clean_reason = clean_reason.replace("📊 ", "")
             clean_reason = clean_reason.replace("✅ ", "")
@@ -2651,6 +2866,7 @@ class MultiExchangeScannerBot:
             clean_reason = clean_reason.replace("⚪️ ", "")
             clean_reason = clean_reason.replace("⚪ ", "")
             clean_reason = clean_reason.replace("📦 ", "")
+            clean_reason = clean_reason.replace("📐 ", "")
             clean_reason = clean_reason.strip()
             clean_reasons.append(clean_reason)
         
@@ -2690,6 +2906,8 @@ class MultiExchangeScannerBot:
             keyboard.append(row2)
         
         return message, InlineKeyboardMarkup(keyboard) if keyboard else None
+    
+    # ... остальные методы (scan_exchange, scan_all, fast_pump_scan, send_signal и т.д.) остаются без изменений ...
     
     async def scan_exchange(self, name: str, fetcher: BaseExchangeFetcher) -> List[Dict]:
         logger.info(f"🔍 Сканирую {name}...")
