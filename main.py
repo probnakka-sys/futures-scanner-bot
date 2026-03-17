@@ -1866,12 +1866,12 @@ class FastPumpScanner:
             except:
                 pass
             
-            # Выбираем порог срабатывания
+            # ✅ Берем пороги из настроек (не из self)
             if is_shitcoin:
-                threshold = self.shitcoin_instant_threshold
+                threshold = self.settings.get('shitcoin_instant_threshold', 1.5)
                 coin_type = "Щиткоин"
             else:
-                threshold = self.instant_threshold
+                threshold = self.settings.get('instant_threshold', 2.0)
                 coin_type = "Мейджор"
             
             # Проверяем по порогу
