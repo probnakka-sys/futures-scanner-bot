@@ -2504,7 +2504,29 @@ class FastPumpScanner:
         # Собираем сообщение
         lines = [line1, line2, line3, line4, line5, line6, line7]
 
-        # Добавляем потенциал если есть
+        # Добавляем потенциал если есть (для сигналов накопления)
+        line_potential = ""
+        if signal.get('signal_type') == 'accumulation' and signal.get('accumulation', {}).get('potential'):
+            potential = signal['accumulation']['potential']
+            if potential['has_potential']:
+                direction_emoji = "📈" if potential['target_pct'] > 0 else "📉"
+                if potential['target_price'] < 0.001:
+                    target_price_str = f"{potential['target_price']:.6f}".rstrip('0').rstrip('.')
+                elif potential['target_price'] < 1:
+                    target_price_str = f"{potential['target_price']:.4f}".rstrip('0').rstrip('.')
+                else:
+                    target_price_str = f"{potential['target_price']:.2f}"
+                
+                tf_ru = {
+                    'monthly': 'месячном',
+                    'weekly': 'недельном',
+                    'daily': 'дневном',
+                    'hourly': 'часовом',
+                    'current': 'текущем'
+                }.get(potential['timeframe'], potential['timeframe'])
+                
+                line_potential = f"{direction_emoji} Потенциал: {potential['target_pct']:+.2f}% до {target_price_str} ({potential['target_level']} на {tf_ru})"
+                
         if line_potential:
             lines.append(line_potential)
 
