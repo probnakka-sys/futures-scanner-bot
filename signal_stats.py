@@ -10,6 +10,7 @@ from collections import defaultdict
 import logging
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 STATS_SETTINGS = {
     'enabled': True,
@@ -48,6 +49,7 @@ class SignalStatistics:
         try:
             with open(self.db_file, 'w', encoding='utf-8') as f:
                 json.dump(self.db, f, indent=2, ensure_ascii=False)
+            logger.info(f"💾 База данных сохранена ({len(self.db['signals'])} сигналов)")
         except Exception as e:
             logger.error(f"Ошибка сохранения базы: {e}")
     
@@ -55,8 +57,9 @@ class SignalStatistics:
         logger.info(f"🔥🔥🔥 add_signal ВЫЗВАН для {signal['symbol']} тип={signal_type}")
         logger.info(f"   STATS_CHAT_ID={self.stats_chat_id}")
         logger.info(f"   сигнал: {signal.get('direction')}, цена={signal.get('price')}")
-        
+
         signal_id = f"{signal['symbol']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        logger.info(f"   signal_id={signal_id}")
         
         self.cleanup_old_signals()
         
@@ -86,6 +89,7 @@ class SignalStatistics:
         self.db['statistics']['by_type'][signal_type] += 1
         
         self.save_database()
+        logger.info(f"✅ Сигнал {signal_id} сохранен в БД")
         return signal_id
     
     def update_signal(self, signal_id: str, current_price: float):
