@@ -9,14 +9,14 @@ load_dotenv()
 # ============== НАСТРОЙКИ БОТА ==============
 
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
-TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')  # Обычные сигналы
-PUMP_CHAT_ID = os.getenv('PUMP_CHAT_ID', '')      # Памп-сигналы
-STATS_CHAT_ID = os.getenv('STATS_CHAT_ID', '')    # Статистика
-ACCUMULATION_CHAT_ID = os.getenv('ACCUMULATION_CHAT_ID', '')  # Накопление
+TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')               # Обычные сигналы
+PUMP_CHAT_ID = os.getenv('PUMP_CHAT_ID', '')                   # Памп-сигналы
+STATS_CHAT_ID = os.getenv('STATS_CHAT_ID', '')                 # Статистика
+ACCUMULATION_CHAT_ID = os.getenv('ACCUMULATION_CHAT_ID', '')   # Накопление
 
-UPDATE_INTERVAL = int(os.getenv('UPDATE_INTERVAL', 900))  # 15 минут для основного анализа
+UPDATE_INTERVAL = int(os.getenv('UPDATE_INTERVAL', 900))       # 15 минут для основного анализа
 PUMP_SCAN_INTERVAL = int(os.getenv('PUMP_SCAN_INTERVAL', 30))  # 30 секунд для памп-сканера
-MIN_CONFIDENCE = int(os.getenv('MIN_CONFIDENCE', 65))
+MIN_CONFIDENCE = int(os.getenv('MIN_CONFIDENCE', 55))
 TIMEFRAME = os.getenv('TIMEFRAME', '15m')
 PAIRS_TO_SCAN = int(os.getenv('PAIRS_TO_SCAN', 50))
 
@@ -31,20 +31,32 @@ REF_LINKS = {
 
 PUMP_SCAN_SETTINGS = {
     'enabled': True,
-    'threshold': 3.0,                          # % движения для REST API
-    'instant_threshold': 1.0,                   # ⚡ СНИЖЕН ДО 1% для WebSocket (было 2.0)
-    'shitcoin_instant_threshold': 0.8,           # Для щиткоинов еще ниже
+    'threshold': 4.5,                            # % движения для REST API
+    'instant_threshold': 3.0,                    # ⚡ СНИЖЕН ДО 1% для WebSocket (было 2.0)
+    'shitcoin_instant_threshold': 2.5,           # Для щиткоинов еще ниже
     'timeframes': ['1m', '3m', '5m', '15m', '30m'],
-    'min_volume_usdt': 3000,
+    'min_volume_usdt': 1500,
     'max_pairs_to_scan': 600,
     'include_low_liquidity': True,
     'send_top_pumps': 999,
-    'cooldown_minutes': 10,
+    'cooldown_minutes': 30,
+    'batch_size': 50,                             # Размер батча для параллельного сканирования (меньше = быстрее, но больше нагрузка)
+    'delay_between_batches': 0.3,                 # Задержка между батчами в секундах
     
     # Новые настройки для WebSocket
-    'websocket_top_pairs': 100,                   # Сколько пар в WebSocket
-    'shitcoin_volume_threshold': 1_000_000,       # Объем < 1M$ = щиткоин
+    'websocket_top_pairs': 200,                   # Сколько пар в WebSocket
+    'shitcoin_volume_threshold': 500_000,         # Объем < 1M$ = щиткоин
     'websocket_reconnect_delay': 5,               # Задержка перед переподключением
+}
+
+# ============== НАСТРОЙКИ УМНЫХ ПОВТОРОВ ==============
+
+SMART_REPEAT_SETTINGS = {
+    'enabled': True,                              # Вкл/выкл умную логику
+    'cooldown_minutes': 30,                       # Базовый cooldown
+    'allow_stronger_moves': True,                 # Разрешать повторы при усилении
+    'strength_multiplier': 1.5,                   # 1.5 = усиление на 50%
+    'min_time_for_repeat': 10,                    # Минимум минут до повтора
 }
 
 # ============== НАСТРОЙКИ ATR (True Range) ==============
@@ -101,8 +113,8 @@ FEATURES = {
         'order_blocks': True,
         'fractals': True,
         'smart_money': True,
-        'volume_profile': False,
-        'accumulation': True,  # Новый анализатор накопления
+        'volume_profile': False,      # Отключено до исправления
+        'accumulation': True,         # Новый анализатор накопления
     },
     
     'testing': {
@@ -128,7 +140,7 @@ DISPLAY_SETTINGS = {
     'show_fractals': True,
     'show_fibonacci': True,
     'show_volume_profile': True,
-    'show_accumulation': True,  # Отображение накопления
+    'show_accumulation': True,         # Отображение накопления
     'show_exchange_link': True,
     
     'buttons': {
@@ -158,7 +170,7 @@ INDICATOR_SETTINGS = {
 # ============== НАСТРОЙКИ НАКОПЛЕНИЯ ==============
 
 ACCUMULATION_SETTINGS = {
-    'ad_threshold': 2.0,           # Порог для A/D дивергенции
+    'ad_threshold': 2.0,            # Порог для A/D дивергенции
     'volume_spike_threshold': 2.0,  # Аномальный объем x2
     'range_width_threshold': 5.0,   # Макс. ширина диапазона для консолидации
     'min_signals': 2,               # Минимум сигналов для подтверждения
@@ -187,13 +199,29 @@ VOLUME_PROFILE_SETTINGS = {
 }
 
 INDICATOR_WEIGHTS = {
+    # Базовые индикаторы
     'rsi': 10,
     'macd': 15,
-    'ema_cross': 15,
+    
+    # ===== EMA ПЕРЕСЕЧЕНИЯ =====
+    'ema_cross_current': 15,              # Пересечение 9/21 на текущем ТФ (было просто ema_cross)
+    'ema_cross_hourly': 20,                # ✅ НОВОЕ: пересечение 9/21 на часовом
+    'ema_cross_daily': 30,                  # ✅ НОВОЕ: пересечение 9/21 на дневном
+    'ema_cross_weekly': 40,                  # ✅ НОВОЕ: пересечение 9/21 на недельном (ОЧЕНЬ ВАЖНО!)
+    
+    # ===== EMA ПОЛОЖЕНИЕ =====
+    'ema_position_hourly': 15,              # Положение относительно EMA 50/200 на часовом
+    'ema_position_daily': 25,                # Положение относительно EMA 50/200 на дневном
+    'ema_position_weekly': 35,                # Положение относительно EMA 50/200 на недельном
+    
+    # Объем
     'volume': 10,
-    'hourly_trend': 15,
-    'daily_trend': 25,
-    'weekly_trend': 35,
+    
+    # Тренды (теперь только как вспомогательные)
+    'hourly_trend': 10,        # ⬇️ было 15, стало 10 (заменили более точными EMA)
+    'daily_trend': 15,          # ⬇️ было 25, стало 15
+    'weekly_trend': 20,          # ⬇️ было 35, стало 20
+    
     'trend_alignment': 20,
     'divergence': 20,
     'vwap': 12,
@@ -201,13 +229,14 @@ INDICATOR_WEIGHTS = {
     'pump_dump': 25,
     'fibonacci': 20,
     'btc_correlation': 8,
-    'imbalance': 15,
-    'liquidity': 20,
-    'order_blocks': 18,
-    'fractals': 12,
-    'smart_money': 25,
-    'volume_profile': 25,
-    'accumulation': 30,  # Высокий вес для накопления
+    'fvg': 35,
+    'imbalance': 20,
+    'liquidity': 30,
+    'order_blocks': 25,
+    'fractals': 15,
+    'smart_money': 35,
+    'volume_profile': 30,
+    'accumulation': 35,
 }
 
 # ============== НАСТРОЙКИ СТАТИСТИКИ ==============
