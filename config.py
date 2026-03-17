@@ -31,15 +31,15 @@ REF_LINKS = {
 
 PUMP_SCAN_SETTINGS = {
     'enabled': True,
-    'threshold': 4.5,                            # % движения для REST API
-    'instant_threshold': 3.0,                    # ⚡ СНИЖЕН ДО 1% для WebSocket (было 2.0)
-    'shitcoin_instant_threshold': 2.5,           # Для щиткоинов еще ниже
+    'threshold': 3.5,                            # % движения для REST API
+    'instant_threshold': 2.0,                    # ⚡ СНИЖЕН ДО 1% для WebSocket (было 2.0)
+    'shitcoin_instant_threshold': 1.5,           # Для щиткоинов еще ниже
     'timeframes': ['1m', '3m', '5m', '15m', '30m'],
-    'min_volume_usdt': 1500,
+    'min_volume_usdt': 1000,
     'max_pairs_to_scan': 600,
     'include_low_liquidity': True,
     'send_top_pumps': 999,
-    'cooldown_minutes': 30,
+    'cooldown_minutes': 15,
     'batch_size': 50,                             # Размер батча для параллельного сканирования (меньше = быстрее, но больше нагрузка)
     'delay_between_batches': 0.3,                 # Задержка между батчами в секундах
     
@@ -53,10 +53,10 @@ PUMP_SCAN_SETTINGS = {
 
 SMART_REPEAT_SETTINGS = {
     'enabled': True,                              # Вкл/выкл умную логику
-    'cooldown_minutes': 30,                       # Базовый cooldown
+    'cooldown_minutes': 15,                       # Базовый cooldown
     'allow_stronger_moves': True,                 # Разрешать повторы при усилении
-    'strength_multiplier': 1.5,                   # 1.5 = усиление на 50%
-    'min_time_for_repeat': 10,                    # Минимум минут до повтора
+    'strength_multiplier': 1.3,                   # 1.5 = усиление на 50%
+    'min_time_for_repeat': 5,                    # Минимум минут до повтора
 }
 
 # ============== НАСТРОЙКИ ATR (True Range) ==============
