@@ -1730,6 +1730,22 @@ class MultiTimeframeAnalyzer:
                 
                 # Увеличиваем силу с весом таймфрейма
                 result['strength'] += fvg['strength'] * tf_weights.get(tf_name, 1.0)
+
+        # ===== ВСТАВЬТЕ ЭТОТ БЛОК ЗДЕСЬ =====
+        # После сбора всех зон, перед фильтрацией
+        logger.info(f"  📊 Всего найдено FVG: {len(all_zones)}")
+        for zone in all_zones:
+            # Добавляем расстояние для сортировки если еще нет
+            if 'sort_distance' not in zone:
+                if zone['in_zone']:
+                    zone['sort_distance'] = 0
+                elif zone['min'] > current_price:
+                    zone['sort_distance'] = (zone['min'] - current_price) / current_price
+                else:
+                    zone['sort_distance'] = (current_price - zone['max']) / current_price
+            
+            logger.info(f"    FVG {zone['tf']}: {zone['min']:.6f}-{zone['max']:.6f}, расстояние {zone['sort_distance']*100:.1f}%")
+        # ===== КОНЕЦ БЛОКА =====
         
         # ===== ФИЛЬТРАЦИЯ ДЛЯ ГРАФИКА: ТОЛЬКО БЛИЖАЙШИЕ =====
         if all_zones:
@@ -1745,11 +1761,11 @@ class MultiTimeframeAnalyzer:
                 
                 zones_with_distance.append(zone)
             
-            # Сортируем по расстоянию (ближе = меньше)
+            # Сортируем по расстоянию
             zones_with_distance.sort(key=lambda z: z['sort_distance'])
             
-            # Берем ТОЛЬКО 5 ближайших зон для графика
-            result['zones'] = zones_with_distance[:5]
+            # Берем ТОЛЬКО 2 ближайшие зоны для графика
+            result['zones'] = zones_with_distance[:2]  # ← 2 зоны на графике
             
             logger.info(f"  🎨 Для графика отобрано {len(result['zones'])} ближайших FVG из {len(all_zones)}")
         
