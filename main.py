@@ -504,6 +504,272 @@ class TrendLineAnalyzer:
         
         return trend_lines[-5:]  # последние 5 линий
 
+        # Пробой наклонного уровня
+    def check_approaching_trendline(self, df: pd.DataFrame, current_price: float, touch_count: int = 3, threshold: float = 0.5) -> List[Dict]:
+        """
+        Проверка приближения цены к трендовой линии (до пробоя)
+        threshold: процент от цены, при котором считаем "приближение" (0.5% по умолчанию)
+        """
+        warnings = []
+        
+        # Находим все трендовые линии
+        trend_lines = self.find_trend_lines(df, touch_count)
+        
+        for line in trend_lines:
+            if line['is_broken']:
+                continue  # уже пробита - не интересно
+                
+            current_level = line['current_level']
+            
+            # Для линии сопротивления (цена под линией)
+            if line['type'] == 'resistance' and current_price < current_level:
+                distance_to_line = ((current_level - current_price) / current_price) * 100
+                
+                # Если цена приблизилась к линии на threshold%
+                if distance_to_line <= threshold:
+                    warnings.append({
+                        'type': 'resistance',
+                        'level': current_level,
+                        'distance': distance_to_line,
+                        'touches': line['touches'],
+                        'message': f"⚠️ Цена приближается к наклонному сопротивлению ({distance_to_line:.1f}% до пробоя)"
+                    })
+            
+            # Для линии поддержки (цена над линией)
+            elif line['type'] == 'support' and current_price > current_level:
+                distance_to_line = ((current_price - current_level) / current_price) * 100
+                
+                if distance_to_line <= threshold:
+                    warnings.append({
+                        'type': 'support',
+                        'level': current_level,
+                        'distance': distance_to_line,
+                        'touches': line['touches'],
+                        'message': f"⚠️ Цена приближается к наклонной поддержке ({distance_to_line:.1f}% до пробоя)"
+                    })
+        
+        return warnings    
+
+# ============== ОТСЛЕЖИВАНИЕ ПРОБОЕВ ==============
+
+class BreakoutTracker:
+    """Отслеживание пробоев и их закрепления"""
+    
+    def __init__(self):
+        self.potential_breakouts = {}  # {symbol_tf: {'line': line, 'first_cross_time': time, 'confirmations': 0}}
+        self.confirmed_breakouts = set()
+    
+    def check_breakout_confirmation(self, symbol: str, tf: str, df: pd.DataFrame, line: Dict, current_price: float, 
+                                   required_candles: int = 3, required_percent: float = 0.5) -> Optional[Dict]:
+        """
+        Проверка закрепления пробоя
+        required_candles: сколько свечей нужно для подтверждения
+        required_percent: на сколько процентов нужно закрепиться
+        """
+        key = f"{symbol}_{tf}_{id(line)}"
+        
+        # Определяем направление пробоя
+        if line['type'] == 'resistance':
+            # Пробой сопротивления вверх
+            is_broken = current_price > line['current_level']
+            confirmation_price = line['current_level'] * (1 + required_percent/100)
+            direction = "вверх"
+        else:
+            # Пробой поддержки вниз
+            is_broken = current_price < line['current_level']
+            confirmation_price = line['current_level'] * (1 - required_percent/100)
+            direction = "вниз"
+        
+        # Если пробоя нет
+        if not is_broken:
+            if key in self.potential_breakouts:
+                # Цена вернулась - сбрасываем счетчик
+                del self.potential_breakouts[key]
+            return None
+        
+        # Если пробой есть
+        if key not in self.potential_breakouts:
+            # Первый раз видим пробой
+            self.potential_breakouts[key] = {
+                'line': line,
+                'first_cross_time': datetime.now(),
+                'first_cross_price': current_price,
+                'direction': direction,
+                'confirmations': 1,
+                'tf': tf
+            }
+            return None  # еще рано
+        
+        # Уже отслеживаем этот пробой
+        tracker = self.potential_breakouts[key]
+        
+        # Проверяем, закрепилась ли цена
+        if direction == "вверх":
+            if current_price >= confirmation_price:
+                tracker['confirmations'] += 1
+            else:
+                # Цена вернулась - сбрасываем
+                del self.potential_breakouts[key]
+                return None
+        else:
+            if current_price <= confirmation_price:
+                tracker['confirmations'] += 1
+            else:
+                del self.potential_breakouts[key]
+                return None
+        
+        # Проверяем, достаточно ли подтверждений
+        if tracker['confirmations'] >= required_candles:
+            # Пробой подтвержден!
+            self.confirmed_breakouts.add(key)
+            
+            # Формируем результат
+            result = {
+                'line': line,
+                'tf': tf,
+                'direction': direction,
+                'touches': line['touches'],
+                'breakout_price': tracker['first_cross_price'],
+                'current_price': current_price,
+                'confirmations': tracker['confirmations'],
+                'message': (f"✅ Пробой {direction} на {tf} ПОДТВЕРЖДЕН! "
+                           f"({tracker['confirmations']} свечей, {line['touches']} касаний)")
+            }
+            
+            # Удаляем из отслеживания
+            del self.potential_breakouts[key]
+            return result
+        
+        return None
+
+# ============== ДЕТЕКТОР ЛОЖНЫХ ПРОБОЕВ  ==============
+
+class FakeoutDetector:
+    """Детектор ложных пробоев (fakeouts)"""
+    
+    def __init__(self):
+        self.potential_fakeouts = {}  # отслеживаем подозрительные пробои
+        self.confirmed_fakeouts = set()  # подтвержденные ложные пробои
+    
+    def check_fakeout(self, symbol: str, tf: str, df: pd.DataFrame, line: Dict, current_price: float,
+                     breakout_distance: float = 1.0,  # на сколько пробили (минимум 1%)
+                     retrace_threshold: float = 0.7,  # какой возврат считаем ложным (70% от пробоя)
+                     confirmation_candles: int = 2) -> Optional[Dict]:
+        """
+        Проверка на ложный пробой
+        
+        breakout_distance: минимальный размер пробоя (1%)
+        retrace_threshold: какой % от пробоя должен вернуться (70%)
+        confirmation_candles: сколько свечей для подтверждения
+        """
+        key = f"{symbol}_{tf}_{id(line)}"
+        
+        # Определяем тип линии
+        if line['type'] == 'resistance':
+            # Пробой сопротивления вверх
+            is_breakout = current_price > line['current_level']
+            breakout_direction = "вверх"
+        else:
+            # Пробой поддержки вниз
+            is_breakout = current_price < line['current_level']
+            breakout_direction = "вниз"
+        
+        # Если пробоя нет - ничего не делаем
+        if not is_breakout:
+            if key in self.potential_fakeouts:
+                # Если отслеживали, но пробой исчез - удаляем
+                del self.potential_fakeouts[key]
+            return None
+        
+        # Есть пробой
+        if key not in self.potential_fakeouts:
+            # Первый раз видим пробой - запоминаем
+            breakout_price = current_price
+            breakout_size = abs((current_price - line['current_level']) / line['current_level'] * 100)
+            
+            # Проверяем, достаточно ли большой пробой
+            if breakout_size >= breakout_distance:
+                self.potential_fakeouts[key] = {
+                    'line': line,
+                    'breakout_price': breakout_price,
+                    'breakout_size': breakout_size,
+                    'breakout_time': datetime.now(),
+                    'max_price': current_price,
+                    'min_price': current_price,
+                    'direction': breakout_direction,
+                    'candles_after': 0,
+                    'tf': tf
+                }
+                logger.info(f"  🔍 Отслеживаю потенциальный пробой {breakout_direction} на {tf} ({breakout_size:.1f}%)")
+            return None
+        
+        # Уже отслеживаем этот пробой
+        tracker = self.potential_fakeouts[key]
+        tracker['candles_after'] += 1
+        
+        # Обновляем максимум/минимум
+        if current_price > tracker['max_price']:
+            tracker['max_price'] = current_price
+        if current_price < tracker['min_price']:
+            tracker['min_price'] = current_price
+        
+        # Ждем нужное количество свечей для подтверждения
+        if tracker['candles_after'] < confirmation_candles:
+            return None
+        
+        # Анализируем, был ли это ложный пробой
+        if line['type'] == 'resistance':
+            # Для пробоя вверх: считаем откат от максимума
+            max_price = tracker['max_price']
+            current_retrace = ((max_price - current_price) / (max_price - line['current_level'])) * 100
+            
+            if current_retrace >= retrace_threshold * 100:
+                # Цена вернулась к уровню или ниже - это ложный пробой!
+                fakeout = {
+                    'type': 'fakeout',
+                    'direction': 'вверх',
+                    'line': line,
+                    'breakout_price': tracker['breakout_price'],
+                    'max_price': max_price,
+                    'current_price': current_price,
+                    'breakout_size': tracker['breakout_size'],
+                    'retrace_percent': current_retrace,
+                    'touches': line['touches'],
+                    'tf': tf,
+                    'message': (f"🚨 ЛОЖНЫЙ ПРОБОЙ {breakout_direction} на {tf}! "
+                               f"Цена вернулась на {current_retrace:.0f}% от пробоя")
+                }
+                
+                self.confirmed_fakeouts.add(key)
+                del self.potential_fakeouts[key]
+                return fakeout
+        else:
+            # Для пробоя вниз: считаем откат от минимума
+            min_price = tracker['min_price']
+            current_retrace = ((current_price - min_price) / (line['current_level'] - min_price)) * 100
+            
+            if current_retrace >= retrace_threshold * 100:
+                fakeout = {
+                    'type': 'fakeout',
+                    'direction': 'вниз',
+                    'line': line,
+                    'breakout_price': tracker['breakout_price'],
+                    'min_price': min_price,
+                    'current_price': current_price,
+                    'breakout_size': tracker['breakout_size'],
+                    'retrace_percent': current_retrace,
+                    'touches': line['touches'],
+                    'tf': tf,
+                    'message': (f"🚨 ЛОЖНЫЙ ПРОБОЙ {breakout_direction} на {tf}! "
+                               f"Цена вернулась на {current_retrace:.0f}% от пробоя")
+                }
+                
+                self.confirmed_fakeouts.add(key)
+                del self.potential_fakeouts[key]
+                return fakeout
+        
+        return None
+
 # ============== ГЕНЕРАТОР ГРАФИКОВ ==============
 
 class ChartGenerator:
@@ -890,6 +1156,295 @@ class FractalAnalyzer:
                 result['strength'] = 70
         
         return result
+
+# ============== СБОРЩИК ВСЕХ УРОВНЕЙ ==============
+
+class Level:
+    """Универсальный класс для любого уровня"""
+    
+    def __init__(self, level_type: str, price: float, strength: int, tf: str, 
+                 source: str, touches: int = 0, is_dynamic: bool = False):
+        self.level_type = level_type  # 'horizontal', 'trendline', 'fvg', 'fib', 'ema'
+        self.price = price
+        self.strength = strength  # 0-100
+        self.tf = tf  # '15m', '1h', '4h', '1d', '1w', '1M'
+        self.source = source  # описание
+        self.touches = touches  # сколько раз касались
+        self.is_dynamic = is_dynamic  # динамический уровень (EMA) или статический
+        self.min_price = price if level_type != 'fvg' else None
+        self.max_price = price if level_type != 'fvg' else None
+        self.is_broken = False
+        self.breakout_time = None
+        self.breakout_price = None
+
+class LevelCollector:
+    """Сбор всех сильных уровней со всех таймфреймов"""
+    
+    def __init__(self):
+        self.levels = []
+    
+    def collect_levels(self, dataframes: Dict[str, pd.DataFrame], current_price: float) -> List[Level]:
+        """Сбор уровней со всех таймфреймов"""
+        all_levels = []
+        
+        # Приоритет таймфреймов (старшие важнее)
+        tf_priority = ['monthly', 'weekly', 'daily', 'four_hourly', 'hourly', 'current']
+        tf_weights = {'monthly': 4.0, 'weekly': 3.5, 'daily': 3.0, 
+                     'four_hourly': 2.5, 'hourly': 2.0, 'current': 1.0}
+        
+        for tf in tf_priority:
+            if tf not in dataframes or dataframes[tf] is None:
+                continue
+            
+            df = dataframes[tf]
+            tf_weight = tf_weights.get(tf, 1.0)
+            
+            # 1. Горизонтальные уровни (локальные максимумы/минимумы)
+            levels_h = self._find_horizontal_levels(df, tf, tf_weight)
+            all_levels.extend(levels_h)
+            
+            # 2. EMA уровни (EMA 200, EMA 50)
+            levels_ema = self._find_ema_levels(df, tf, tf_weight)
+            all_levels.extend(levels_ema)
+            
+            # 3. FVG зоны (из вашего FVG анализа)
+            if 'fvg_analysis' in dataframes[tf]:
+                levels_fvg = self._convert_fvg_to_levels(dataframes[tf]['fvg_analysis'], tf, tf_weight)
+                all_levels.extend(levels_fvg)
+            
+            # 4. Уровни Фибоначчи
+            if 'fib_analysis' in dataframes[tf]:
+                levels_fib = self._convert_fib_to_levels(dataframes[tf]['fib_analysis'], tf, tf_weight)
+                all_levels.extend(levels_fib)
+        
+        # Сортируем по расстоянию до цены
+        for level in all_levels:
+            if level.min_price <= current_price <= level.max_price:
+                level.distance = 0
+            elif level.min_price > current_price:
+                level.distance = (level.min_price - current_price) / current_price
+            else:
+                level.distance = (current_price - level.max_price) / current_price
+        
+        all_levels.sort(key=lambda x: x.distance)
+        
+        return all_levels[:20]  # топ-20 ближайших уровней
+    
+    def _find_horizontal_levels(self, df: pd.DataFrame, tf: str, weight: float) -> List[Level]:
+        """Поиск горизонтальных уровней"""
+        levels = []
+        window = 20
+        
+        # Ищем локальные максимумы (сопротивление)
+        for i in range(window, len(df) - window):
+            if df['high'].iloc[i] == max(df['high'].iloc[i-window:i+window]):
+                price = df['high'].iloc[i]
+                strength = self.calculate_level_strength('horizontal', tf, 0, size=0)
+                
+                # Считаем касания
+                touches = sum(1 for j in range(i, len(df)) 
+                            if abs(df['high'].iloc[j] - price) / price < 0.003)
+                
+                # Пересчитываем силу с учетом касаний
+                strength = self.calculate_level_strength('horizontal', tf, touches, size=0)
+                
+                level = Level(
+                    level_type='horizontal_resistance',
+                    price=price,
+                    strength=strength,
+                    tf=tf,
+                    source=f"Локальный максимум ({tf})",
+                    touches=touches
+                )
+                level.min_price = price * 0.995
+                level.max_price = price * 1.005
+                levels.append(level)
+        
+        # Ищем локальные минимумы (поддержка)
+        for i in range(window, len(df) - window):
+            if df['low'].iloc[i] == min(df['low'].iloc[i-window:i+window]):
+                price = df['low'].iloc[i]
+                strength = self.calculate_level_strength('horizontal', tf, 0, size=0)
+                
+                touches = sum(1 for j in range(i, len(df)) 
+                            if abs(df['low'].iloc[j] - price) / price < 0.003)
+                
+                strength = self.calculate_level_strength('horizontal', tf, touches, size=0)
+                
+                level = Level(
+                    level_type='horizontal_support',
+                    price=price,
+                    strength=strength,
+                    tf=tf,
+                    source=f"Локальный минимум ({tf})",
+                    touches=touches
+                )
+                level.min_price = price * 0.995
+                level.max_price = price * 1.005
+                levels.append(level)
+        
+        return levels
+    
+    def _find_ema_levels(self, df: pd.DataFrame, tf: str, weight: float) -> List[Level]:
+        """Поиск EMA уровней"""
+        levels = []
+        
+        for period, color, importance in [(200, '#ff4444', 3.0), (50, '#8888ff', 2.0)]:
+            ema_col = f'ema_{period}'
+            if ema_col not in df.columns:
+                continue
+            
+            current_ema = df[ema_col].iloc[-1]
+            
+            # Считаем касания EMA
+            touches = 0
+            for i in range(len(df)-50, len(df)):
+                if abs(df['close'].iloc[i] - df[ema_col].iloc[i]) / df[ema_col].iloc[i] < 0.003:
+                    touches += 1
+            
+            strength = self.calculate_level_strength(f'ema_{period}', tf, touches, size=0)
+            
+            level = Level(
+                level_type=f'ema_{period}',
+                price=current_ema,
+                strength=strength,
+                tf=tf,
+                source=f"EMA {period} ({tf})",
+                touches=touches,
+                is_dynamic=True
+            )
+            level.min_price = current_ema * 0.99
+            level.max_price = current_ema * 1.01
+            levels.append(level)
+        
+        return levels
+    
+    # ===== НОВЫЙ МЕТОД =====
+    def calculate_level_strength(self, level_type: str, tf: str, touches: int, **kwargs) -> int:
+        """Расчет силы уровня по настройкам"""
+        
+        weights = LEVEL_ANALYSIS_SETTINGS['weights']
+        
+        if level_type == 'horizontal' or level_type in ['horizontal_resistance', 'horizontal_support']:
+            base = weights['horizontal']['base']
+            per_touch = weights['horizontal']['per_touch']
+            tf_mult = weights['horizontal']['tf_multiplier'].get(tf, 1.0)
+            
+            strength = (base + touches * per_touch) * tf_mult
+            
+        elif level_type == 'fvg' or 'fvg' in level_type:
+            base = weights['fvg']['base']
+            size_mult = weights['fvg']['size_multiplier']
+            tf_mult = weights['fvg']['tf_multiplier'].get(tf, 1.0)
+            
+            strength = (base + kwargs.get('size', 0) * size_mult) * tf_mult
+            
+        elif 'ema' in level_type:
+            if '200' in level_type:
+                base = weights['ema']['ema_200']
+            else:
+                base = weights['ema']['ema_50']
+            tf_mult = weights['ema']['tf_multiplier'].get(tf, 1.0)
+            
+            strength = (base + touches * 2) * tf_mult  # +2 за каждое касание EMA
+            
+        else:
+            # По умолчанию
+            strength = 50 * tf_multiplier.get(tf, 1.0)
+        
+        return min(100, int(strength))
+
+# ============== УНИВЕРСАЛЬНЫЙ ДЕТЕКТОР ПРОБОЕВ ==============
+
+class UniversalBreakoutDetector:
+    """Детектор пробоев для любых уровней"""
+    
+    def __init__(self):
+        self.tracked_breakouts = {}  # отслеживаем все пробои
+        self.fakeouts = set()  # ложные пробои
+    
+    def analyze_level(self, level: Level, current_price: float, 
+                     df: pd.DataFrame, required_candles: int = 3) -> Dict:
+        """Анализ одного уровня"""
+        
+        key = f"{level.tf}_{level.level_type}_{level.price}"
+        
+        # Определяем статус пробоя
+        if level.level_type in ['horizontal_resistance', 'trendline_resistance', 'fib_resistance']:
+            is_breakout = current_price > level.max_price
+            breakout_direction = "вверх"
+            target_direction = "LONG"
+        else:
+            is_breakout = current_price < level.min_price
+            breakout_direction = "вниз"
+            target_direction = "SHORT"
+        
+        # Нет пробоя
+        if not is_breakout:
+            if key in self.tracked_breakouts:
+                # Проверяем, не был ли это ложный пробой
+                tracker = self.tracked_breakouts[key]
+                if tracker['status'] == 'potential' and tracker['max_price'] > level.max_price * 1.01:
+                    # Был пробой, но цена вернулась - ЭТО ЛОЖНЫЙ!
+                    self.fakeouts.add(key)
+                    return {
+                        'type': 'fakeout',
+                        'level': level,
+                        'direction': breakout_direction,
+                        'target': target_direction,
+                        'message': f"🚨 ЛОЖНЫЙ ПРОБОЙ {breakout_direction} на {level.tf}!",
+                        'confidence': level.strength * 1.5
+                    }
+                del self.tracked_breakouts[key]
+            return None
+        
+        # Есть пробой
+        if key not in self.tracked_breakouts:
+            # Первый раз видим пробой
+            self.tracked_breakouts[key] = {
+                'level': level,
+                'breakout_price': current_price,
+                'max_price': current_price,
+                'min_price': current_price,
+                'time': datetime.now(),
+                'candles': 1,
+                'status': 'potential'
+            }
+            return {
+                'type': 'breakout_alert',
+                'level': level,
+                'direction': breakout_direction,
+                'message': f"⚠️ ПРОБОЙ {breakout_direction} на {level.tf}! (ожидание подтверждения)",
+                'confidence': level.strength
+            }
+        
+        # Отслеживаем пробой
+        tracker = self.tracked_breakouts[key]
+        tracker['candles'] += 1
+        tracker['max_price'] = max(tracker['max_price'], current_price)
+        tracker['min_price'] = min(tracker['min_price'], current_price)
+        
+        # Проверяем подтверждение
+        if tracker['candles'] >= required_candles:
+            # Проверяем размер движения
+            if breakout_direction == "вверх":
+                move_percent = ((tracker['max_price'] - level.max_price) / level.max_price) * 100
+            else:
+                move_percent = ((level.min_price - tracker['min_price']) / level.min_price) * 100
+            
+            if move_percent >= 1.0:  # подтвержденный пробой минимум на 1%
+                del self.tracked_breakouts[key]
+                return {
+                    'type': 'confirmed_breakout',
+                    'level': level,
+                    'direction': breakout_direction,
+                    'target': target_direction,
+                    'move_percent': move_percent,
+                    'message': f"✅ ПРОБОЙ {breakout_direction} на {level.tf} ПОДТВЕРЖДЕН! (+{move_percent:.1f}%)",
+                    'confidence': level.strength * 1.3
+                }
+        
+        return None
 
 # ============== АНАЛИЗАТОР ФИБОНАЧЧИ ==============
 
@@ -1889,9 +2444,8 @@ class MultiTimeframeAnalyzer:
                 confidence += INDICATOR_WEIGHTS['daily_trend']
 
         # ===== СОГЛАСОВАННОСТЬ ТРЕНДОВ =====
-        # Только увеличиваем уверенность, НЕ добавляем причину повторно
         if alignment['trend_alignment'] > 70:
-            confidence += INDICATOR_WEIGHTS['trend_alignment']  # ← убрал reasons.append()
+            confidence += INDICATOR_WEIGHTS['trend_alignment']
         
         # ===== АНАЛИЗ ФИБОНАЧЧИ =====
         fib_analysis = None
@@ -1930,12 +2484,16 @@ class MultiTimeframeAnalyzer:
         
         # ===== АНАЛИЗ ТРЕНДОВЫХ ЛИНИЙ =====
         trendline_breakout = False
+        trendline_warnings = []
+
         if FEATURES['advanced']['patterns']:
             logger.info(f"  🔍 {symbol} - Анализ трендовых линий")
             trend_analyzer = TrendLineAnalyzer()
+            current_tf = TIMEFRAMES.get('current', '15m')
+            
+            # 1. Ищем уже случившиеся пробои
             trend_lines = trend_analyzer.find_trend_lines(df, touch_count=3)
             
-            # Находим самую сильную линию
             best_line = None
             max_touches = 0
             for line in trend_lines:
@@ -1943,13 +2501,12 @@ class MultiTimeframeAnalyzer:
                     max_touches = line['touches']
                     best_line = line
             
-            # Добавляем только одну линию
             if best_line:
-                reasons.append(f"📈 Пробой наклонного сопротивления ({best_line['touches']} касаний)")
+                reasons.append(f"📈 Пробой наклонного сопротивления на {current_tf} ({best_line['touches']} касаний)")
                 confidence += 20
                 trendline_breakout = True
                 signal_type = 'breakout'
-                logger.info(f"  ✅ {symbol} - Обнаружен пробой тренда с {best_line['touches']} касаниями")
+                logger.info(f"  ✅ {symbol} - Обнаружен пробой тренда с {best_line['touches']} касаниями на {current_tf}")
         
         # ===== FVG МУЛЬТИТАЙМФРЕЙМОВЫЙ АНАЛИЗ =====
         fvg_analysis = {'has_fvg': False, 'signals': [], 'zones': []}
@@ -1983,7 +2540,7 @@ class MultiTimeframeAnalyzer:
         if accumulation_analysis and accumulation_analysis.get('direction') and accumulation_analysis.get('has_accumulation'):
             base_direction = accumulation_analysis['direction']
         elif trendline_breakout:
-            base_direction = 'LONG'  # Пробой тренда вверх = LONG
+            base_direction = 'LONG'
         elif bullish > bearish and confidence >= MIN_CONFIDENCE:
             if alignment['weekly_trend'] == 'ВОСХОДЯЩИЙ':
                 base_direction = 'Разворот LONG'
@@ -2004,36 +2561,36 @@ class MultiTimeframeAnalyzer:
             fvg_below = 0
             fvg_in_zone = 0
             
-            # Анализ положения цены относительно FVG
-            for zone in fvg_analysis['zones']:  # используем отфильтрованные ближайшие зоны
+            for zone in fvg_analysis['zones']:
                 if zone['in_zone']:
                     fvg_in_zone += 1
-                    reasons.append(f"🎯 Цена в FVG {zone['tf_short']}: {zone['min']:.4f}-{zone['max']:.4f} (сильный уровень)")
+                    reasons.append(f"🎯 Цена в FVG {zone['tf_short']}: {zone['min']:.4f}-{zone['max']:.4f}")
                     confidence += 20
                     
-                    # Если цена в зоне и пробила тренд - усиливаем сигнал
                     if trendline_breakout:
                         confidence += 15
-                        reasons.append(f"✅ Пробой из FVG зоны {zone['tf_short']} - сильный сигнал")
+                        reasons.append(f"✅ Пробой из FVG зоны {zone['tf_short']}")
                     
                 elif zone['min'] > current_price:
                     fvg_above += 1
-                    # Для LONG сигналов FVG сверху - цели
-                    if direction == 'LONG' and zone['min'] > current_price:
-                        reasons.append(f"🎯 Цель: FVG {zone['tf_short']} {zone['min']:.4f}-{zone['max']:.4f} (+{zone['distance_pct']:.1f}%)")
+                    if direction == 'LONG':
+                        target_str = f"{zone['min']:.6f}" if zone['min'] < 0.001 else f"{zone['min']:.4f}"
+                        reasons.append(f"🎯 Цель: FVG {zone['tf_short']} {target_str} (+{zone['distance_pct']:.1f}%)")
                 else:
                     fvg_below += 1
-                    # Для SHORT сигналов FVG снизу - цели
-                    if direction == 'SHORT' and zone['max'] < current_price:
-                        reasons.append(f"🎯 Цель: FVG {zone['tf_short']} {zone['min']:.4f}-{zone['max']:.4f} (-{zone['distance_pct']:.1f}%)")
+                    if direction == 'SHORT':
+                        target_str = f"{zone['max']:.6f}" if zone['max'] < 0.001 else f"{zone['max']:.4f}"
+                        reasons.append(f"🎯 Цель: FVG {zone['tf_short']} {target_str} (-{zone['distance_pct']:.1f}%)")
             
-            # Штраф за FVG в противоположном направлении
+            # Склонение для "зона/зоны/зон"
             if direction == 'LONG' and fvg_above > 0:
-                reasons.append(f"⚠️ {fvg_above} зон FVG сверху (сопротивление)")
+                zone_word = "зона" if fvg_above == 1 else "зоны" if fvg_above <= 4 else "зон"
+                reasons.append(f"⚠️ {fvg_above} {zone_word} FVG сверху (сопротивление)")
                 confidence -= fvg_above * 3
             
             if direction == 'SHORT' and fvg_below > 0:
-                reasons.append(f"⚠️ {fvg_below} зон FVG снизу (поддержка)")
+                zone_word = "зона" if fvg_below == 1 else "зоны" if fvg_below <= 4 else "зон"
+                reasons.append(f"⚠️ {fvg_below} {zone_word} FVG снизу (поддержка)")
                 confidence -= fvg_below * 3
         
         logger.info(f"  📊 {symbol} - Направление: {direction}, Уверенность: {confidence}")
@@ -2048,55 +2605,28 @@ class MultiTimeframeAnalyzer:
         targets = {}
         
         if 'LONG' in direction:
-            if current_price < 0.0001:
-                targets['target_1'] = round(current_price + atr * ATR_SETTINGS['long_target_1_mult'], 8)
-                targets['target_2'] = round(current_price + atr * ATR_SETTINGS['long_target_2_mult'], 8)
-                targets['stop_loss'] = round(current_price - atr * ATR_SETTINGS['long_stop_loss_mult'], 8)
-            elif current_price < 0.001:
-                targets['target_1'] = round(current_price + atr * ATR_SETTINGS['long_target_1_mult'], 6)
-                targets['target_2'] = round(current_price + atr * ATR_SETTINGS['long_target_2_mult'], 6)
-                targets['stop_loss'] = round(current_price - atr * ATR_SETTINGS['long_stop_loss_mult'], 6)
-            elif current_price < 0.01:
-                targets['target_1'] = round(current_price + atr * ATR_SETTINGS['long_target_1_mult'], 5)
-                targets['target_2'] = round(current_price + atr * ATR_SETTINGS['long_target_2_mult'], 5)
-                targets['stop_loss'] = round(current_price - atr * ATR_SETTINGS['long_stop_loss_mult'], 5)
-            elif current_price < 0.1:
-                targets['target_1'] = round(current_price + atr * ATR_SETTINGS['long_target_1_mult'], 4)
-                targets['target_2'] = round(current_price + atr * ATR_SETTINGS['long_target_2_mult'], 4)
-                targets['stop_loss'] = round(current_price - atr * ATR_SETTINGS['long_stop_loss_mult'], 4)
-            elif current_price < 1:
-                targets['target_1'] = round(current_price + atr * ATR_SETTINGS['long_target_1_mult'], 3)
-                targets['target_2'] = round(current_price + atr * ATR_SETTINGS['long_target_2_mult'], 3)
-                targets['stop_loss'] = round(current_price - atr * ATR_SETTINGS['long_stop_loss_mult'], 3)
-            else:
-                targets['target_1'] = round(current_price + atr * ATR_SETTINGS['long_target_1_mult'], 2)
-                targets['target_2'] = round(current_price + atr * ATR_SETTINGS['long_target_2_mult'], 2)
-                targets['stop_loss'] = round(current_price - atr * ATR_SETTINGS['long_stop_loss_mult'], 2)
+            targets['target_1'] = current_price + atr * ATR_SETTINGS['long_target_1_mult']
+            targets['target_2'] = current_price + atr * ATR_SETTINGS['long_target_2_mult']
+            targets['stop_loss'] = current_price - atr * ATR_SETTINGS['long_stop_loss_mult']
         else:
+            targets['target_1'] = current_price - atr * ATR_SETTINGS['short_target_1_mult']
+            targets['target_2'] = current_price - atr * ATR_SETTINGS['short_target_2_mult']
+            targets['stop_loss'] = current_price + atr * ATR_SETTINGS['short_stop_loss_mult']
+        
+        # Округление целей
+        for key in ['target_1', 'target_2', 'stop_loss']:
             if current_price < 0.0001:
-                targets['target_1'] = round(current_price - atr * ATR_SETTINGS['short_target_1_mult'], 8)
-                targets['target_2'] = round(current_price - atr * ATR_SETTINGS['short_target_2_mult'], 8)
-                targets['stop_loss'] = round(current_price + atr * ATR_SETTINGS['short_stop_loss_mult'], 8)
+                targets[key] = round(targets[key], 8)
             elif current_price < 0.001:
-                targets['target_1'] = round(current_price - atr * ATR_SETTINGS['short_target_1_mult'], 6)
-                targets['target_2'] = round(current_price - atr * ATR_SETTINGS['short_target_2_mult'], 6)
-                targets['stop_loss'] = round(current_price + atr * ATR_SETTINGS['short_stop_loss_mult'], 6)
+                targets[key] = round(targets[key], 6)
             elif current_price < 0.01:
-                targets['target_1'] = round(current_price - atr * ATR_SETTINGS['short_target_1_mult'], 5)
-                targets['target_2'] = round(current_price - atr * ATR_SETTINGS['short_target_2_mult'], 5)
-                targets['stop_loss'] = round(current_price + atr * ATR_SETTINGS['short_stop_loss_mult'], 5)
+                targets[key] = round(targets[key], 5)
             elif current_price < 0.1:
-                targets['target_1'] = round(current_price - atr * ATR_SETTINGS['short_target_1_mult'], 4)
-                targets['target_2'] = round(current_price - atr * ATR_SETTINGS['short_target_2_mult'], 4)
-                targets['stop_loss'] = round(current_price + atr * ATR_SETTINGS['short_stop_loss_mult'], 4)
+                targets[key] = round(targets[key], 4)
             elif current_price < 1:
-                targets['target_1'] = round(current_price - atr * ATR_SETTINGS['short_target_1_mult'], 3)
-                targets['target_2'] = round(current_price - atr * ATR_SETTINGS['short_target_2_mult'], 3)
-                targets['stop_loss'] = round(current_price + atr * ATR_SETTINGS['short_stop_loss_mult'], 3)
+                targets[key] = round(targets[key], 3)
             else:
-                targets['target_1'] = round(current_price - atr * ATR_SETTINGS['short_target_1_mult'], 2)
-                targets['target_2'] = round(current_price - atr * ATR_SETTINGS['short_target_2_mult'], 2)
-                targets['stop_loss'] = round(current_price + atr * ATR_SETTINGS['short_stop_loss_mult'], 2)
+                targets[key] = round(targets[key], 2)
         
         logger.info(f"  📈 {symbol} - ATR: {atr}, Цели: {targets}")
         
@@ -2915,6 +3445,8 @@ class MultiExchangeScannerBot:
         self.chart_generator = ChartGenerator()
         self.telegram_bot = Bot(token=TELEGRAM_TOKEN)
         self.last_signals = {}
+        self.breakout_tracker = BreakoutTracker()
+        self.fakeout_detector = FakeoutDetector()
         
         self.divergence = DivergenceAnalyzer() if FEATURES['advanced']['divergence'] else None
         self.imbalance = ImbalanceAnalyzer(IMBALANCE_SETTINGS) if FEATURES['advanced']['imbalance'] else None
@@ -3690,8 +4222,8 @@ class TelegramHandler:
     def __init__(self, bot: MultiExchangeScannerBot):
         self.bot = bot
         self.app = Application.builder().token(TELEGRAM_TOKEN).build()
-        self.register()
-    
+        self.register()        
+        self.breakout_tracker = BreakoutTracker() # Трекер пробоев
     def register(self):
         self.app.add_handler(CommandHandler("start", self.start))
         self.app.add_handler(CommandHandler("scan", self.scan))
