@@ -2693,6 +2693,7 @@ class FastPumpScanner:
         self.websocket_top_pairs = self.settings.get('websocket_top_pairs', 100)
         self.last_pump_signals = {}
         self.cache = CacheManager(ttl=30)
+        self.ws_signals_sent = set()  # отслеживаем отправленные через WebSocket сигналы
         
         # WebSocket менеджер
         try:
@@ -2854,6 +2855,15 @@ class FastPumpScanner:
         Отправка быстрого предварительного сигнала (0-2 секунды)
         """
         symbol = signal_data['symbol']
+
+        # ✅ Запоминаем, что сигнал отправлен
+        if not hasattr(self, 'ws_signals_sent'):
+            self.ws_signals_sent = set()
+        
+        self.ws_signals_sent.add(symbol)
+        # Через 60 секунд удаляем из памяти
+        asyncio.create_task(self._remove_from_ws_cache(symbol, 60))
+
         movement = signal_data['movement']
         coin = symbol.split('/')[0].replace('USDT', '')
         is_shitcoin = signal_data.get('is_shitcoin', False)
@@ -2889,6 +2899,13 @@ class FastPumpScanner:
         except Exception as e:
             logger.error(f"Ошибка отправки мгновенного сигнала: {e}")
     
+    async def _remove_from_ws_cache(self, symbol: str, delay: int):
+        """Удаление символа из кэша WebSocket сигналов"""
+        await asyncio.sleep(delay)
+        if hasattr(self, 'ws_signals_sent') and symbol in self.ws_signals_sent:
+            self.ws_signals_sent.remove(symbol)
+            logger.info(f"🗑️ {symbol} удален из кэша WebSocket сигналов")
+
     async def confirm_signal(self, signal_data: Dict):
         """
         Подтверждение сигнала полным анализом
@@ -3212,46 +3229,52 @@ class FastPumpScanner:
         pump_time = pump_data.get('time_window', 0)
         
         # ===== ПРАВИЛЬНАЯ ЛОГИКА НАПРАВЛЕНИЯ =====
-        # Для PUMP (резкий рост) - SHORT на коррекцию
-        # Для DUMP (резкое падение) - LONG на отскок
-        
-        if pump_change > 3.0:  # СИЛЬНЫЙ PUMP
-            signal_emoji = "🚨"
-            signal_text = f"PUMP +{pump_change:.1f}%"
-            signal['direction'] = 'SHORT 📉 (коррекция)'
-            signal['signal_type'] = 'PUMP'
-            # Добавляем причину
-            if 'reasons' in signal:
-                signal['reasons'].insert(0, f"Коррекция после пампа +{pump_change:.1f}%")
-        
-        elif pump_change > 1.5:  # СЛАБЫЙ PUMP
-            signal_emoji = "🚀"
-            signal_text = f"PUMP +{pump_change:.1f}%"
-            signal['direction'] = 'SHORT 📉 (коррекция)'
-            signal['signal_type'] = 'PUMP'
-            if 'reasons' in signal:
-                signal['reasons'].insert(0, f"Коррекция после пампа +{pump_change:.1f}%")
-        
-        elif pump_change < -3.0:  # СИЛЬНЫЙ DUMP
-            signal_emoji = "📉"
-            signal_text = f"DUMP {pump_change:.1f}%"
-            signal['direction'] = 'LONG 📈 (отскок)'
-            signal['signal_type'] = 'DUMP'
-            if 'reasons' in signal:
-                signal['reasons'].insert(0, f"Отскок после дампа {pump_change:.1f}%")
-        
-        elif pump_change < -1.5:  # СЛАБЫЙ DUMP
-            signal_emoji = "📊"
-            signal_text = f"DUMP {pump_change:.1f}%"
-            signal['direction'] = 'LONG 📈 (отскок)'
-            signal['signal_type'] = 'DUMP'
-            if 'reasons' in signal:
-                signal['reasons'].insert(0, f"Отскок после дампа {pump_change:.1f}%")
-        
-        else:  # Обычный сигнал
-            signal_emoji = "📊"
-            signal_text = f"{pump_change:+.1f}%"
-            # Направление оставляем как есть
+        # PUMP + пробой - LONG 📈 (пробой после пампа)
+        # PUMP без пробоя - SHORT 📉 (коррекция)
+        # DUMP + пробой - SHORT 📉 (пробой после дампа)
+        # DUMP без пробоя - LONG 📈 (отскок)
+
+        # Проверяем, есть ли пробой уровня
+        has_breakout = False
+        if 'reasons' in signal:
+            for reason in signal['reasons']:
+                if 'Пробой' in reason:
+                    has_breakout = True
+                    break
+
+        # ===== ПРАВИЛЬНАЯ ЛОГИКА НАПРАВЛЕНИЯ =====
+        if pump_change > 0:  # PUMP
+            if has_breakout:
+                signal_emoji = "🚀"
+                signal_text = f"PUMP +{pump_change:.1f}%"
+                signal['direction'] = 'LONG 📈 (пробой после пампа)'
+                signal['signal_type'] = 'PUMP_BREAKOUT'
+                # Добавляем причину (если еще не добавлена)
+                if 'reasons' in signal and not any('Коррекция' in r for r in signal['reasons']):
+                    signal['reasons'].insert(0, f"Пробой уровня после пампа +{pump_change:.1f}%")
+            else:
+                signal_emoji = "🚨" if pump_change > 3.0 else "🚀"
+                signal_text = f"PUMP +{pump_change:.1f}%"
+                signal['direction'] = 'SHORT 📉 (коррекция)'
+                signal['signal_type'] = 'PUMP'
+                if 'reasons' in signal and not any('Коррекция' in r for r in signal['reasons']):
+                    signal['reasons'].insert(0, f"Коррекция после пампа +{pump_change:.1f}%")
+
+        else:  # DUMP
+            if has_breakout:
+                signal_emoji = "📉"
+                signal_text = f"DUMP {pump_change:.1f}%"
+                signal['direction'] = 'SHORT 📉 (пробой после дампа)'
+                signal['signal_type'] = 'DUMP_BREAKOUT'
+                if 'reasons' in signal and not any('Отскок' in r for r in signal['reasons']):
+                    signal['reasons'].insert(0, f"Пробой уровня после дампа {pump_change:.1f}%")
+            else:
+                signal_emoji = "📊" if pump_change < -1.5 else "📉"
+                signal_text = f"DUMP {pump_change:.1f}%"
+                signal['direction'] = 'LONG 📈 (отскок)'
+                signal['signal_type'] = 'DUMP'
+                if 'reasons' in signal and not any('Отскок' in r for r in signal['reasons']):
+                    signal['reasons'].insert(0, f"Отскок после дампа {pump_change:.1f}%")
         
         # Определяем силу сигнала по модулю движения
         signal_power = self._get_power_text(abs(pump_change))
@@ -3426,15 +3449,21 @@ class FastPumpScanner:
         return message, InlineKeyboardMarkup(keyboard) if keyboard else None
 
     def _get_power_text(self, strength: float) -> str:
-        """Определение текста силы сигнала"""
-        if strength >= 90:
-            return "🔥🔥🔥 ОЧЕНЬ СИЛЬНЫЙ"
-        elif strength >= 75:
-            return "🔥🔥 СИЛЬНЫЙ"
-        elif strength >= 60:
-            return "🔥 СРЕДНИЙ"
-        else:
-            return "⚡ СЛАБЫЙ"
+    """Определение текста силы сигнала для ПАМП-ДВИЖЕНИЙ (0-100%+)"""
+    if strength >= 20.0:
+        return "🔥🔥🔥🔥 ЭКСТРЕМАЛЬНЫЙ"
+    elif strength >= 12.0:
+        return "🔥🔥🔥 ОЧЕНЬ СИЛЬНЫЙ"
+    elif strength >= 8.0:
+        return "🔥🔥 СИЛЬНЫЙ"
+    elif strength >= 5.0:
+        return "🔥 СРЕДНИЙ"
+    elif strength >= 3.0:
+        return "📊 СРЕДНИЙ"
+    elif strength >= 1.5:
+        return "⚡ СЛАБЫЙ"
+    else:
+        return "👀 НАБЛЮДЕНИЕ"
 
 # ============== ОСНОВНОЙ КЛАСС БОТА ==============
 
