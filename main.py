@@ -418,18 +418,19 @@ class ChartGenerator:
         self.style = 'dark_background'
         
     def create_chart(self, df: pd.DataFrame, signal: Dict, coin: str, timeframe: str = '15m') -> BytesIO:
-        """Создание графика с ценой, индикаторами и целями"""
+        """Создание графика с ценой, индикаторами и зонами FVG"""
         plt.style.use(self.style)
         
         plot_df = df.tail(100).copy()
         
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=self.figsize, 
-                                       gridspec_kw={'height_ratios': [3, 1]})
+                                    gridspec_kw={'height_ratios': [3, 1]})
         
         # ===== ВЕРХНИЙ ГРАФИК =====
         ax1.plot(plot_df.index, plot_df['close'], 
                 color='white', linewidth=2, label='Close')
         
+        # EMA линии
         if 'ema_9' in plot_df.columns:
             ax1.plot(plot_df.index, plot_df['ema_9'], 
                     color='#00ff88', linewidth=1.5, alpha=0.7, label='EMA 9')
@@ -443,43 +444,86 @@ class ChartGenerator:
             ax1.plot(plot_df.index, plot_df['ema_200'], 
                     color='#ff4444', linewidth=1, alpha=0.5, label='EMA 200')
         
+        # Bollinger Bands
         if 'BBL_20_2.0' in plot_df.columns and 'BBU_20_2.0' in plot_df.columns:
             ax1.fill_between(plot_df.index, 
                             plot_df['BBL_20_2.0'], 
                             plot_df['BBU_20_2.0'],
                             alpha=0.2, color='gray', label='Bollinger Bands')
         
+        # ===== ОТРИСОВКА ЗОН FVG =====
+        if 'fvg_zones' in signal:
+            # Сортируем зоны по размеру (большие рисуем первыми, чтобы они были на заднем плане)
+            zones = sorted(signal['fvg_zones'], key=lambda z: z['size'], reverse=True)
+            
+            for zone in zones:
+                # Определяем цвет и прозрачность в зависимости от таймфрейма
+                if zone['tf'] == 'monthly':
+                    color = '#ff00ff'  # розовый
+                    alpha = 0.3
+                    linewidth = 2
+                elif zone['tf'] == 'weekly':
+                    color = '#00ffff'  # голубой
+                    alpha = 0.25
+                    linewidth = 1.5
+                elif zone['tf'] == 'daily':
+                    color = '#ffff00'  # желтый
+                    alpha = 0.2
+                    linewidth = 1.5
+                elif zone['tf'] == 'four_hourly':
+                    color = '#ffaa00'  # оранжевый
+                    alpha = 0.15
+                    linewidth = 1
+                elif zone['tf'] == 'hourly':
+                    color = '#00ffaa'  # бирюзовый
+                    alpha = 0.1
+                    linewidth = 1
+                else:  # current
+                    color = '#aaaaaa'  # серый
+                    alpha = 0.1
+                    linewidth = 0.5
+                
+                # Рисуем зону
+                ax1.axhspan(zone['min'], zone['max'], 
+                        alpha=alpha, color=color, linewidth=0)
+                
+                # Добавляем границы зоны пунктиром
+                ax1.axhline(y=zone['min'], color=color, linestyle=':', 
+                        linewidth=linewidth, alpha=0.5)
+                ax1.axhline(y=zone['max'], color=color, linestyle=':', 
+                        linewidth=linewidth, alpha=0.5)
+                
+                # Добавляем метку с названием таймфрейма
+                mid_price = (zone['min'] + zone['max']) / 2
+                ax1.text(plot_df.index[-1], mid_price, 
+                        f" {zone['tf_short']}", 
+                        color=color, fontsize=8, alpha=0.8,
+                        verticalalignment='center',
+                        bbox=dict(boxstyle="round,pad=0.2", facecolor='black', alpha=0.5))
+        
+        # Текущая цена
         current_price = signal['price']
         ax1.axhline(y=current_price, color='#00ff00', 
-                   linestyle='--', linewidth=1.5, alpha=0.8,
-                   label=f'Current: {current_price:.2f}')
+                linestyle='--', linewidth=1.5, alpha=0.8,
+                label=f'Current: {current_price:.2f}')
         
+        # Цели
         if signal.get('target_1'):
             ax1.axhline(y=signal['target_1'], color='#ffaa00', 
-                       linestyle='--', linewidth=1.5, alpha=0.8,
-                       label=f'Target 1: {signal["target_1"]}')
+                    linestyle='--', linewidth=1.5, alpha=0.8,
+                    label=f'Target 1: {signal["target_1"]}')
         if signal.get('target_2'):
             ax1.axhline(y=signal['target_2'], color='#00ff00', 
-                       linestyle='--', linewidth=1.5, alpha=0.8,
-                       label=f'Target 2: {signal["target_2"]}')
+                    linestyle='--', linewidth=1.5, alpha=0.8,
+                    label=f'Target 2: {signal["target_2"]}')
         if signal.get('stop_loss'):
             ax1.axhline(y=signal['stop_loss'], color='#ff0000', 
-                       linestyle='--', linewidth=1.5, alpha=0.8,
-                       label=f'Stop: {signal["stop_loss"]}')
+                    linestyle='--', linewidth=1.5, alpha=0.8,
+                    label=f'Stop: {signal["stop_loss"]}')
         
-        if signal.get('accumulation'):
-            emoji = " "
-        elif signal.get('pump_dump'):
-            emoji = " "
-        elif 'LONG' in signal['direction']:
-            emoji = " "
-        elif 'SHORT' in signal['direction']:
-            emoji = " "
-        else:
-            emoji = " "
-        
-        ax1.set_title(f'{emoji} {coin} - {signal["direction"]} (TF: {timeframe}, уверенность {signal["confidence"]}%)', 
-                     fontsize=14, fontweight='bold', color='white')
+        # Заголовок
+        ax1.set_title(f'{coin} - {signal["direction"]} (TF: {timeframe}, уверенность {signal["confidence"]}%)', 
+                    fontsize=14, fontweight='bold', color='white')
         ax1.set_ylabel('Price (USDT)', color='white')
         ax1.legend(loc='upper left', fontsize=8, facecolor='#222222')
         ax1.grid(True, alpha=0.2, linestyle='--')
@@ -497,7 +541,7 @@ class ChartGenerator:
             if pd.notna(plot_df['rsi'].iloc[-1]):
                 current_rsi = plot_df['rsi'].iloc[-1]
                 ax2.scatter(plot_df.index[-1], current_rsi, 
-                           color='yellow', s=50, zorder=5)
+                        color='yellow', s=50, zorder=5)
         
         ax2.set_ylabel('RSI', color='white')
         ax2.set_xlabel('Time', color='white')
@@ -507,6 +551,7 @@ class ChartGenerator:
         ax2.set_facecolor('#111111')
         ax2.legend(loc='upper left', fontsize=8, facecolor='#222222')
         
+        # Форматирование времени
         for ax in [ax1, ax2]:
             ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
             ax.xaxis.set_major_locator(mdates.HourLocator(interval=3))
@@ -516,7 +561,7 @@ class ChartGenerator:
         
         buf = BytesIO()
         plt.savefig(buf, format='PNG', dpi=self.dpi, 
-                   bbox_inches='tight', facecolor='#111111')
+                bbox_inches='tight', facecolor='#111111')
         buf.seek(0)
         plt.close()
         
@@ -1489,31 +1534,27 @@ class MultiTimeframeAnalyzer:
     
     def analyze_fvg_multi_timeframe(self, dataframes: Dict[str, pd.DataFrame], current_price: float) -> Dict:
         """
-        Анализ FVG на всех таймфреймах с весами
+        Анализ FVG на всех таймфреймах с информацией о расстоянии
         """
-        result = {'has_fvg': False, 'signals': [], 'strength': 0}
+        result = {'has_fvg': False, 'signals': [], 'strength': 0, 'zones': []}
         
         # Приоритет таймфреймов от старшего к младшему
         tf_priority = ['monthly', 'weekly', 'daily', 'four_hourly', 'hourly', 'current']
         
-        # Веса для каждого таймфрейма
-        tf_weights = {
-            'monthly': 4.0,
-            'weekly': 3.5,
-            'daily': 2.5,
-            'four_hourly': 2.0,
-            'hourly': 1.5,
-            'current': 1.0
+        # Словарь для сокращенных названий
+        tf_short = {
+            'monthly': '1м',
+            'weekly': '1н',
+            'daily': '1д',
+            'four_hourly': '4ч',
+            'hourly': '1ч',
+            'current': '15м'
         }
         
-        # Словарь для перевода названий
-        tf_names_ru = {
-            'monthly': 'месячный',
-            'weekly': 'недельный',
-            'daily': 'дневной',
-            'four_hourly': '4-часовой',
-            'hourly': 'часовой',
-            'current': '15-минутный'
+        # Эмодзи для направления
+        dir_emoji = {
+            'bullish': '📈',
+            'bearish': '📉'
         }
         
         for tf_name in tf_priority:
@@ -1528,26 +1569,66 @@ class MultiTimeframeAnalyzer:
             
             for fvg in fvg_list:
                 # Проверяем, находится ли текущая цена в зоне FVG
-                if fvg['price_min'] <= current_price <= fvg['price_max']:
-                    result['has_fvg'] = True
-                    
-                    # Добавляем сигнал с переводом на русский (БЕЗ ЭМОДЗИ)
-                    tf_ru = tf_names_ru.get(tf_name, tf_name)
-                    direction = "бычий" if fvg['type'] == 'bullish' else "медвежий"
-                    
-                    # Форматируем размер FVG
-                    size_text = f"{fvg.get('size', 0):.2f}%" if 'size' in fvg else ""
-                    
-                    signal_text = f"FVG на {tf_ru}: {direction}"
-                    if size_text:
-                        signal_text += f" ({size_text})"
-                    
-                    result['signals'].append(signal_text)
-                    
-                    # Увеличиваем силу с весом таймфрейма
-                    result['strength'] += fvg['strength'] * tf_weights.get(tf_name, 1.0)
-                    
-                    logger.info(f"    ✅ Найден FVG на {tf_name}: {direction}")
+                in_zone = (fvg['price_min'] <= current_price <= fvg['price_max'])
+                
+                # Рассчитываем расстояние до зоны
+                if in_zone:
+                    distance_text = "в зоне"
+                    distance_pct = 0
+                elif current_price < fvg['price_min']:
+                    distance_pct = ((fvg['price_min'] - current_price) / current_price) * 100
+                    if fvg['type'] == 'bullish':
+                        distance_text = f"приближается снизу (+{distance_pct:.1f}%)"
+                    else:
+                        distance_text = f"отскочила вниз (-{distance_pct:.1f}%)"
+                else:  # current_price > fvg['price_max']
+                    distance_pct = ((current_price - fvg['price_max']) / current_price) * 100
+                    if fvg['type'] == 'bullish':
+                        distance_text = f"отскочила вверх (-{distance_pct:.1f}%)"
+                    else:
+                        distance_text = f"приближается сверху (+{distance_pct:.1f}%)"
+                
+                # Форматируем цены зоны
+                if fvg['price_min'] < 0.001:
+                    zone_str = f"{fvg['price_min']:.6f}-{fvg['price_max']:.6f}"
+                elif fvg['price_min'] < 0.1:
+                    zone_str = f"{fvg['price_min']:.4f}-{fvg['price_max']:.4f}"
+                else:
+                    zone_str = f"{fvg['price_min']:.2f}-{fvg['price_max']:.2f}"
+                
+                # Формируем сигнал в новом формате
+                size_pct = fvg.get('size', 0)
+                signal_text = (f"FVG {tf_short[tf_name]}: {zone_str} "
+                            f"(размер {size_pct:.2f}% {dir_emoji[fvg['type']]} {distance_text})")
+                
+                result['has_fvg'] = True
+                result['signals'].append(signal_text)
+                
+                # Сохраняем зону для графиков
+                result['zones'].append({
+                    'tf': tf_name,
+                    'tf_short': tf_short[tf_name],
+                    'min': fvg['price_min'],
+                    'max': fvg['price_max'],
+                    'type': fvg['type'],
+                    'dir_emoji': dir_emoji[fvg['type']],
+                    'size': size_pct,
+                    'distance_pct': distance_pct,
+                    'in_zone': in_zone,
+                    'distance_text': distance_text
+                })
+                
+                # Увеличиваем силу с весом таймфрейма
+                weight = {
+                    'monthly': 4.0,
+                    'weekly': 3.5,
+                    'daily': 2.5,
+                    'four_hourly': 2.0,
+                    'hourly': 1.5,
+                    'current': 1.0
+                }.get(tf_name, 1.0)
+                
+                result['strength'] += fvg['strength'] * weight
         
         # Ограничиваем силу 100%
         if result['strength'] > 100:
