@@ -3251,7 +3251,7 @@ class FastPumpScanner:
                     break
 
         # ===== ПРАВИЛЬНАЯ ЛОГИКА НАПРАВЛЕНИЯ =====
-        
+
         if pump_change > 0:  # PUMP
             if has_breakout:
                 signal_emoji = "🚀"
@@ -3272,13 +3272,6 @@ class FastPumpScanner:
                     has_pump_reason = any('Пробой уровня' in r or 'Коррекция' in r for r in signal['reasons'])
                     if not has_pump_reason:
                         signal['reasons'].insert(0, f"Коррекция после пампа +{pump_change:.1f}%")
-            else:
-                signal_emoji = "🚨" if pump_change > 3.0 else "🚀"
-                signal_text = f"PUMP +{pump_change:.1f}%"
-                signal['direction'] = 'SHORT 📉 (коррекция)'
-                signal['signal_type'] = 'PUMP'
-                if 'reasons' in signal and not any('Коррекция' in r for r in signal['reasons']):
-                    signal['reasons'].insert(0, f"Коррекция после пампа +{pump_change:.1f}%")
 
         else:  # DUMP
             if has_breakout:
@@ -3286,15 +3279,19 @@ class FastPumpScanner:
                 signal_text = f"DUMP {pump_change:.1f}%"
                 signal['direction'] = 'SHORT 📉 (пробой после дампа)'
                 signal['signal_type'] = 'DUMP_BREAKOUT'
-                if 'reasons' in signal and not any('Отскок' in r for r in signal['reasons']):
-                    signal['reasons'].insert(0, f"Пробой уровня после дампа {pump_change:.1f}%")
+                if 'reasons' in signal:
+                    has_dump_reason = any('Пробой уровня' in r or 'Отскок' in r for r in signal['reasons'])
+                    if not has_dump_reason:
+                        signal['reasons'].insert(0, f"Пробой уровня после дампа {pump_change:.1f}%")
             else:
                 signal_emoji = "📊" if pump_change < -1.5 else "📉"
                 signal_text = f"DUMP {pump_change:.1f}%"
                 signal['direction'] = 'LONG 📈 (отскок)'
                 signal['signal_type'] = 'DUMP'
-                if 'reasons' in signal and not any('Отскок' in r for r in signal['reasons']):
-                    signal['reasons'].insert(0, f"Отскок после дампа {pump_change:.1f}%")
+                if 'reasons' in signal:
+                    has_dump_reason = any('Пробой уровня' in r or 'Отскок' in r for r in signal['reasons'])
+                    if not has_dump_reason:
+                        signal['reasons'].insert(0, f"Отскок после дампа {pump_change:.1f}%")
         
         # Определяем силу сигнала по модулю движения
         signal_power = self._get_power_text(abs(pump_change))
