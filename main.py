@@ -3449,21 +3449,21 @@ class FastPumpScanner:
         return message, InlineKeyboardMarkup(keyboard) if keyboard else None
 
     def _get_power_text(self, strength: float) -> str:
-    """Определение текста силы сигнала для ПАМП-ДВИЖЕНИЙ (0-100%+)"""
-    if strength >= 20.0:
-        return "🔥🔥🔥🔥 ЭКСТРЕМАЛЬНЫЙ"
-    elif strength >= 12.0:
-        return "🔥🔥🔥 ОЧЕНЬ СИЛЬНЫЙ"
-    elif strength >= 8.0:
-        return "🔥🔥 СИЛЬНЫЙ"
-    elif strength >= 5.0:
-        return "🔥 СРЕДНИЙ"
-    elif strength >= 3.0:
-        return "📊 СРЕДНИЙ"
-    elif strength >= 1.5:
-        return "⚡ СЛАБЫЙ"
-    else:
-        return "👀 НАБЛЮДЕНИЕ"
+        """Определение текста силы сигнала для ПАМП-ДВИЖЕНИЙ (0-100%+)"""
+        if strength >= 20.0:
+            return "🔥🔥🔥🔥 ЭКСТРЕМАЛЬНЫЙ"
+        elif strength >= 12.0:
+            return "🔥🔥🔥 ОЧЕНЬ СИЛЬНЫЙ"
+        elif strength >= 8.0:
+            return "🔥🔥 СИЛЬНЫЙ"
+        elif strength >= 5.0:
+            return "🔥 СРЕДНИЙ"
+        elif strength >= 3.0:
+            return "📊 СРЕДНИЙ"
+        elif strength >= 1.5:
+            return "⚡ СЛАБЫЙ"
+        else:
+            return "👀 НАБЛЮДЕНИЕ"
 
 # ============== ОСНОВНОЙ КЛАСС БОТА ==============
 
