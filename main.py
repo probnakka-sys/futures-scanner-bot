@@ -3251,15 +3251,27 @@ class FastPumpScanner:
                     break
 
         # ===== ПРАВИЛЬНАЯ ЛОГИКА НАПРАВЛЕНИЯ =====
+        
         if pump_change > 0:  # PUMP
             if has_breakout:
                 signal_emoji = "🚀"
                 signal_text = f"PUMP +{pump_change:.1f}%"
                 signal['direction'] = 'LONG 📈 (пробой после пампа)'
                 signal['signal_type'] = 'PUMP_BREAKOUT'
-                # Добавляем причину (если еще не добавлена)
-                if 'reasons' in signal and not any('Коррекция' in r for r in signal['reasons']):
-                    signal['reasons'].insert(0, f"Пробой уровня после пампа +{pump_change:.1f}%")
+                # Добавляем причину (если еще нет)
+                if 'reasons' in signal:
+                    has_pump_reason = any('Пробой уровня' in r or 'Коррекция' in r for r in signal['reasons'])
+                    if not has_pump_reason:
+                        signal['reasons'].insert(0, f"Пробой уровня после пампа +{pump_change:.1f}%")
+            else:
+                signal_emoji = "🚨" if pump_change > 3.0 else "🚀"
+                signal_text = f"PUMP +{pump_change:.1f}%"
+                signal['direction'] = 'SHORT 📉 (коррекция)'
+                signal['signal_type'] = 'PUMP'
+                if 'reasons' in signal:
+                    has_pump_reason = any('Пробой уровня' in r or 'Коррекция' in r for r in signal['reasons'])
+                    if not has_pump_reason:
+                        signal['reasons'].insert(0, f"Коррекция после пампа +{pump_change:.1f}%")
             else:
                 signal_emoji = "🚨" if pump_change > 3.0 else "🚀"
                 signal_text = f"PUMP +{pump_change:.1f}%"
