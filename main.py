@@ -1630,288 +1630,288 @@ class MultiTimeframeAnalyzer:
         
         return False
     def generate_signal(self, dataframes: Dict[str, pd.DataFrame], metadata: Dict, symbol: str, exchange: str) -> Optional[Dict]:
-    """
-    Генерация торгового сигнала на основе всех индикаторов
-    """
-    logger.info(f"🔄 generate_signal начал работу для {symbol}")
-    
-    if 'current' not in dataframes or dataframes['current'].empty:
-        logger.warning(f"⚠️ Нет current данных для {symbol}")
-        return None
-    
-    df = dataframes['current']
-    last = df.iloc[-1]
-    prev = df.iloc[-2] if len(df) > 1 else last
-    
-    logger.info(f"  📊 {symbol} - Цена: {last['close']}, RSI: {last['rsi'] if pd.notna(last['rsi']) else 'N/A'}")
-    
-    alignment = self.analyze_timeframe_alignment(dataframes)
-    logger.info(f"  📊 {symbol} - Согласованность трендов: {alignment['trend_alignment']}%")
-    
-    confidence = 50
-    reasons = []
-    direction = 'NEUTRAL'
-    signal_type = 'regular'
-    
-    # ===== RSI =====
-    if pd.notna(last['rsi']):
-        if last['rsi'] < INDICATOR_SETTINGS['rsi_oversold']:
-            reasons.append(f"RSI перепродан ({last['rsi']:.1f})")
-            confidence += INDICATOR_WEIGHTS['rsi']
-        elif last['rsi'] > INDICATOR_SETTINGS['rsi_overbought']:
-            reasons.append(f"RSI перекуплен ({last['rsi']:.1f})")
-            confidence += INDICATOR_WEIGHTS['rsi']
-    
-    # ===== MACD =====
-    if pd.notna(last['MACD_12_26_9']) and pd.notna(last['MACDs_12_26_9']):
-        if last['MACD_12_26_9'] > last['MACDs_12_26_9'] and prev['MACD_12_26_9'] <= prev['MACDs_12_26_9']:
-            reasons.append("Бычье пересечение MACD")
-            confidence += INDICATOR_WEIGHTS['macd']
-        elif last['MACD_12_26_9'] < last['MACDs_12_26_9'] and prev['MACD_12_26_9'] >= prev['MACDs_12_26_9']:
-            reasons.append("Медвежье пересечение MACD")
-            confidence += INDICATOR_WEIGHTS['macd']
-    
-    # ===== EMA =====
-    if last['ema_9'] > last['ema_21'] and prev['ema_9'] <= prev['ema_21']:
-        reasons.append("Бычье пересечение EMA (9/21)")
-        confidence += INDICATOR_WEIGHTS['ema_cross_current']
-    elif last['ema_9'] < last['ema_21'] and prev['ema_9'] >= prev['ema_21']:
-        reasons.append("Медвежье пересечение EMA (9/21)")
-        confidence += INDICATOR_WEIGHTS['ema_cross_current']
-    
-    # ===== ОБЪЕМ =====
-    if last['volume_ratio'] > 1.5:
-        reasons.append(f"Объем x{last['volume_ratio']:.1f} от нормы")
-        confidence += INDICATOR_WEIGHTS['volume']
-    
-    # ===== VWAP =====
-    if FEATURES['advanced']['vwap'] and 'vwap' in df.columns:
-        vwap_value = last['vwap']
-        price = last['close']
+        """
+        Генерация торгового сигнала на основе всех индикаторов
+        """
+        logger.info(f"🔄 generate_signal начал работу для {symbol}")
         
-        # Умное форматирование VWAP
-        if vwap_value < 0.0001:
-            vwap_formatted = f"{vwap_value:.8f}".rstrip('0').rstrip('.')
-        elif vwap_value < 0.001:
-            vwap_formatted = f"{vwap_value:.6f}".rstrip('0').rstrip('.')
-        elif vwap_value < 0.01:
-            vwap_formatted = f"{vwap_value:.5f}".rstrip('0').rstrip('.')
-        elif vwap_value < 0.1:
-            vwap_formatted = f"{vwap_value:.4f}".rstrip('0').rstrip('.')
-        elif vwap_value < 1:
-            vwap_formatted = f"{vwap_value:.3f}".rstrip('0').rstrip('.')
-        else:
-            vwap_formatted = f"{vwap_value:.2f}"
+        if 'current' not in dataframes or dataframes['current'].empty:
+            logger.warning(f"⚠️ Нет current данных для {symbol}")
+            return None
         
-        reasons.append(f"Цена {'выше' if price > vwap_value else 'ниже'} VWAP ({vwap_formatted})")
-        confidence += 10
-    
-    # ===== СИГНАЛЫ ОТ СТАРШИХ ТАЙМФРЕЙМОВ =====
-    for signal in alignment['signals']:
-        reasons.append(signal)
-        if "НЕДЕЛЬНЫЙ" in signal or "МЕСЯЧНЫЙ" in signal:
-            confidence += INDICATOR_WEIGHTS['weekly_trend']
-        elif "Дневной" in signal:
-            confidence += INDICATOR_WEIGHTS['daily_trend']
-    
-    # ===== СОГЛАСОВАННОСТЬ ТРЕНДОВ =====
-    if alignment['trend_alignment'] > 70:
-        reasons.append(f"Тренды согласованы ({alignment['trend_alignment']:.0f}%)")
-        confidence += INDICATOR_WEIGHTS['trend_alignment']
-    
-    # ===== АНАЛИЗ ФИБОНАЧЧИ =====
-    fib_analysis = None
-    if self.fibonacci and FEATURES['advanced']['fibonacci']:
-        logger.info(f"  🔍 {symbol} - Начинаю анализ Фибоначчи")
-        fib_analysis = self.fibonacci.analyze_multi_timeframe(dataframes)
-        if fib_analysis['has_confluence']:
-            for signal in fib_analysis['signals']:
-                reasons.append(signal)
-            confidence += fib_analysis['strength'] / 5
-            logger.info(f"  ✅ {symbol} - Фибоначчи: найдено {len(fib_analysis['signals'])} сигналов")
-    
-    # ===== АНАЛИЗ НАКОПЛЕНИЯ =====
-    accumulation_analysis = None
-    if self.accumulation and FEATURES['advanced']['accumulation']:
-        logger.info(f"  🔍 {symbol} - Начинаю анализ накопления")
-        accumulation_analysis = self.accumulation.analyze(df)
+        df = dataframes['current']
+        last = df.iloc[-1]
+        prev = df.iloc[-2] if len(df) > 1 else last
         
-        if accumulation_analysis.get('has_accumulation'):
-            for signal in accumulation_analysis['signals']:
-                reasons.append(f"📦 {signal}")
-            confidence += accumulation_analysis.get('strength', 0) / 5
-            signal_type = 'accumulation'
+        logger.info(f"  📊 {symbol} - Цена: {last['close']}, RSI: {last['rsi'] if pd.notna(last['rsi']) else 'N/A'}")
+        
+        alignment = self.analyze_timeframe_alignment(dataframes)
+        logger.info(f"  📊 {symbol} - Согласованность трендов: {alignment['trend_alignment']}%")
+        
+        confidence = 50
+        reasons = []
+        direction = 'NEUTRAL'
+        signal_type = 'regular'
+        
+        # ===== RSI =====
+        if pd.notna(last['rsi']):
+            if last['rsi'] < INDICATOR_SETTINGS['rsi_oversold']:
+                reasons.append(f"RSI перепродан ({last['rsi']:.1f})")
+                confidence += INDICATOR_WEIGHTS['rsi']
+            elif last['rsi'] > INDICATOR_SETTINGS['rsi_overbought']:
+                reasons.append(f"RSI перекуплен ({last['rsi']:.1f})")
+                confidence += INDICATOR_WEIGHTS['rsi']
+        
+        # ===== MACD =====
+        if pd.notna(last['MACD_12_26_9']) and pd.notna(last['MACDs_12_26_9']):
+            if last['MACD_12_26_9'] > last['MACDs_12_26_9'] and prev['MACD_12_26_9'] <= prev['MACDs_12_26_9']:
+                reasons.append("Бычье пересечение MACD")
+                confidence += INDICATOR_WEIGHTS['macd']
+            elif last['MACD_12_26_9'] < last['MACDs_12_26_9'] and prev['MACD_12_26_9'] >= prev['MACDs_12_26_9']:
+                reasons.append("Медвежье пересечение MACD")
+                confidence += INDICATOR_WEIGHTS['macd']
+        
+        # ===== EMA =====
+        if last['ema_9'] > last['ema_21'] and prev['ema_9'] <= prev['ema_21']:
+            reasons.append("Бычье пересечение EMA (9/21)")
+            confidence += INDICATOR_WEIGHTS['ema_cross_current']
+        elif last['ema_9'] < last['ema_21'] and prev['ema_9'] >= prev['ema_21']:
+            reasons.append("Медвежье пересечение EMA (9/21)")
+            confidence += INDICATOR_WEIGHTS['ema_cross_current']
+        
+        # ===== ОБЪЕМ =====
+        if last['volume_ratio'] > 1.5:
+            reasons.append(f"Объем x{last['volume_ratio']:.1f} от нормы")
+            confidence += INDICATOR_WEIGHTS['volume']
+        
+        # ===== VWAP =====
+        if FEATURES['advanced']['vwap'] and 'vwap' in df.columns:
+            vwap_value = last['vwap']
+            price = last['close']
             
-            # Расчет потенциала
-            potential = self.accumulation.calculate_potential(df, dataframes)
-            if potential['has_potential']:
-                accumulation_analysis['potential'] = potential
-                for reason in potential['reasons']:
-                    reasons.append(reason)
-                logger.info(f"  📈 {symbol} - Потенциал: {potential['target_pct']}%")
-            
-            if accumulation_analysis.get('direction'):
-                direction = accumulation_analysis['direction']
-            logger.info(f"  ✅ {symbol} - Накопление: найдено {len(accumulation_analysis['signals'])} сигналов")
-    
-    # ===== FVG МУЛЬТИТАЙМФРЕЙМОВЫЙ АНАЛИЗ =====
-    fvg_analysis = {'has_fvg': False, 'signals': [], 'zones': []}
-    if FEATURES['advanced']['smart_money']:
-        logger.info(f"  🔍 {symbol} - Анализ FVG на всех таймфреймах")
-        fvg_analysis = self.analyze_fvg_multi_timeframe(dataframes, last['close'])
-        if fvg_analysis['has_fvg']:
-            for signal_text in fvg_analysis['signals']:
-                reasons.append(signal_text)
-            confidence += fvg_analysis['strength'] / 5
-            logger.info(f"  ✅ {symbol} - Найдено FVG: {len(fvg_analysis['signals'])} на разных ТФ")
-    
-    # ===== ФАНДИНГ =====
-    funding = metadata.get('funding_rate')
-    if funding is not None and funding != 0:
-        funding_pct = funding * 100
-        if funding > 0.001:
-            reasons.append(f"Позитивный фандинг ({funding_pct:.4f}%)")
-        elif funding < -0.001:
-            reasons.append(f"Негативный фандинг ({funding_pct:.4f}%)")
-    
-    # ===== ОПРЕДЕЛЕНИЕ БАЗОВОГО НАПРАВЛЕНИЯ =====
-    bullish_keywords = ['перепродан', 'Бычье', 'восходящий', 'негативный фандинг', 'выше VWAP']
-    bearish_keywords = ['перекуплен', 'Медвежье', 'нисходящий', 'позитивный фандинг', 'ниже VWAP']
-    bullish = sum(1 for r in reasons if any(k in r for k in bullish_keywords))
-    bearish = sum(1 for r in reasons if any(k in r for k in bearish_keywords))
-    
-    # Базовое направление от индикаторов
-    base_direction = 'NEUTRAL'
-    if accumulation_analysis and accumulation_analysis.get('direction') and accumulation_analysis.get('has_accumulation'):
-        base_direction = accumulation_analysis['direction']
-    elif bullish > bearish and confidence >= MIN_CONFIDENCE:
-        if alignment['weekly_trend'] == 'ВОСХОДЯЩИЙ':
-            base_direction = 'Разворот LONG'
-        else:
-            base_direction = 'LONG'
-    elif bearish > bullish and confidence >= MIN_CONFIDENCE:
-        if alignment['weekly_trend'] == 'НИСХОДЯЩИЙ':
-            base_direction = 'Разворот SHORT'
-        else:
-            base_direction = 'SHORT'
-    
-    direction = base_direction
-    
-    # ===== КОРРЕКЦИЯ ДЛЯ ПАМП-СИГНАЛОВ =====
-    # Эта информация будет добавлена позже, в format_pump_message
-    # Но здесь мы можем проанализировать FVG для пампа
-    
-    # ===== АНАЛИЗ FVG ДЛЯ КОРРЕКЦИИ УВЕРЕННОСТИ =====
-    if fvg_analysis['has_fvg'] and 'zones' in fvg_analysis:
-        current_price = last['close']
-        fvg_above = 0
-        fvg_below = 0
-        fvg_in_zone = 0
-        
-        for zone in fvg_analysis['zones']:
-            if zone['min'] <= current_price <= zone['max']:
-                fvg_in_zone += 1
-            elif zone['min'] > current_price:
-                fvg_above += 1
+            # Умное форматирование VWAP
+            if vwap_value < 0.0001:
+                vwap_formatted = f"{vwap_value:.8f}".rstrip('0').rstrip('.')
+            elif vwap_value < 0.001:
+                vwap_formatted = f"{vwap_value:.6f}".rstrip('0').rstrip('.')
+            elif vwap_value < 0.01:
+                vwap_formatted = f"{vwap_value:.5f}".rstrip('0').rstrip('.')
+            elif vwap_value < 0.1:
+                vwap_formatted = f"{vwap_value:.4f}".rstrip('0').rstrip('.')
+            elif vwap_value < 1:
+                vwap_formatted = f"{vwap_value:.3f}".rstrip('0').rstrip('.')
             else:
-                fvg_below += 1
+                vwap_formatted = f"{vwap_value:.2f}"
+            
+            reasons.append(f"Цена {'выше' if price > vwap_value else 'ниже'} VWAP ({vwap_formatted})")
+            confidence += 10
         
-        # Штраф за FVG сверху (сопротивление)
-        if fvg_above > 0:
-            reasons.append(f"⚠️ {fvg_above} зон FVG сверху (сопротивление)")
-            confidence -= fvg_above * 3
+        # ===== СИГНАЛЫ ОТ СТАРШИХ ТАЙМФРЕЙМОВ =====
+        for signal in alignment['signals']:
+            reasons.append(signal)
+            if "НЕДЕЛЬНЫЙ" in signal or "МЕСЯЧНЫЙ" in signal:
+                confidence += INDICATOR_WEIGHTS['weekly_trend']
+            elif "Дневной" in signal:
+                confidence += INDICATOR_WEIGHTS['daily_trend']
         
-        # Бонус за FVG снизу (поддержка)
-        if fvg_below > 0:
-            reasons.append(f"✅ {fvg_below} зон FVG снизу (поддержка)")
-            confidence += fvg_below * 3
+        # ===== СОГЛАСОВАННОСТЬ ТРЕНДОВ =====
+        if alignment['trend_alignment'] > 70:
+            reasons.append(f"Тренды согласованы ({alignment['trend_alignment']:.0f}%)")
+            confidence += INDICATOR_WEIGHTS['trend_alignment']
         
-        # Бонус за нахождение в зоне
-        if fvg_in_zone > 0:
-            reasons.append(f"🎯 Цена в зоне FVG (сильный уровень)")
-            confidence += 15
-    
-    logger.info(f"  📊 {symbol} - Направление: {direction}, Уверенность: {confidence}")
-    
-    if direction == 'NEUTRAL':
-        logger.info(f"⏭️ NEUTRAL сигнал для {symbol}")
-        return None
-    
-    # ===== РАСЧЕТ ЦЕЛЕЙ ПО ATR =====
-    atr = last['atr'] if pd.notna(last['atr']) else (last['high'] - last['low']) * 0.3
-    current_price = last['close']
-    targets = {}
-    
-    # Расчет целей в зависимости от направления
-    if 'LONG' in direction:
-        targets['target_1'] = current_price + atr * ATR_SETTINGS['long_target_1_mult']
-        targets['target_2'] = current_price + atr * ATR_SETTINGS['long_target_2_mult']
-        targets['stop_loss'] = current_price - atr * ATR_SETTINGS['long_stop_loss_mult']
-    else:
-        targets['target_1'] = current_price - atr * ATR_SETTINGS['short_target_1_mult']
-        targets['target_2'] = current_price - atr * ATR_SETTINGS['short_target_2_mult']
-        targets['stop_loss'] = current_price + atr * ATR_SETTINGS['short_stop_loss_mult']
-    
-    # Округление целей
-    for key in ['target_1', 'target_2', 'stop_loss']:
-        if current_price < 0.0001:
-            targets[key] = round(targets[key], 8)
-        elif current_price < 0.001:
-            targets[key] = round(targets[key], 6)
-        elif current_price < 0.01:
-            targets[key] = round(targets[key], 5)
-        elif current_price < 0.1:
-            targets[key] = round(targets[key], 4)
-        elif current_price < 1:
-            targets[key] = round(targets[key], 3)
+        # ===== АНАЛИЗ ФИБОНАЧЧИ =====
+        fib_analysis = None
+        if self.fibonacci and FEATURES['advanced']['fibonacci']:
+            logger.info(f"  🔍 {symbol} - Начинаю анализ Фибоначчи")
+            fib_analysis = self.fibonacci.analyze_multi_timeframe(dataframes)
+            if fib_analysis['has_confluence']:
+                for signal in fib_analysis['signals']:
+                    reasons.append(signal)
+                confidence += fib_analysis['strength'] / 5
+                logger.info(f"  ✅ {symbol} - Фибоначчи: найдено {len(fib_analysis['signals'])} сигналов")
+        
+        # ===== АНАЛИЗ НАКОПЛЕНИЯ =====
+        accumulation_analysis = None
+        if self.accumulation and FEATURES['advanced']['accumulation']:
+            logger.info(f"  🔍 {symbol} - Начинаю анализ накопления")
+            accumulation_analysis = self.accumulation.analyze(df)
+            
+            if accumulation_analysis.get('has_accumulation'):
+                for signal in accumulation_analysis['signals']:
+                    reasons.append(f"📦 {signal}")
+                confidence += accumulation_analysis.get('strength', 0) / 5
+                signal_type = 'accumulation'
+                
+                # Расчет потенциала
+                potential = self.accumulation.calculate_potential(df, dataframes)
+                if potential['has_potential']:
+                    accumulation_analysis['potential'] = potential
+                    for reason in potential['reasons']:
+                        reasons.append(reason)
+                    logger.info(f"  📈 {symbol} - Потенциал: {potential['target_pct']}%")
+                
+                if accumulation_analysis.get('direction'):
+                    direction = accumulation_analysis['direction']
+                logger.info(f"  ✅ {symbol} - Накопление: найдено {len(accumulation_analysis['signals'])} сигналов")
+        
+        # ===== FVG МУЛЬТИТАЙМФРЕЙМОВЫЙ АНАЛИЗ =====
+        fvg_analysis = {'has_fvg': False, 'signals': [], 'zones': []}
+        if FEATURES['advanced']['smart_money']:
+            logger.info(f"  🔍 {symbol} - Анализ FVG на всех таймфреймах")
+            fvg_analysis = self.analyze_fvg_multi_timeframe(dataframes, last['close'])
+            if fvg_analysis['has_fvg']:
+                for signal_text in fvg_analysis['signals']:
+                    reasons.append(signal_text)
+                confidence += fvg_analysis['strength'] / 5
+                logger.info(f"  ✅ {symbol} - Найдено FVG: {len(fvg_analysis['signals'])} на разных ТФ")
+        
+        # ===== ФАНДИНГ =====
+        funding = metadata.get('funding_rate')
+        if funding is not None and funding != 0:
+            funding_pct = funding * 100
+            if funding > 0.001:
+                reasons.append(f"Позитивный фандинг ({funding_pct:.4f}%)")
+            elif funding < -0.001:
+                reasons.append(f"Негативный фандинг ({funding_pct:.4f}%)")
+        
+        # ===== ОПРЕДЕЛЕНИЕ БАЗОВОГО НАПРАВЛЕНИЯ =====
+        bullish_keywords = ['перепродан', 'Бычье', 'восходящий', 'негативный фандинг', 'выше VWAP']
+        bearish_keywords = ['перекуплен', 'Медвежье', 'нисходящий', 'позитивный фандинг', 'ниже VWAP']
+        bullish = sum(1 for r in reasons if any(k in r for k in bullish_keywords))
+        bearish = sum(1 for r in reasons if any(k in r for k in bearish_keywords))
+        
+        # Базовое направление от индикаторов
+        base_direction = 'NEUTRAL'
+        if accumulation_analysis and accumulation_analysis.get('direction') and accumulation_analysis.get('has_accumulation'):
+            base_direction = accumulation_analysis['direction']
+        elif bullish > bearish and confidence >= MIN_CONFIDENCE:
+            if alignment['weekly_trend'] == 'ВОСХОДЯЩИЙ':
+                base_direction = 'Разворот LONG'
+            else:
+                base_direction = 'LONG'
+        elif bearish > bullish and confidence >= MIN_CONFIDENCE:
+            if alignment['weekly_trend'] == 'НИСХОДЯЩИЙ':
+                base_direction = 'Разворот SHORT'
+            else:
+                base_direction = 'SHORT'
+        
+        direction = base_direction
+        
+        # ===== КОРРЕКЦИЯ ДЛЯ ПАМП-СИГНАЛОВ =====
+        # Эта информация будет добавлена позже, в format_pump_message
+        # Но здесь мы можем проанализировать FVG для пампа
+        
+        # ===== АНАЛИЗ FVG ДЛЯ КОРРЕКЦИИ УВЕРЕННОСТИ =====
+        if fvg_analysis['has_fvg'] and 'zones' in fvg_analysis:
+            current_price = last['close']
+            fvg_above = 0
+            fvg_below = 0
+            fvg_in_zone = 0
+            
+            for zone in fvg_analysis['zones']:
+                if zone['min'] <= current_price <= zone['max']:
+                    fvg_in_zone += 1
+                elif zone['min'] > current_price:
+                    fvg_above += 1
+                else:
+                    fvg_below += 1
+            
+            # Штраф за FVG сверху (сопротивление)
+            if fvg_above > 0:
+                reasons.append(f"⚠️ {fvg_above} зон FVG сверху (сопротивление)")
+                confidence -= fvg_above * 3
+            
+            # Бонус за FVG снизу (поддержка)
+            if fvg_below > 0:
+                reasons.append(f"✅ {fvg_below} зон FVG снизу (поддержка)")
+                confidence += fvg_below * 3
+            
+            # Бонус за нахождение в зоне
+            if fvg_in_zone > 0:
+                reasons.append(f"🎯 Цена в зоне FVG (сильный уровень)")
+                confidence += 15
+        
+        logger.info(f"  📊 {symbol} - Направление: {direction}, Уверенность: {confidence}")
+        
+        if direction == 'NEUTRAL':
+            logger.info(f"⏭️ NEUTRAL сигнал для {symbol}")
+            return None
+        
+        # ===== РАСЧЕТ ЦЕЛЕЙ ПО ATR =====
+        atr = last['atr'] if pd.notna(last['atr']) else (last['high'] - last['low']) * 0.3
+        current_price = last['close']
+        targets = {}
+        
+        # Расчет целей в зависимости от направления
+        if 'LONG' in direction:
+            targets['target_1'] = current_price + atr * ATR_SETTINGS['long_target_1_mult']
+            targets['target_2'] = current_price + atr * ATR_SETTINGS['long_target_2_mult']
+            targets['stop_loss'] = current_price - atr * ATR_SETTINGS['long_stop_loss_mult']
         else:
-            targets[key] = round(targets[key], 2)
-    
-    logger.info(f"  📈 {symbol} - ATR: {atr}, Цели: {targets}")
-    
-    # ===== ФОРМИРОВАНИЕ РЕЗУЛЬТАТА =====
-    result = {
-        'symbol': symbol,
-        'exchange': exchange,
-        'price': current_price,
-        'direction': direction,
-        'signal_type': signal_type,
-        'signal_power': self._get_power_text(confidence),
-        'confidence': round(confidence, 1),
-        'signal_strength': round((confidence + alignment['trend_alignment']) / 2, 1),
-        'reasons': reasons[:8],
-        'funding_rate': metadata.get('funding_rate', 0),
-        'volume_24h': metadata.get('volume_24h', 0),
-        'price_change_24h': metadata.get('price_change_24h', 0),
-        'time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-        'alignment': alignment,
-        **targets
-    }
-    
-    # Добавляем зоны FVG для графика
-    if fvg_analysis['has_fvg'] and 'zones' in fvg_analysis:
-        result['fvg_zones'] = fvg_analysis['zones']
-    
-    if fib_analysis:
-        result['fibonacci'] = fib_analysis
-    if accumulation_analysis:
-        result['accumulation'] = accumulation_analysis
-    
-    logger.info(f"✅ generate_signal успешно завершен для {symbol}")
-    return result
+            targets['target_1'] = current_price - atr * ATR_SETTINGS['short_target_1_mult']
+            targets['target_2'] = current_price - atr * ATR_SETTINGS['short_target_2_mult']
+            targets['stop_loss'] = current_price + atr * ATR_SETTINGS['short_stop_loss_mult']
+        
+        # Округление целей
+        for key in ['target_1', 'target_2', 'stop_loss']:
+            if current_price < 0.0001:
+                targets[key] = round(targets[key], 8)
+            elif current_price < 0.001:
+                targets[key] = round(targets[key], 6)
+            elif current_price < 0.01:
+                targets[key] = round(targets[key], 5)
+            elif current_price < 0.1:
+                targets[key] = round(targets[key], 4)
+            elif current_price < 1:
+                targets[key] = round(targets[key], 3)
+            else:
+                targets[key] = round(targets[key], 2)
+        
+        logger.info(f"  📈 {symbol} - ATR: {atr}, Цели: {targets}")
+        
+        # ===== ФОРМИРОВАНИЕ РЕЗУЛЬТАТА =====
+        result = {
+            'symbol': symbol,
+            'exchange': exchange,
+            'price': current_price,
+            'direction': direction,
+            'signal_type': signal_type,
+            'signal_power': self._get_power_text(confidence),
+            'confidence': round(confidence, 1),
+            'signal_strength': round((confidence + alignment['trend_alignment']) / 2, 1),
+            'reasons': reasons[:8],
+            'funding_rate': metadata.get('funding_rate', 0),
+            'volume_24h': metadata.get('volume_24h', 0),
+            'price_change_24h': metadata.get('price_change_24h', 0),
+            'time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'alignment': alignment,
+            **targets
+        }
+        
+        # Добавляем зоны FVG для графика
+        if fvg_analysis['has_fvg'] and 'zones' in fvg_analysis:
+            result['fvg_zones'] = fvg_analysis['zones']
+        
+        if fib_analysis:
+            result['fibonacci'] = fib_analysis
+        if accumulation_analysis:
+            result['accumulation'] = accumulation_analysis
+        
+        logger.info(f"✅ generate_signal успешно завершен для {symbol}")
+        return result
 
-def _get_power_text(self, confidence: float) -> str:
-    """Определение текста силы сигнала по уверенности"""
-    if confidence >= 85:
-        return "🔥🔥🔥 ОЧЕНЬ СИЛЬНЫЙ"
-    elif confidence >= 70:
-        return "🔥🔥 СИЛЬНЫЙ"
-    elif confidence >= 55:
-        return "🔥 СРЕДНИЙ"
-    elif confidence >= 40:
-        return "📊 СЛАБЫЙ"
-    else:
-        return "👀 НАБЛЮДЕНИЕ"
+    def _get_power_text(self, confidence: float) -> str:
+        """Определение текста силы сигнала по уверенности"""
+        if confidence >= 85:
+            return "🔥🔥🔥 ОЧЕНЬ СИЛЬНЫЙ"
+        elif confidence >= 70:
+            return "🔥🔥 СИЛЬНЫЙ"
+        elif confidence >= 55:
+            return "🔥 СРЕДНИЙ"
+        elif confidence >= 40:
+            return "📊 СЛАБЫЙ"
+        else:
+            return "👀 НАБЛЮДЕНИЕ"
 
 # ============== БЫСТРЫЙ ПАМП-СКАНЕР ==============
 
@@ -2439,240 +2439,240 @@ class FastPumpScanner:
             return f"{num:.0f}"
     
     def format_pump_message(self, signal: Dict, contract_info: Dict = None) -> Tuple[str, InlineKeyboardMarkup]:
-    """
-    Форматирование памп-сигнала для отправки с ПРАВИЛЬНЫМ направлением
-    """
-    coin = signal['symbol'].split('/')[0].replace('USDT', '')
-    
-    # Получаем данные о пампа
-    pump_data = signal.get('pump_dump', [{}])[0]
-    pump_change = pump_data.get('change_percent', 0)
-    pump_time = pump_data.get('time_window', 0)
-    
-    # ===== ПРАВИЛЬНАЯ ЛОГИКА НАПРАВЛЕНИЯ =====
-    # Для PUMP (резкий рост) - SHORT на коррекцию
-    # Для DUMP (резкое падение) - LONG на отскок
-    
-    if pump_change > 3.0:  # СИЛЬНЫЙ PUMP
-        signal_emoji = "🚨"
-        signal_text = f"PUMP +{pump_change:.1f}%"
-        signal['direction'] = 'SHORT 📉 (коррекция)'
-        signal['signal_type'] = 'PUMP'
-        # Добавляем причину
-        if 'reasons' in signal:
-            signal['reasons'].insert(0, f"Коррекция после пампа +{pump_change:.1f}%")
-    
-    elif pump_change > 1.5:  # СЛАБЫЙ PUMP
-        signal_emoji = "🚀"
-        signal_text = f"PUMP +{pump_change:.1f}%"
-        signal['direction'] = 'SHORT 📉 (коррекция)'
-        signal['signal_type'] = 'PUMP'
-        if 'reasons' in signal:
-            signal['reasons'].insert(0, f"Коррекция после пампа +{pump_change:.1f}%")
-    
-    elif pump_change < -3.0:  # СИЛЬНЫЙ DUMP
-        signal_emoji = "📉"
-        signal_text = f"DUMP {pump_change:.1f}%"
-        signal['direction'] = 'LONG 📈 (отскок)'
-        signal['signal_type'] = 'DUMP'
-        if 'reasons' in signal:
-            signal['reasons'].insert(0, f"Отскок после дампа {pump_change:.1f}%")
-    
-    elif pump_change < -1.5:  # СЛАБЫЙ DUMP
-        signal_emoji = "📊"
-        signal_text = f"DUMP {pump_change:.1f}%"
-        signal['direction'] = 'LONG 📈 (отскок)'
-        signal['signal_type'] = 'DUMP'
-        if 'reasons' in signal:
-            signal['reasons'].insert(0, f"Отскок после дампа {pump_change:.1f}%")
-    
-    else:  # Обычный сигнал
-        signal_emoji = "📊"
-        signal_text = f"{pump_change:+.1f}%"
-        # Направление оставляем как есть
-    
-    # Определяем силу сигнала по модулю движения
-    signal_power = self._get_power_text(abs(pump_change))
-    signal['signal_power'] = signal_power
-    
-    line1 = f"{signal_emoji} <code>{coin}</code> {signal_text} {signal_power}"
-    
-    # Параметры контракта
-    if contract_info:
-        max_lev = contract_info.get('max_leverage')
-        if max_lev is None or max_lev > 200:
-            max_lev = 100
+        """
+        Форматирование памп-сигнала для отправки с ПРАВИЛЬНЫМ направлением
+        """
+        coin = signal['symbol'].split('/')[0].replace('USDT', '')
         
-        min_amt = contract_info.get('min_amount')
-        if min_amt is None or min_amt > 1000:
-            min_amt = 5.0
+        # Получаем данные о пампа
+        pump_data = signal.get('pump_dump', [{}])[0]
+        pump_change = pump_data.get('change_percent', 0)
+        pump_time = pump_data.get('time_window', 0)
         
-        max_amt = contract_info.get('max_amount')
-        if max_amt is None or max_amt > 10_000_000:
-            max_amt = 2_000_000
+        # ===== ПРАВИЛЬНАЯ ЛОГИКА НАПРАВЛЕНИЯ =====
+        # Для PUMP (резкий рост) - SHORT на коррекцию
+        # Для DUMP (резкое падение) - LONG на отскок
         
-        line2 = f"📌 {max_lev}x / {min_amt:.0f}$ / {self._format_compact(max_amt)}"
+        if pump_change > 3.0:  # СИЛЬНЫЙ PUMP
+            signal_emoji = "🚨"
+            signal_text = f"PUMP +{pump_change:.1f}%"
+            signal['direction'] = 'SHORT 📉 (коррекция)'
+            signal['signal_type'] = 'PUMP'
+            # Добавляем причину
+            if 'reasons' in signal:
+                signal['reasons'].insert(0, f"Коррекция после пампа +{pump_change:.1f}%")
         
-        # Объем 24ч
-        if signal.get('volume_24h') is not None and signal['volume_24h'] > 0:
-            volume = signal['volume_24h']
-            if volume > 1_000_000:
-                line2 += f" / {volume/1_000_000:.1f}M"
-            elif volume > 1_000:
-                line2 += f" / {volume/1_000:.1f}K"
-            else:
-                line2 += f" / {volume:.0f}"
+        elif pump_change > 1.5:  # СЛАБЫЙ PUMP
+            signal_emoji = "🚀"
+            signal_text = f"PUMP +{pump_change:.1f}%"
+            signal['direction'] = 'SHORT 📉 (коррекция)'
+            signal['signal_type'] = 'PUMP'
+            if 'reasons' in signal:
+                signal['reasons'].insert(0, f"Коррекция после пампа +{pump_change:.1f}%")
         
-        # Фандинг
-        funding_rate = signal.get('funding_rate')
-        if funding_rate is not None:
-            funding = funding_rate * 100
-            funding_emoji = "🟢" if funding > 0 else "🔴" if funding < 0 else "⚪"
-            line2 += f" / {funding_emoji} {funding:.3f}%"
-    else:
-        line2 = f"📌 100x / 5$ / 2.0M"
+        elif pump_change < -3.0:  # СИЛЬНЫЙ DUMP
+            signal_emoji = "📉"
+            signal_text = f"DUMP {pump_change:.1f}%"
+            signal['direction'] = 'LONG 📈 (отскок)'
+            signal['signal_type'] = 'DUMP'
+            if 'reasons' in signal:
+                signal['reasons'].insert(0, f"Отскок после дампа {pump_change:.1f}%")
         
-        if signal.get('volume_24h') is not None and signal['volume_24h'] > 0:
-            volume = signal['volume_24h']
-            if volume > 1_000_000:
-                line2 += f" / {volume/1_000_000:.1f}M"
-            elif volume > 1_000:
-                line2 += f" / {volume/1_000:.1f}K"
-            else:
-                line2 += f" / {volume:.0f}"
+        elif pump_change < -1.5:  # СЛАБЫЙ DUMP
+            signal_emoji = "📊"
+            signal_text = f"DUMP {pump_change:.1f}%"
+            signal['direction'] = 'LONG 📈 (отскок)'
+            signal['signal_type'] = 'DUMP'
+            if 'reasons' in signal:
+                signal['reasons'].insert(0, f"Отскок после дампа {pump_change:.1f}%")
         
-        funding_rate = signal.get('funding_rate')
-        if funding_rate is not None:
-            funding = funding_rate * 100
-            funding_emoji = "🟢" if funding > 0 else "🔴" if funding < 0 else "⚪"
-            line2 += f" / {funding_emoji} {funding:.3f}%"
-    
-    exchange_link = REF_LINKS.get(signal['exchange'], '#')
-    line3 = f"💲 Trade: <a href='{exchange_link}'>{signal['exchange']}</a>"
-    
-    line4 = ""
-    line5 = f"📊 Направление: {signal['direction']}"
-    line6 = f"🕓 Таймфрейм: {TIMEFRAMES.get('current', '15m')}"
-    
-    # Форматирование цены
-    if signal['price'] < 0.00001:
-        price_formatted = f"{signal['price']:.8f}"
-    elif signal['price'] < 0.0001:
-        price_formatted = f"{signal['price']:.7f}"
-    elif signal['price'] < 0.001:
-        price_formatted = f"{signal['price']:.6f}"
-    elif signal['price'] < 0.01:
-        price_formatted = f"{signal['price']:.5f}"
-    elif signal['price'] < 0.1:
-        price_formatted = f"{signal['price']:.4f}"
-    elif signal['price'] < 1:
-        price_formatted = f"{signal['price']:.3f}"
-    else:
-        price_formatted = f"{signal['price']:.2f}"
-    
-    price_formatted = price_formatted.rstrip('0').rstrip('.') if '.' in price_formatted else price_formatted
-    line7 = f"💰 Цена текущая: {price_formatted}"
-    
-    line8 = ""
-    if pump_data:
-        start_price = pump_data.get('start_price', signal['price'] / (1 + pump_change/100))
-        if start_price < 0.001:
-            start_formatted = f"{start_price:.8f}".rstrip('0').rstrip('.')
+        else:  # Обычный сигнал
+            signal_emoji = "📊"
+            signal_text = f"{pump_change:+.1f}%"
+            # Направление оставляем как есть
+        
+        # Определяем силу сигнала по модулю движения
+        signal_power = self._get_power_text(abs(pump_change))
+        signal['signal_power'] = signal_power
+        
+        line1 = f"{signal_emoji} <code>{coin}</code> {signal_text} {signal_power}"
+        
+        # Параметры контракта
+        if contract_info:
+            max_lev = contract_info.get('max_leverage')
+            if max_lev is None or max_lev > 200:
+                max_lev = 100
+            
+            min_amt = contract_info.get('min_amount')
+            if min_amt is None or min_amt > 1000:
+                min_amt = 5.0
+            
+            max_amt = contract_info.get('max_amount')
+            if max_amt is None or max_amt > 10_000_000:
+                max_amt = 2_000_000
+            
+            line2 = f"📌 {max_lev}x / {min_amt:.0f}$ / {self._format_compact(max_amt)}"
+            
+            # Объем 24ч
+            if signal.get('volume_24h') is not None and signal['volume_24h'] > 0:
+                volume = signal['volume_24h']
+                if volume > 1_000_000:
+                    line2 += f" / {volume/1_000_000:.1f}M"
+                elif volume > 1_000:
+                    line2 += f" / {volume/1_000:.1f}K"
+                else:
+                    line2 += f" / {volume:.0f}"
+            
+            # Фандинг
+            funding_rate = signal.get('funding_rate')
+            if funding_rate is not None:
+                funding = funding_rate * 100
+                funding_emoji = "🟢" if funding > 0 else "🔴" if funding < 0 else "⚪"
+                line2 += f" / {funding_emoji} {funding:.3f}%"
         else:
-            start_formatted = f"{start_price:.4f}"
-        line8 = f"📈 Рост: {start_formatted} → {price_formatted} за {pump_time:.0f}с"
-    
-    # Форматирование целей
-    if signal.get('target_1') and signal.get('target_2') and signal.get('stop_loss'):
-        def format_target(price):
-            if price < 0.00001:
-                return f"{price:.8f}".rstrip('0').rstrip('.')
-            elif price < 0.0001:
-                return f"{price:.7f}".rstrip('0').rstrip('.')
-            elif price < 0.001:
-                return f"{price:.6f}".rstrip('0').rstrip('.')
-            elif price < 0.01:
-                return f"{price:.5f}".rstrip('0').rstrip('.')
-            elif price < 0.1:
-                return f"{price:.4f}".rstrip('0').rstrip('.')
-            elif price < 1:
-                return f"{price:.3f}".rstrip('0').rstrip('.')
-            else:
-                return f"{price:.2f}"
+            line2 = f"📌 100x / 5$ / 2.0M"
+            
+            if signal.get('volume_24h') is not None and signal['volume_24h'] > 0:
+                volume = signal['volume_24h']
+                if volume > 1_000_000:
+                    line2 += f" / {volume/1_000_000:.1f}M"
+                elif volume > 1_000:
+                    line2 += f" / {volume/1_000:.1f}K"
+                else:
+                    line2 += f" / {volume:.0f}"
+            
+            funding_rate = signal.get('funding_rate')
+            if funding_rate is not None:
+                funding = funding_rate * 100
+                funding_emoji = "🟢" if funding > 0 else "🔴" if funding < 0 else "⚪"
+                line2 += f" / {funding_emoji} {funding:.3f}%"
         
-        t1 = format_target(signal['target_1'])
-        t2 = format_target(signal['target_2'])
-        sl = format_target(signal['stop_loss'])
-        line9 = f"🎯 Цели: {t1} | {t2} | SL {sl}"
-    else:
-        line9 = "🎯 Цели: N/A | N/A | SL N/A"
-    
-    line10 = ""
-    line11 = "💡 Причины:"
-    
-    # Очистка причин от эмодзи
-    clean_reasons = []
-    for reason in signal['reasons'][:6]:
-        clean_reason = reason
-        clean_reason = clean_reason.replace("📊 ", "")
-        clean_reason = clean_reason.replace("✅ ", "")
-        clean_reason = clean_reason.replace("🔄 ", "")
-        clean_reason = clean_reason.replace("💰 ", "")
-        clean_reason = clean_reason.replace("📈 ", "")
-        clean_reason = clean_reason.replace("📉 ", "")
-        clean_reason = clean_reason.replace("⚡️ ", "")
-        clean_reason = clean_reason.replace("🔥 ", "")
-        clean_reason = clean_reason.replace("🟢 ", "")
-        clean_reason = clean_reason.replace("🔴 ", "")
-        clean_reason = clean_reason.replace("⚪️ ", "")
-        clean_reason = clean_reason.replace("⚪ ", "")
-        clean_reason = clean_reason.replace("📦 ", "")
-        clean_reason = clean_reason.replace("📐 ", "")
-        clean_reason = clean_reason.replace("⚠️ ", "")
-        clean_reason = clean_reason.strip()
-        clean_reasons.append(clean_reason)
-    
-    reasons_lines = [f"   {r}" for r in clean_reasons]
-    
-    # Собираем сообщение
-    lines = [line1, line2, line3, line4, line5, line6, line7]
-    if line8:
-        lines.append(line8)
-    lines.extend([line9, line10, line11])
-    lines.extend(reasons_lines)
-    
-    message = "\n".join(lines)
-    
-    # Кнопки
-    keyboard = []
-    row1 = []
-    if DISPLAY_SETTINGS['buttons']['copy']:
-        row1.append(InlineKeyboardButton(f"📋 Копировать {coin}", callback_data=f"copy_{coin}"))
-    if DISPLAY_SETTINGS['buttons']['trade']:
-        row1.append(InlineKeyboardButton(f"🚀 Торговать на {signal['exchange']}", url=REF_LINKS.get(signal['exchange'], '#')))
-    if row1:
-        keyboard.append(row1)
-    
-    row2 = []
-    if DISPLAY_SETTINGS['buttons']['refresh']:
-        row2.append(InlineKeyboardButton("🔄 Обновить", callback_data=f"refresh_{coin}"))
-    if DISPLAY_SETTINGS['buttons']['details']:
-        row2.append(InlineKeyboardButton("📊 Детали", callback_data=f"details_{coin}"))
-    if row2:
-        keyboard.append(row2)
-    
-    return message, InlineKeyboardMarkup(keyboard) if keyboard else None
+        exchange_link = REF_LINKS.get(signal['exchange'], '#')
+        line3 = f"💲 Trade: <a href='{exchange_link}'>{signal['exchange']}</a>"
+        
+        line4 = ""
+        line5 = f"📊 Направление: {signal['direction']}"
+        line6 = f"🕓 Таймфрейм: {TIMEFRAMES.get('current', '15m')}"
+        
+        # Форматирование цены
+        if signal['price'] < 0.00001:
+            price_formatted = f"{signal['price']:.8f}"
+        elif signal['price'] < 0.0001:
+            price_formatted = f"{signal['price']:.7f}"
+        elif signal['price'] < 0.001:
+            price_formatted = f"{signal['price']:.6f}"
+        elif signal['price'] < 0.01:
+            price_formatted = f"{signal['price']:.5f}"
+        elif signal['price'] < 0.1:
+            price_formatted = f"{signal['price']:.4f}"
+        elif signal['price'] < 1:
+            price_formatted = f"{signal['price']:.3f}"
+        else:
+            price_formatted = f"{signal['price']:.2f}"
+        
+        price_formatted = price_formatted.rstrip('0').rstrip('.') if '.' in price_formatted else price_formatted
+        line7 = f"💰 Цена текущая: {price_formatted}"
+        
+        line8 = ""
+        if pump_data:
+            start_price = pump_data.get('start_price', signal['price'] / (1 + pump_change/100))
+            if start_price < 0.001:
+                start_formatted = f"{start_price:.8f}".rstrip('0').rstrip('.')
+            else:
+                start_formatted = f"{start_price:.4f}"
+            line8 = f"📈 Рост: {start_formatted} → {price_formatted} за {pump_time:.0f}с"
+        
+        # Форматирование целей
+        if signal.get('target_1') and signal.get('target_2') and signal.get('stop_loss'):
+            def format_target(price):
+                if price < 0.00001:
+                    return f"{price:.8f}".rstrip('0').rstrip('.')
+                elif price < 0.0001:
+                    return f"{price:.7f}".rstrip('0').rstrip('.')
+                elif price < 0.001:
+                    return f"{price:.6f}".rstrip('0').rstrip('.')
+                elif price < 0.01:
+                    return f"{price:.5f}".rstrip('0').rstrip('.')
+                elif price < 0.1:
+                    return f"{price:.4f}".rstrip('0').rstrip('.')
+                elif price < 1:
+                    return f"{price:.3f}".rstrip('0').rstrip('.')
+                else:
+                    return f"{price:.2f}"
+            
+            t1 = format_target(signal['target_1'])
+            t2 = format_target(signal['target_2'])
+            sl = format_target(signal['stop_loss'])
+            line9 = f"🎯 Цели: {t1} | {t2} | SL {sl}"
+        else:
+            line9 = "🎯 Цели: N/A | N/A | SL N/A"
+        
+        line10 = ""
+        line11 = "💡 Причины:"
+        
+        # Очистка причин от эмодзи
+        clean_reasons = []
+        for reason in signal['reasons'][:6]:
+            clean_reason = reason
+            clean_reason = clean_reason.replace("📊 ", "")
+            clean_reason = clean_reason.replace("✅ ", "")
+            clean_reason = clean_reason.replace("🔄 ", "")
+            clean_reason = clean_reason.replace("💰 ", "")
+            clean_reason = clean_reason.replace("📈 ", "")
+            clean_reason = clean_reason.replace("📉 ", "")
+            clean_reason = clean_reason.replace("⚡️ ", "")
+            clean_reason = clean_reason.replace("🔥 ", "")
+            clean_reason = clean_reason.replace("🟢 ", "")
+            clean_reason = clean_reason.replace("🔴 ", "")
+            clean_reason = clean_reason.replace("⚪️ ", "")
+            clean_reason = clean_reason.replace("⚪ ", "")
+            clean_reason = clean_reason.replace("📦 ", "")
+            clean_reason = clean_reason.replace("📐 ", "")
+            clean_reason = clean_reason.replace("⚠️ ", "")
+            clean_reason = clean_reason.strip()
+            clean_reasons.append(clean_reason)
+        
+        reasons_lines = [f"   {r}" for r in clean_reasons]
+        
+        # Собираем сообщение
+        lines = [line1, line2, line3, line4, line5, line6, line7]
+        if line8:
+            lines.append(line8)
+        lines.extend([line9, line10, line11])
+        lines.extend(reasons_lines)
+        
+        message = "\n".join(lines)
+        
+        # Кнопки
+        keyboard = []
+        row1 = []
+        if DISPLAY_SETTINGS['buttons']['copy']:
+            row1.append(InlineKeyboardButton(f"📋 Копировать {coin}", callback_data=f"copy_{coin}"))
+        if DISPLAY_SETTINGS['buttons']['trade']:
+            row1.append(InlineKeyboardButton(f"🚀 Торговать на {signal['exchange']}", url=REF_LINKS.get(signal['exchange'], '#')))
+        if row1:
+            keyboard.append(row1)
+        
+        row2 = []
+        if DISPLAY_SETTINGS['buttons']['refresh']:
+            row2.append(InlineKeyboardButton("🔄 Обновить", callback_data=f"refresh_{coin}"))
+        if DISPLAY_SETTINGS['buttons']['details']:
+            row2.append(InlineKeyboardButton("📊 Детали", callback_data=f"details_{coin}"))
+        if row2:
+            keyboard.append(row2)
+        
+        return message, InlineKeyboardMarkup(keyboard) if keyboard else None
 
-def _get_power_text(self, strength: float) -> str:
-    """Определение текста силы сигнала"""
-    if strength >= 90:
-        return "🔥🔥🔥 ОЧЕНЬ СИЛЬНЫЙ"
-    elif strength >= 75:
-        return "🔥🔥 СИЛЬНЫЙ"
-    elif strength >= 60:
-        return "🔥 СРЕДНИЙ"
-    else:
-        return "⚡ СЛАБЫЙ"
+    def _get_power_text(self, strength: float) -> str:
+        """Определение текста силы сигнала"""
+        if strength >= 90:
+            return "🔥🔥🔥 ОЧЕНЬ СИЛЬНЫЙ"
+        elif strength >= 75:
+            return "🔥🔥 СИЛЬНЫЙ"
+        elif strength >= 60:
+            return "🔥 СРЕДНИЙ"
+        else:
+            return "⚡ СЛАБЫЙ"
 
 # ============== ОСНОВНОЙ КЛАСС БОТА ==============
 
