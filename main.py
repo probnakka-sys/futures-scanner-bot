@@ -515,7 +515,7 @@ class ChartGenerator:
         self.style = 'dark_background'
         
     def create_chart(self, df: pd.DataFrame, signal: Dict, coin: str, timeframe: str = '15m') -> BytesIO:
-        """Создание графика с ценой и ближайшими FVG зонами"""
+        """Создание графика с ценой, индикаторами и целями"""
         plt.style.use(self.style)
         
         plot_df = df.tail(100).copy()
@@ -525,91 +525,81 @@ class ChartGenerator:
         
         # ===== ВЕРХНИЙ ГРАФИК =====
         ax1.plot(plot_df.index, plot_df['close'], 
-                color='white', linewidth=2, label='Цена')
+                color='white', linewidth=2, label='Close')
         
-        # EMA линии
+        # EMA линии - ВСЕ ДОЛЖНЫ БЫТЬ В ЛЕГЕНДЕ
         if 'ema_9' in plot_df.columns:
             ax1.plot(plot_df.index, plot_df['ema_9'], 
                     color='#00ff88', linewidth=1.5, alpha=0.7, label='EMA 9')
         if 'ema_21' in plot_df.columns:
             ax1.plot(plot_df.index, plot_df['ema_21'], 
                     color='#ff8800', linewidth=1.5, alpha=0.7, label='EMA 21')
+        if 'ema_50' in plot_df.columns:
+            ax1.plot(plot_df.index, plot_df['ema_50'], 
+                    color='#8888ff', linewidth=1, alpha=0.5, label='EMA 50')
+        if 'ema_200' in plot_df.columns:
+            ax1.plot(plot_df.index, plot_df['ema_200'], 
+                    color='#ff4444', linewidth=1, alpha=0.5, label='EMA 200')
+        
+        # Bollinger Bands - ДОЛЖНЫ БЫТЬ В ЛЕГЕНДЕ
+        if 'BBL_20_2.0' in plot_df.columns and 'BBU_20_2.0' in plot_df.columns:
+            ax1.fill_between(plot_df.index, 
+                            plot_df['BBL_20_2.0'], 
+                            plot_df['BBU_20_2.0'],
+                            alpha=0.2, color='gray', label='Bollinger Bands')
         
         # Текущая цена
         current_price = signal['price']
         ax1.axhline(y=current_price, color='#00ff00', 
                 linestyle='--', linewidth=1.5, alpha=0.8,
-                label=f'Текущая: {current_price:.4f}')
+                label=f'Current: {current_price:.4f}')
         
         # Цели
         if signal.get('target_1'):
             ax1.axhline(y=signal['target_1'], color='#ffaa00', 
                     linestyle='--', linewidth=1.5, alpha=0.8,
-                    label=f'Цель 1: {signal["target_1"]:.4f}')
+                    label=f'Target 1: {signal["target_1"]}')
         if signal.get('target_2'):
             ax1.axhline(y=signal['target_2'], color='#00ff00', 
                     linestyle='--', linewidth=1.5, alpha=0.8,
-                    label=f'Цель 2: {signal["target_2"]:.4f}')
+                    label=f'Target 2: {signal["target_2"]}')
         if signal.get('stop_loss'):
             ax1.axhline(y=signal['stop_loss'], color='#ff0000', 
                     linestyle='--', linewidth=1.5, alpha=0.8,
-                    label=f'Стоп: {signal["stop_loss"]:.4f}')
+                    label=f'Stop: {signal["stop_loss"]}')
         
-        # ===== ОТРИСОВКА FVG (ТОЛЬКО БЛИЖАЙШИЕ) =====
+        # ===== FVG ЗОНЫ - ТОЛЬКО 2 БЛИЖАЙШИЕ =====
         if 'fvg_zones' in signal and signal['fvg_zones']:
-            logger.info(f"  🎨 Рисую {len(signal['fvg_zones'])} ближайших FVG зон")
+            # Берем ТОЛЬКО 2 ближайшие зоны
+            fvg_to_show = signal['fvg_zones'][:2]
+            logger.info(f"  🎨 Рисую {len(fvg_to_show)} FVG зон на графике")
             
-            # Цвета для разных таймфреймов
-            tf_colors = {
-                'monthly': '#ff00ff',  # розовый
-                'weekly': '#00ffff',   # голубой
-                'daily': '#ffff00',    # желтый
-                'four_hourly': '#ffaa00',  # оранжевый
-                'hourly': '#00ffaa',   # бирюзовый
-                'current': '#aaaaaa'   # серый
-            }
-            
-            for zone in signal['fvg_zones']:
-                color = tf_colors.get(zone['tf'], '#ffffff')
-                
-                # Разная прозрачность в зависимости от расстояния
-                # Чем ближе зона, тем насыщеннее цвет
-                if zone['in_zone']:
-                    alpha = 0.3
-                    linewidth = 2
-                elif zone['sort_distance'] < 0.05:  # ближе 5%
-                    alpha = 0.2
-                    linewidth = 1.5
-                elif zone['sort_distance'] < 0.10:  # ближе 10%
-                    alpha = 0.15
-                    linewidth = 1
-                else:
-                    alpha = 0.1
-                    linewidth = 0.5
+            for zone in fvg_to_show:
+                # Определяем цвет в зависимости от типа
+                color = '#00ff00' if zone['type'] == 'bullish' else '#ff0000'
+                alpha = 0.2
                 
                 # Рисуем зону
                 ax1.axhspan(zone['min'], zone['max'], 
                         alpha=alpha, color=color, linewidth=0)
                 
-                # Границы зоны пунктиром
+                # Добавляем границы зоны
                 ax1.axhline(y=zone['min'], color=color, linestyle=':', 
-                        linewidth=linewidth, alpha=alpha*1.5)
+                        linewidth=1, alpha=0.5)
                 ax1.axhline(y=zone['max'], color=color, linestyle=':', 
-                        linewidth=linewidth, alpha=alpha*1.5)
+                        linewidth=1, alpha=0.5)
                 
-                # Добавляем метку
+                # Добавляем метку с таймфреймом и размером
                 mid_price = (zone['min'] + zone['max']) / 2
-                if zone['in_zone']:
-                    label = f"⚡ {zone['tf_short']}"
-                else:
-                    label = f"{zone['tf_short']} ({zone['sort_distance']*100:.1f}%)"
-                
-                ax1.text(plot_df.index[-5], mid_price, label, 
-                        color=color, fontsize=8, alpha=0.9,
+                label = f"FVG {zone.get('tf_short', '?')} ({zone.get('size', 0):.1f}%)"
+                ax1.text(plot_df.index[-1], mid_price, label, 
+                        color=color, fontsize=8, alpha=0.8,
                         verticalalignment='center',
+                        horizontalalignment='right',
                         bbox=dict(boxstyle="round,pad=0.2", facecolor='black', alpha=0.5))
         
-        ax1.set_title(f'{coin} - {signal["direction"]} (уверенность {signal["confidence"]}%)', 
+        # Заголовок
+        ax1.set_title(f'{coin} - {signal["direction"]} (TF: {timeframe}, уверенность {signal["confidence"]}%)', 
                     fontsize=14, fontweight='bold', color='white')
         ax1.set_ylabel('Price (USDT)', color='white')
         ax1.legend(loc='upper left', fontsize=8, facecolor='#222222')
@@ -617,21 +607,32 @@ class ChartGenerator:
         ax1.tick_params(colors='white')
         ax1.set_facecolor('#111111')
         
-        # ===== НИЖНИЙ ГРАФИК (RSI) =====
+        # ===== НИЖНИЙ ГРАФИК =====
         if 'rsi' in plot_df.columns:
             ax2.plot(plot_df.index, plot_df['rsi'], 
                     color='purple', linewidth=2, label='RSI 14')
             ax2.axhline(y=70, color='red', linestyle='--', alpha=0.5)
             ax2.axhline(y=30, color='green', linestyle='--', alpha=0.5)
             ax2.fill_between(plot_df.index, 30, 70, alpha=0.1, color='gray')
+            
+            if pd.notna(plot_df['rsi'].iloc[-1]):
+                current_rsi = plot_df['rsi'].iloc[-1]
+                ax2.scatter(plot_df.index[-1], current_rsi, 
+                        color='yellow', s=50, zorder=5)
         
         ax2.set_ylabel('RSI', color='white')
-        ax2.set_xlabel('Время', color='white')
+        ax2.set_xlabel('Time', color='white')
         ax2.set_ylim(0, 100)
         ax2.grid(True, alpha=0.2, linestyle='--')
         ax2.tick_params(colors='white')
         ax2.set_facecolor('#111111')
         ax2.legend(loc='upper left', fontsize=8, facecolor='#222222')
+        
+        # Форматирование времени
+        for ax in [ax1, ax2]:
+            ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+            ax.xaxis.set_major_locator(mdates.HourLocator(interval=3))
+            plt.setp(ax.xaxis.get_majorticklabels(), rotation=45)
         
         plt.tight_layout()
         
@@ -1047,7 +1048,7 @@ class FibonacciAnalyzer:
                     # Переводим таймфрейм на русский
                     tf_ru = self.tf_translation.get(timeframe, timeframe)
                     
-                    result['signals'].append(f"📐 {tf_ru}: {r['description']}")
+                    result['signals'].append(f"Фибо {tf_ru}: {r['description']}")
                     result['strength'] = max(result['strength'], r['strength'])
                     result['levels'] = levels
         
@@ -1065,7 +1066,7 @@ class FibonacciAnalyzer:
                     # Переводим таймфрейм на русский
                     tf_ru = self.tf_translation.get(timeframe, timeframe)
                     
-                    result['signals'].append(f"📐 {tf_ru}: {r['description']}")
+                    result['signals'].append(f"Фибо {tf_ru}: {r['description']}")
                     result['strength'] = max(result['strength'], r['strength'])
                     result['levels'] = levels
         
@@ -1870,11 +1871,11 @@ class MultiTimeframeAnalyzer:
                 confidence += INDICATOR_WEIGHTS['weekly_trend']
             elif "Дневной" in signal:
                 confidence += INDICATOR_WEIGHTS['daily_trend']
-        
+
         # ===== СОГЛАСОВАННОСТЬ ТРЕНДОВ =====
+        # Только увеличиваем уверенность, НЕ добавляем причину повторно
         if alignment['trend_alignment'] > 70:
-            reasons.append(f"Тренды согласованы ({alignment['trend_alignment']:.0f}%)")
-            confidence += INDICATOR_WEIGHTS['trend_alignment']
+            confidence += INDICATOR_WEIGHTS['trend_alignment']  # ← убрал reasons.append()
         
         # ===== АНАЛИЗ ФИБОНАЧЧИ =====
         fib_analysis = None
@@ -1918,13 +1919,21 @@ class MultiTimeframeAnalyzer:
             trend_analyzer = TrendLineAnalyzer()
             trend_lines = trend_analyzer.find_trend_lines(df, touch_count=3)
             
+            # Находим самую сильную линию
+            best_line = None
+            max_touches = 0
             for line in trend_lines:
-                if line['is_broken']:
-                    reasons.append(f"📈 Пробой наклонного сопротивления ({line['touches']} касаний)")
-                    confidence += 20
-                    trendline_breakout = True
-                    signal_type = 'breakout'
-                    logger.info(f"  ✅ {symbol} - Обнаружен пробой тренда с {line['touches']} касаниями")
+                if line['is_broken'] and line['touches'] > max_touches:
+                    max_touches = line['touches']
+                    best_line = line
+            
+            # Добавляем только одну линию
+            if best_line:
+                reasons.append(f"📈 Пробой наклонного сопротивления ({best_line['touches']} касаний)")
+                confidence += 20
+                trendline_breakout = True
+                signal_type = 'breakout'
+                logger.info(f"  ✅ {symbol} - Обнаружен пробой тренда с {best_line['touches']} касаниями")
         
         # ===== FVG МУЛЬТИТАЙМФРЕЙМОВЫЙ АНАЛИЗ =====
         fvg_analysis = {'has_fvg': False, 'signals': [], 'zones': []}
