@@ -407,6 +407,103 @@ class AccumulationAnalyzer:
         
         return result
 
+# ============== АНАЛИЗАТОР ТРЕНДОВЫХ ЛИНИЙ ==============
+
+class TrendLineAnalyzer:
+    """Анализ наклонных уровней поддержки/сопротивления"""
+    
+    def find_trend_lines(self, df: pd.DataFrame, touch_count: int = 3) -> List[Dict]:
+        """
+        Поиск наклонных уровней с несколькими касаниями
+        """
+        closes = df['close'].values
+        highs = df['high'].values
+        lows = df['low'].values
+        
+        trend_lines = []
+        
+        # Поиск нисходящей линии сопротивления (соединяем максимумы)
+        for i in range(len(highs) - 20, len(highs) - 5):
+            for j in range(i + 5, len(highs)):
+                # Пробуем провести линию через две точки
+                x1, y1 = i, highs[i]
+                x2, y2 = j, highs[j]
+                
+                # Наклон должен быть отрицательным (нисходящий тренд)
+                slope = (y2 - y1) / (x2 - x1) if x2 != x1 else 0
+                if slope >= 0:
+                    continue
+                
+                # Считаем касания
+                touches = 0
+                touch_points = []
+                
+                for k in range(j, len(highs)):
+                    # Расчет ожидаемого значения на линии
+                    expected = y1 + slope * (k - i)
+                    # Проверяем, касается ли свеча линии
+                    if abs(highs[k] - expected) / expected < 0.003:  # допуск 0.3%
+                        touches += 1
+                        touch_points.append(k)
+                
+                if touches >= touch_count:
+                    # Проверяем, пробита ли линия сейчас
+                    last_price = closes[-1]
+                    last_expected = y1 + slope * (len(highs)-1 - i)
+                    is_broken = last_price > last_expected * 1.01  # пробой на 1%
+                    
+                    trend_lines.append({
+                        'type': 'resistance',
+                        'slope': slope,
+                        'touches': touches,
+                        'touch_points': touch_points,
+                        'current_level': last_expected,
+                        'is_broken': is_broken,
+                        'strength': min(100, touches * 25)  # сила от количества касаний
+                    })
+        
+        # Поиск восходящей линии поддержки (соединяем минимумы)
+        for i in range(len(lows) - 20, len(lows) - 5):
+            for j in range(i + 5, len(lows)):
+                # Пробуем провести линию через две точки
+                x1, y1 = i, lows[i]
+                x2, y2 = j, lows[j]
+                
+                # Наклон должен быть положительным (восходящий тренд)
+                slope = (y2 - y1) / (x2 - x1) if x2 != x1 else 0
+                if slope <= 0:
+                    continue
+                
+                # Считаем касания
+                touches = 0
+                touch_points = []
+                
+                for k in range(j, len(lows)):
+                    # Расчет ожидаемого значения на линии
+                    expected = y1 + slope * (k - i)
+                    # Проверяем, касается ли свеча линии
+                    if abs(lows[k] - expected) / expected < 0.003:  # допуск 0.3%
+                        touches += 1
+                        touch_points.append(k)
+                
+                if touches >= touch_count:
+                    # Проверяем, пробита ли линия сейчас
+                    last_price = closes[-1]
+                    last_expected = y1 + slope * (len(lows)-1 - i)
+                    is_broken = last_price < last_expected * 0.99  # пробой на 1% вниз
+                    
+                    trend_lines.append({
+                        'type': 'support',
+                        'slope': slope,
+                        'touches': touches,
+                        'touch_points': touch_points,
+                        'current_level': last_expected,
+                        'is_broken': is_broken,
+                        'strength': min(100, touches * 25)
+                    })
+        
+        return trend_lines[-5:]  # последние 5 линий
+
 # ============== ГЕНЕРАТОР ГРАФИКОВ ==============
 
 class ChartGenerator:
@@ -418,7 +515,7 @@ class ChartGenerator:
         self.style = 'dark_background'
         
     def create_chart(self, df: pd.DataFrame, signal: Dict, coin: str, timeframe: str = '15m') -> BytesIO:
-        """Создание графика с ценой, индикаторами и зонами FVG"""
+        """Создание графика с ценой и ближайшими FVG зонами"""
         plt.style.use(self.style)
         
         plot_df = df.tail(100).copy()
@@ -437,93 +534,82 @@ class ChartGenerator:
         if 'ema_21' in plot_df.columns:
             ax1.plot(plot_df.index, plot_df['ema_21'], 
                     color='#ff8800', linewidth=1.5, alpha=0.7, label='EMA 21')
-        if 'ema_50' in plot_df.columns:
-            ax1.plot(plot_df.index, plot_df['ema_50'], 
-                    color='#8888ff', linewidth=1, alpha=0.5, label='EMA 50')
-        if 'ema_200' in plot_df.columns:
-            ax1.plot(plot_df.index, plot_df['ema_200'], 
-                    color='#ff4444', linewidth=1, alpha=0.5, label='EMA 200')
-        
-        # Bollinger Bands
-        if 'BBL_20_2.0' in plot_df.columns and 'BBU_20_2.0' in plot_df.columns:
-            ax1.fill_between(plot_df.index, 
-                            plot_df['BBL_20_2.0'], 
-                            plot_df['BBU_20_2.0'],
-                            alpha=0.2, color='gray', label='Bollinger Bands')
-        
-        # ===== ОТРИСОВКА ЗОН FVG =====
-        if 'fvg_zones' in signal:
-            # Сортируем зоны по размеру (большие рисуем первыми, чтобы они были на заднем плане)
-            zones = sorted(signal['fvg_zones'], key=lambda z: z['size'], reverse=True)
-            
-            for zone in zones:
-                # Определяем цвет и прозрачность в зависимости от таймфрейма
-                if zone['tf'] == 'monthly':
-                    color = '#ff00ff'  # розовый
-                    alpha = 0.3
-                    linewidth = 2
-                elif zone['tf'] == 'weekly':
-                    color = '#00ffff'  # голубой
-                    alpha = 0.25
-                    linewidth = 1.5
-                elif zone['tf'] == 'daily':
-                    color = '#ffff00'  # желтый
-                    alpha = 0.2
-                    linewidth = 1.5
-                elif zone['tf'] == 'four_hourly':
-                    color = '#ffaa00'  # оранжевый
-                    alpha = 0.15
-                    linewidth = 1
-                elif zone['tf'] == 'hourly':
-                    color = '#00ffaa'  # бирюзовый
-                    alpha = 0.1
-                    linewidth = 1
-                else:  # current
-                    color = '#aaaaaa'  # серый
-                    alpha = 0.1
-                    linewidth = 0.5
-                
-                # Рисуем зону
-                ax1.axhspan(zone['min'], zone['max'], 
-                        alpha=alpha, color=color, linewidth=0,
-                        label=f"FVG {zone['tf_short']}")  # ← добавить label
-                
-                # Добавляем границы зоны пунктиром
-                ax1.axhline(y=zone['min'], color=color, linestyle=':', 
-                        linewidth=linewidth, alpha=0.5)
-                ax1.axhline(y=zone['max'], color=color, linestyle=':', 
-                        linewidth=linewidth, alpha=0.5)
-                
-                # Добавляем метку с названием таймфрейма
-                mid_price = (zone['min'] + zone['max']) / 2
-                ax1.text(plot_df.index[-1], mid_price, 
-                        f" {zone['tf_short']}", 
-                        color=color, fontsize=8, alpha=0.8,
-                        verticalalignment='center',
-                        bbox=dict(boxstyle="round,pad=0.2", facecolor='black', alpha=0.5))
         
         # Текущая цена
         current_price = signal['price']
         ax1.axhline(y=current_price, color='#00ff00', 
                 linestyle='--', linewidth=1.5, alpha=0.8,
-                label=f'Текущая: {current_price:.2f}')
+                label=f'Текущая: {current_price:.4f}')
         
         # Цели
         if signal.get('target_1'):
             ax1.axhline(y=signal['target_1'], color='#ffaa00', 
                     linestyle='--', linewidth=1.5, alpha=0.8,
-                    label=f'Цель 1: {signal["target_1"]}')
+                    label=f'Цель 1: {signal["target_1"]:.4f}')
         if signal.get('target_2'):
             ax1.axhline(y=signal['target_2'], color='#00ff00', 
                     linestyle='--', linewidth=1.5, alpha=0.8,
-                    label=f'Цель 2: {signal["target_2"]}')
+                    label=f'Цель 2: {signal["target_2"]:.4f}')
         if signal.get('stop_loss'):
             ax1.axhline(y=signal['stop_loss'], color='#ff0000', 
                     linestyle='--', linewidth=1.5, alpha=0.8,
-                    label=f'Стоп: {signal["stop_loss"]}')
+                    label=f'Стоп: {signal["stop_loss"]:.4f}')
         
-        # Заголовок
-        ax1.set_title(f'{coin} - {signal["direction"]} (TF: {timeframe}, уверенность {signal["confidence"]}%)', 
+        # ===== ОТРИСОВКА FVG (ТОЛЬКО БЛИЖАЙШИЕ) =====
+        if 'fvg_zones' in signal and signal['fvg_zones']:
+            logger.info(f"  🎨 Рисую {len(signal['fvg_zones'])} ближайших FVG зон")
+            
+            # Цвета для разных таймфреймов
+            tf_colors = {
+                'monthly': '#ff00ff',  # розовый
+                'weekly': '#00ffff',   # голубой
+                'daily': '#ffff00',    # желтый
+                'four_hourly': '#ffaa00',  # оранжевый
+                'hourly': '#00ffaa',   # бирюзовый
+                'current': '#aaaaaa'   # серый
+            }
+            
+            for zone in signal['fvg_zones']:
+                color = tf_colors.get(zone['tf'], '#ffffff')
+                
+                # Разная прозрачность в зависимости от расстояния
+                # Чем ближе зона, тем насыщеннее цвет
+                if zone['in_zone']:
+                    alpha = 0.3
+                    linewidth = 2
+                elif zone['sort_distance'] < 0.05:  # ближе 5%
+                    alpha = 0.2
+                    linewidth = 1.5
+                elif zone['sort_distance'] < 0.10:  # ближе 10%
+                    alpha = 0.15
+                    linewidth = 1
+                else:
+                    alpha = 0.1
+                    linewidth = 0.5
+                
+                # Рисуем зону
+                ax1.axhspan(zone['min'], zone['max'], 
+                        alpha=alpha, color=color, linewidth=0)
+                
+                # Границы зоны пунктиром
+                ax1.axhline(y=zone['min'], color=color, linestyle=':', 
+                        linewidth=linewidth, alpha=alpha*1.5)
+                ax1.axhline(y=zone['max'], color=color, linestyle=':', 
+                        linewidth=linewidth, alpha=alpha*1.5)
+                
+                # Добавляем метку
+                mid_price = (zone['min'] + zone['max']) / 2
+                if zone['in_zone']:
+                    label = f"⚡ {zone['tf_short']}"
+                else:
+                    label = f"{zone['tf_short']} ({zone['sort_distance']*100:.1f}%)"
+                
+                ax1.text(plot_df.index[-5], mid_price, label, 
+                        color=color, fontsize=8, alpha=0.9,
+                        verticalalignment='center',
+                        bbox=dict(boxstyle="round,pad=0.2", facecolor='black', alpha=0.5))
+        
+        ax1.set_title(f'{coin} - {signal["direction"]} (уверенность {signal["confidence"]}%)', 
                     fontsize=14, fontweight='bold', color='white')
         ax1.set_ylabel('Price (USDT)', color='white')
         ax1.legend(loc='upper left', fontsize=8, facecolor='#222222')
@@ -531,32 +617,21 @@ class ChartGenerator:
         ax1.tick_params(colors='white')
         ax1.set_facecolor('#111111')
         
-        # ===== НИЖНИЙ ГРАФИК =====
+        # ===== НИЖНИЙ ГРАФИК (RSI) =====
         if 'rsi' in plot_df.columns:
             ax2.plot(plot_df.index, plot_df['rsi'], 
                     color='purple', linewidth=2, label='RSI 14')
             ax2.axhline(y=70, color='red', linestyle='--', alpha=0.5)
             ax2.axhline(y=30, color='green', linestyle='--', alpha=0.5)
             ax2.fill_between(plot_df.index, 30, 70, alpha=0.1, color='gray')
-            
-            if pd.notna(plot_df['rsi'].iloc[-1]):
-                current_rsi = plot_df['rsi'].iloc[-1]
-                ax2.scatter(plot_df.index[-1], current_rsi, 
-                        color='yellow', s=50, zorder=5)
         
         ax2.set_ylabel('RSI', color='white')
-        ax2.set_xlabel('Time', color='white')
+        ax2.set_xlabel('Время', color='white')
         ax2.set_ylim(0, 100)
         ax2.grid(True, alpha=0.2, linestyle='--')
         ax2.tick_params(colors='white')
         ax2.set_facecolor('#111111')
         ax2.legend(loc='upper left', fontsize=8, facecolor='#222222')
-        
-        # Форматирование времени
-        for ax in [ax1, ax2]:
-            ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
-            ax.xaxis.set_major_locator(mdates.HourLocator(interval=3))
-            plt.setp(ax.xaxis.get_majorticklabels(), rotation=45)
         
         plt.tight_layout()
         
@@ -1535,46 +1610,87 @@ class MultiTimeframeAnalyzer:
     
     def analyze_fvg_multi_timeframe(self, dataframes: Dict[str, pd.DataFrame], current_price: float) -> Dict:
         """
-        Анализ FVG на всех таймфреймах с проверкой на закрытие
+        Анализ FVG на всех таймфреймах с фильтрацией для графика
         """
         result = {'has_fvg': False, 'signals': [], 'strength': 0, 'zones': []}
+        all_zones = []  # временный список всех найденных зон
         
+        # Приоритет таймфреймов
         tf_priority = ['monthly', 'weekly', 'daily', 'four_hourly', 'hourly', 'current']
-        tf_short = {
-            'monthly': '1м', 'weekly': '1н', 'daily': '1д',
-            'four_hourly': '4ч', 'hourly': '1ч', 'current': '15м'
-        }
-        dir_emoji = {'bullish': '📈', 'bearish': '📉'}
         
+        # Словари для форматирования
+        tf_short = {
+            'monthly': '1м',
+            'weekly': '1н',
+            'daily': '1д',
+            'four_hourly': '4ч',
+            'hourly': '1ч',
+            'current': '15м'
+        }
+        
+        tf_weights = {
+            'monthly': 4.0,
+            'weekly': 3.5,
+            'daily': 2.5,
+            'four_hourly': 2.0,
+            'hourly': 1.5,
+            'current': 1.0
+        }
+        
+        tf_names_ru = {
+            'monthly': 'месячный',
+            'weekly': 'недельный',
+            'daily': 'дневной',
+            'four_hourly': '4-часовой',
+            'hourly': 'часовой',
+            'current': '15-минутный'
+        }
+        
+        dir_emoji = {
+            'bullish': '📈',
+            'bearish': '📉'
+        }
+        
+        # Анализируем каждый таймфрейм
         for tf_name in tf_priority:
             if tf_name not in dataframes or dataframes[tf_name] is None:
                 continue
             
             df = dataframes[tf_name]
+            
+            # Создаем временный SMC анализатор для этого ТФ
             smc_temp = SmartMoneyAnalyzer(SMC_SETTINGS)
             fvg_list = smc_temp.find_fair_value_gaps(df)
+            
+            logger.info(f"    🔍 {tf_name}: найдено {len(fvg_list)} FVG кандидатов")
             
             for fvg in fvg_list:
                 # Проверяем, не закрыта ли зона
                 if self._is_fvg_closed(df, fvg):
-                    continue  # пропускаем закрытые зоны
+                    logger.info(f"    ⏭️ {tf_name} FVG пропущен (закрыт)")
+                    continue
                 
-                # Анализируем положение цены
+                # Проверяем, находится ли текущая цена в зоне FVG
                 in_zone = (fvg['price_min'] <= current_price <= fvg['price_max'])
                 
+                # Рассчитываем расстояние до зоны
                 if in_zone:
+                    distance_pct = 0
                     distance_text = "в зоне"
                     zone_type = "тест"
                 elif current_price < fvg['price_min']:
                     distance_pct = ((fvg['price_min'] - current_price) / current_price) * 100
-                    zone_type = "сопротивление сверху"
                     distance_text = f"выше на {distance_pct:.1f}%"
-                else:
+                    zone_type = "сопротивление сверху"
+                else:  # current_price > fvg['price_max']
                     distance_pct = ((current_price - fvg['price_max']) / current_price) * 100
-                    zone_type = "поддержка снизу"
                     distance_text = f"ниже на {distance_pct:.1f}%"
+                    zone_type = "поддержка снизу"
                 
-                # Форматируем зону
+                # Логируем найденный FVG
+                logger.info(f"    ✅ {tf_name} FVG: {fvg['price_min']:.6f}-{fvg['price_max']:.6f}, {distance_text}")
+                
+                # Форматируем цены зоны
                 if fvg['price_min'] < 0.001:
                     zone_str = f"{fvg['price_min']:.6f}-{fvg['price_max']:.6f}"
                 elif fvg['price_min'] < 0.1:
@@ -1584,24 +1700,61 @@ class MultiTimeframeAnalyzer:
                 
                 # Формируем сигнал
                 size_pct = fvg.get('size', 0)
+                tf_ru = tf_names_ru.get(tf_name, tf_name)
+                direction = "бычий" if fvg['type'] == 'bullish' else "медвежий"
+                
                 signal_text = (f"FVG {tf_short[tf_name]}: {zone_str} "
                             f"(размер {size_pct:.2f}% {dir_emoji[fvg['type']]} {zone_type}, {distance_text})")
                 
                 result['has_fvg'] = True
                 result['signals'].append(signal_text)
                 
-                # Сохраняем для графиков
-                result['zones'].append({
+                # Сохраняем зону для графиков и анализа
+                all_zones.append({
                     'tf': tf_name,
                     'tf_short': tf_short[tf_name],
+                    'tf_ru': tf_ru,
                     'min': fvg['price_min'],
                     'max': fvg['price_max'],
                     'type': fvg['type'],
+                    'dir_emoji': dir_emoji[fvg['type']],
                     'size': size_pct,
-                    'distance_pct': distance_pct if not in_zone else 0,
+                    'distance_pct': distance_pct,
                     'in_zone': in_zone,
-                    'zone_type': zone_type
+                    'zone_type': zone_type,
+                    'distance_text': distance_text,
+                    'weight': tf_weights.get(tf_name, 1.0),
+                    'strength': fvg['strength']
                 })
+                
+                # Увеличиваем силу с весом таймфрейма
+                result['strength'] += fvg['strength'] * tf_weights.get(tf_name, 1.0)
+        
+        # ===== ФИЛЬТРАЦИЯ ДЛЯ ГРАФИКА: ТОЛЬКО БЛИЖАЙШИЕ =====
+        if all_zones:
+            # Добавляем расстояние для сортировки
+            zones_with_distance = []
+            for zone in all_zones:
+                if zone['in_zone']:
+                    zone['sort_distance'] = 0
+                elif zone['min'] > current_price:
+                    zone['sort_distance'] = (zone['min'] - current_price) / current_price
+                else:
+                    zone['sort_distance'] = (current_price - zone['max']) / current_price
+                
+                zones_with_distance.append(zone)
+            
+            # Сортируем по расстоянию (ближе = меньше)
+            zones_with_distance.sort(key=lambda z: z['sort_distance'])
+            
+            # Берем ТОЛЬКО 5 ближайших зон для графика
+            result['zones'] = zones_with_distance[:5]
+            
+            logger.info(f"  🎨 Для графика отобрано {len(result['zones'])} ближайших FVG из {len(all_zones)}")
+        
+        # Ограничиваем силу 100%
+        if result['strength'] > 100:
+            result['strength'] = 100
         
         return result
 
@@ -1609,24 +1762,28 @@ class MultiTimeframeAnalyzer:
         """
         Проверка, закрыта ли зона FVG
         """
-        # Находим индекс, где образовался FVG
-        # Это сложно без индекса, поэтому упрощенно:
-        # Считаем зону закрытой, если цена заходила в нее после образования
-        
         last_idx = len(df) - 1
-        start_idx = max(0, last_idx - 50)  # проверяем последние 50 свечей
         
+        # Ищем индекс, где образовался FVG (упрощенно)
+        # Проверяем только последние 30 свечей после образования
+        start_idx = max(0, last_idx - 30)
+        
+        close_count = 0
         for i in range(start_idx, last_idx):
             candle = df.iloc[i]
             
             if fvg['type'] == 'bullish':
                 # Бычий FVG закрывается при падении ниже минимума
-                if candle['low'] <= fvg['price_min']:
-                    return True
+                if candle['close'] <= fvg['price_min']:
+                    close_count += 1
+                    if close_count >= 2:  # Нужно 2 подтверждения
+                        return True
             else:
                 # Медвежий FVG закрывается при росте выше максимума
-                if candle['high'] >= fvg['price_max']:
-                    return True
+                if candle['close'] >= fvg['price_max']:
+                    close_count += 1
+                    if close_count >= 2:
+                        return True
         
         return False
     def generate_signal(self, dataframes: Dict[str, pd.DataFrame], metadata: Dict, symbol: str, exchange: str) -> Optional[Dict]:
@@ -1689,7 +1846,7 @@ class MultiTimeframeAnalyzer:
             vwap_value = last['vwap']
             price = last['close']
             
-            # Умное форматирование VWAP
+            # Умное форматирование в зависимости от размера числа
             if vwap_value < 0.0001:
                 vwap_formatted = f"{vwap_value:.8f}".rstrip('0').rstrip('.')
             elif vwap_value < 0.001:
@@ -1754,6 +1911,21 @@ class MultiTimeframeAnalyzer:
                     direction = accumulation_analysis['direction']
                 logger.info(f"  ✅ {symbol} - Накопление: найдено {len(accumulation_analysis['signals'])} сигналов")
         
+        # ===== АНАЛИЗ ТРЕНДОВЫХ ЛИНИЙ =====
+        trendline_breakout = False
+        if FEATURES['advanced']['patterns']:
+            logger.info(f"  🔍 {symbol} - Анализ трендовых линий")
+            trend_analyzer = TrendLineAnalyzer()
+            trend_lines = trend_analyzer.find_trend_lines(df, touch_count=3)
+            
+            for line in trend_lines:
+                if line['is_broken']:
+                    reasons.append(f"📈 Пробой наклонного сопротивления ({line['touches']} касаний)")
+                    confidence += 20
+                    trendline_breakout = True
+                    signal_type = 'breakout'
+                    logger.info(f"  ✅ {symbol} - Обнаружен пробой тренда с {line['touches']} касаниями")
+        
         # ===== FVG МУЛЬТИТАЙМФРЕЙМОВЫЙ АНАЛИЗ =====
         fvg_analysis = {'has_fvg': False, 'signals': [], 'zones': []}
         if FEATURES['advanced']['smart_money']:
@@ -1775,8 +1947,9 @@ class MultiTimeframeAnalyzer:
                 reasons.append(f"Негативный фандинг ({funding_pct:.4f}%)")
         
         # ===== ОПРЕДЕЛЕНИЕ БАЗОВОГО НАПРАВЛЕНИЯ =====
-        bullish_keywords = ['перепродан', 'Бычье', 'восходящий', 'негативный фандинг', 'выше VWAP']
+        bullish_keywords = ['перепродан', 'Бычье', 'восходящий', 'негативный фандинг', 'выше VWAP', 'пробой']
         bearish_keywords = ['перекуплен', 'Медвежье', 'нисходящий', 'позитивный фандинг', 'ниже VWAP']
+        
         bullish = sum(1 for r in reasons if any(k in r for k in bullish_keywords))
         bearish = sum(1 for r in reasons if any(k in r for k in bearish_keywords))
         
@@ -1784,6 +1957,8 @@ class MultiTimeframeAnalyzer:
         base_direction = 'NEUTRAL'
         if accumulation_analysis and accumulation_analysis.get('direction') and accumulation_analysis.get('has_accumulation'):
             base_direction = accumulation_analysis['direction']
+        elif trendline_breakout:
+            base_direction = 'LONG'  # Пробой тренда вверх = LONG
         elif bullish > bearish and confidence >= MIN_CONFIDENCE:
             if alignment['weekly_trend'] == 'ВОСХОДЯЩИЙ':
                 base_direction = 'Разворот LONG'
@@ -1797,10 +1972,6 @@ class MultiTimeframeAnalyzer:
         
         direction = base_direction
         
-        # ===== КОРРЕКЦИЯ ДЛЯ ПАМП-СИГНАЛОВ =====
-        # Эта информация будет добавлена позже, в format_pump_message
-        # Но здесь мы можем проанализировать FVG для пампа
-        
         # ===== АНАЛИЗ FVG ДЛЯ КОРРЕКЦИИ УВЕРЕННОСТИ =====
         if fvg_analysis['has_fvg'] and 'zones' in fvg_analysis:
             current_price = last['close']
@@ -1808,28 +1979,37 @@ class MultiTimeframeAnalyzer:
             fvg_below = 0
             fvg_in_zone = 0
             
-            for zone in fvg_analysis['zones']:
-                if zone['min'] <= current_price <= zone['max']:
+            # Анализ положения цены относительно FVG
+            for zone in fvg_analysis['zones']:  # используем отфильтрованные ближайшие зоны
+                if zone['in_zone']:
                     fvg_in_zone += 1
+                    reasons.append(f"🎯 Цена в FVG {zone['tf_short']}: {zone['min']:.4f}-{zone['max']:.4f} (сильный уровень)")
+                    confidence += 20
+                    
+                    # Если цена в зоне и пробила тренд - усиливаем сигнал
+                    if trendline_breakout:
+                        confidence += 15
+                        reasons.append(f"✅ Пробой из FVG зоны {zone['tf_short']} - сильный сигнал")
+                    
                 elif zone['min'] > current_price:
                     fvg_above += 1
+                    # Для LONG сигналов FVG сверху - цели
+                    if direction == 'LONG' and zone['min'] > current_price:
+                        reasons.append(f"🎯 Цель: FVG {zone['tf_short']} {zone['min']:.4f}-{zone['max']:.4f} (+{zone['distance_pct']:.1f}%)")
                 else:
                     fvg_below += 1
+                    # Для SHORT сигналов FVG снизу - цели
+                    if direction == 'SHORT' and zone['max'] < current_price:
+                        reasons.append(f"🎯 Цель: FVG {zone['tf_short']} {zone['min']:.4f}-{zone['max']:.4f} (-{zone['distance_pct']:.1f}%)")
             
-            # Штраф за FVG сверху (сопротивление)
-            if fvg_above > 0:
+            # Штраф за FVG в противоположном направлении
+            if direction == 'LONG' and fvg_above > 0:
                 reasons.append(f"⚠️ {fvg_above} зон FVG сверху (сопротивление)")
                 confidence -= fvg_above * 3
             
-            # Бонус за FVG снизу (поддержка)
-            if fvg_below > 0:
-                reasons.append(f"✅ {fvg_below} зон FVG снизу (поддержка)")
-                confidence += fvg_below * 3
-            
-            # Бонус за нахождение в зоне
-            if fvg_in_zone > 0:
-                reasons.append(f"🎯 Цена в зоне FVG (сильный уровень)")
-                confidence += 15
+            if direction == 'SHORT' and fvg_below > 0:
+                reasons.append(f"⚠️ {fvg_below} зон FVG снизу (поддержка)")
+                confidence -= fvg_below * 3
         
         logger.info(f"  📊 {symbol} - Направление: {direction}, Уверенность: {confidence}")
         
@@ -1842,30 +2022,56 @@ class MultiTimeframeAnalyzer:
         current_price = last['close']
         targets = {}
         
-        # Расчет целей в зависимости от направления
         if 'LONG' in direction:
-            targets['target_1'] = current_price + atr * ATR_SETTINGS['long_target_1_mult']
-            targets['target_2'] = current_price + atr * ATR_SETTINGS['long_target_2_mult']
-            targets['stop_loss'] = current_price - atr * ATR_SETTINGS['long_stop_loss_mult']
-        else:
-            targets['target_1'] = current_price - atr * ATR_SETTINGS['short_target_1_mult']
-            targets['target_2'] = current_price - atr * ATR_SETTINGS['short_target_2_mult']
-            targets['stop_loss'] = current_price + atr * ATR_SETTINGS['short_stop_loss_mult']
-        
-        # Округление целей
-        for key in ['target_1', 'target_2', 'stop_loss']:
             if current_price < 0.0001:
-                targets[key] = round(targets[key], 8)
+                targets['target_1'] = round(current_price + atr * ATR_SETTINGS['long_target_1_mult'], 8)
+                targets['target_2'] = round(current_price + atr * ATR_SETTINGS['long_target_2_mult'], 8)
+                targets['stop_loss'] = round(current_price - atr * ATR_SETTINGS['long_stop_loss_mult'], 8)
             elif current_price < 0.001:
-                targets[key] = round(targets[key], 6)
+                targets['target_1'] = round(current_price + atr * ATR_SETTINGS['long_target_1_mult'], 6)
+                targets['target_2'] = round(current_price + atr * ATR_SETTINGS['long_target_2_mult'], 6)
+                targets['stop_loss'] = round(current_price - atr * ATR_SETTINGS['long_stop_loss_mult'], 6)
             elif current_price < 0.01:
-                targets[key] = round(targets[key], 5)
+                targets['target_1'] = round(current_price + atr * ATR_SETTINGS['long_target_1_mult'], 5)
+                targets['target_2'] = round(current_price + atr * ATR_SETTINGS['long_target_2_mult'], 5)
+                targets['stop_loss'] = round(current_price - atr * ATR_SETTINGS['long_stop_loss_mult'], 5)
             elif current_price < 0.1:
-                targets[key] = round(targets[key], 4)
+                targets['target_1'] = round(current_price + atr * ATR_SETTINGS['long_target_1_mult'], 4)
+                targets['target_2'] = round(current_price + atr * ATR_SETTINGS['long_target_2_mult'], 4)
+                targets['stop_loss'] = round(current_price - atr * ATR_SETTINGS['long_stop_loss_mult'], 4)
             elif current_price < 1:
-                targets[key] = round(targets[key], 3)
+                targets['target_1'] = round(current_price + atr * ATR_SETTINGS['long_target_1_mult'], 3)
+                targets['target_2'] = round(current_price + atr * ATR_SETTINGS['long_target_2_mult'], 3)
+                targets['stop_loss'] = round(current_price - atr * ATR_SETTINGS['long_stop_loss_mult'], 3)
             else:
-                targets[key] = round(targets[key], 2)
+                targets['target_1'] = round(current_price + atr * ATR_SETTINGS['long_target_1_mult'], 2)
+                targets['target_2'] = round(current_price + atr * ATR_SETTINGS['long_target_2_mult'], 2)
+                targets['stop_loss'] = round(current_price - atr * ATR_SETTINGS['long_stop_loss_mult'], 2)
+        else:
+            if current_price < 0.0001:
+                targets['target_1'] = round(current_price - atr * ATR_SETTINGS['short_target_1_mult'], 8)
+                targets['target_2'] = round(current_price - atr * ATR_SETTINGS['short_target_2_mult'], 8)
+                targets['stop_loss'] = round(current_price + atr * ATR_SETTINGS['short_stop_loss_mult'], 8)
+            elif current_price < 0.001:
+                targets['target_1'] = round(current_price - atr * ATR_SETTINGS['short_target_1_mult'], 6)
+                targets['target_2'] = round(current_price - atr * ATR_SETTINGS['short_target_2_mult'], 6)
+                targets['stop_loss'] = round(current_price + atr * ATR_SETTINGS['short_stop_loss_mult'], 6)
+            elif current_price < 0.01:
+                targets['target_1'] = round(current_price - atr * ATR_SETTINGS['short_target_1_mult'], 5)
+                targets['target_2'] = round(current_price - atr * ATR_SETTINGS['short_target_2_mult'], 5)
+                targets['stop_loss'] = round(current_price + atr * ATR_SETTINGS['short_stop_loss_mult'], 5)
+            elif current_price < 0.1:
+                targets['target_1'] = round(current_price - atr * ATR_SETTINGS['short_target_1_mult'], 4)
+                targets['target_2'] = round(current_price - atr * ATR_SETTINGS['short_target_2_mult'], 4)
+                targets['stop_loss'] = round(current_price + atr * ATR_SETTINGS['short_stop_loss_mult'], 4)
+            elif current_price < 1:
+                targets['target_1'] = round(current_price - atr * ATR_SETTINGS['short_target_1_mult'], 3)
+                targets['target_2'] = round(current_price - atr * ATR_SETTINGS['short_target_2_mult'], 3)
+                targets['stop_loss'] = round(current_price + atr * ATR_SETTINGS['short_stop_loss_mult'], 3)
+            else:
+                targets['target_1'] = round(current_price - atr * ATR_SETTINGS['short_target_1_mult'], 2)
+                targets['target_2'] = round(current_price - atr * ATR_SETTINGS['short_target_2_mult'], 2)
+                targets['stop_loss'] = round(current_price + atr * ATR_SETTINGS['short_stop_loss_mult'], 2)
         
         logger.info(f"  📈 {symbol} - ATR: {atr}, Цели: {targets}")
         
@@ -1891,6 +2097,7 @@ class MultiTimeframeAnalyzer:
         # Добавляем зоны FVG для графика
         if fvg_analysis['has_fvg'] and 'zones' in fvg_analysis:
             result['fvg_zones'] = fvg_analysis['zones']
+            logger.info(f"  🎨 Добавлено {len(fvg_analysis['zones'])} FVG зон для графика")
         
         if fib_analysis:
             result['fibonacci'] = fib_analysis
