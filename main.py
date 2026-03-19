@@ -2332,38 +2332,32 @@ class MultiTimeframeAnalyzer:
 
     def _is_fvg_closed(self, df: pd.DataFrame, fvg: Dict) -> bool:
         """
-        Проверка, закрыта ли зона FVG (более мягкая)
-        FVG считается закрытым, если цена ЗАКРЫЛАСЬ за пределами зоны
-        и провела там несколько свечей
+        Проверка, закрыта ли зона FVG
         """
         last_idx = len(df) - 1
         
-        # Ищем индекс, где образовался FVG (упрощенно)
-        # Проверяем только последние 50 свечей
-        start_idx = max(0, last_idx - 50) # проверяем последние 50 свечей
+        # Увеличиваем с 50 до 200 свечей
+        start_idx = max(0, last_idx - 200)  # проверяем последние 200 свечей
         
+        close_count = 0
         for i in range(start_idx, last_idx):
             candle = df.iloc[i]
             
             if fvg['type'] == 'bullish':
-                # Бычий FVG: нужно пройти вниз через зону, зона между min и max
-                # Считаем закрытым, если цена закрылась НИЖЕ зоны
+                # Проверяем, закрылась ли свеча НИЖЕ зоны
                 if candle['close'] < fvg['price_min']:
-                    # Проверяем, что это не ложное движение
-                    # Смотрим следующую свечу для подтверждения
-                    if i + 1 < len(df):
-                        next_candle = df.iloc[i + 1]
-                        if next_candle['close'] < fvg['price_min']:
-                            return True
-                            # Если следующая свеча вернулась в зону - еще не закрыт
+                    close_count += 1
+                    if close_count >= 2:  # нужно 2 подтверждения
+                        return True
+                else:
+                    close_count = 0  # сбрасываем, если вышли из зоны
             else:
-                # Медвежий FVG: зона между min и max
-                # Считаем закрытым, если цена закрылась ВЫШЕ зоны
                 if candle['close'] > fvg['price_max']:
-                    if i + 1 < len(df):
-                        next_candle = df.iloc[i + 1]
-                        if next_candle['close'] > fvg['price_max']:
-                            return True
+                    close_count += 1
+                    if close_count >= 2:
+                        return True
+                else:
+                    close_count = 0
         
         return False
     def generate_signal(self, dataframes: Dict[str, pd.DataFrame], metadata: Dict, symbol: str, exchange: str) -> Optional[Dict]:
