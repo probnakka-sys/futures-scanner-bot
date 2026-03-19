@@ -2487,6 +2487,7 @@ class MultiTimeframeAnalyzer:
         # ===== АНАЛИЗ ТРЕНДОВЫХ ЛИНИЙ =====
         trendline_breakout = False
         trendline_warnings = []
+        breakout_level = None  # ← ДОБАВИТЬ
 
         if FEATURES['advanced']['patterns']:
             logger.info(f"  🔍 {symbol} - Анализ трендовых линий")
@@ -2502,6 +2503,7 @@ class MultiTimeframeAnalyzer:
                 if line['is_broken'] and line['touches'] > max_touches:
                     max_touches = line['touches']
                     best_line = line
+                    breakout_level = line['current_level']  # ← ЗАПОМИНАЕМ
             
             if best_line:
                 reasons.append(f"📈 Пробой наклонного сопротивления на {current_tf} ({best_line['touches']} касаний)")
@@ -2509,6 +2511,27 @@ class MultiTimeframeAnalyzer:
                 trendline_breakout = True
                 signal_type = 'breakout'
                 logger.info(f"  ✅ {symbol} - Обнаружен пробой тренда с {best_line['touches']} касаниями на {current_tf}")
+                
+                # ===== ДЕТЕКТОР ЛОЖНОГО ПРОБОЯ =====
+                if breakout_level and last['close'] < breakout_level * 1.01:  # цена вернулась к уровню
+                    reasons.append("⚠️ Цена вернулась к уровню после пробоя - возможен ложный пробой")
+                    confidence -= 30
+                    # Меняем направление на противоположное
+                    if 'LONG' in direction or direction == 'LONG':
+                        direction = 'SHORT 📉 (ловушка быков)'
+                    logger.info(f"  ⚠️ {symbol} - Обнаружен потенциальный ложный пробой!")
+        
+         # ===== Анализ накопления после пробоя =====
+                if breakout_level and (last['close'] > breakout_level * 0.99 and last['close'] < breakout_level * 1.01):
+                    # Цена тестирует уровень после пробоя
+                    if last['volume_ratio'] > 1.5:
+                        reasons.append("📊 Накопление на пробитом уровне")
+                        confidence += 15  # добавляем уверенности
+                        logger.info(f"  📊 {symbol} - Накопление на пробитом уровне (объем x{last['volume_ratio']:.1f})")
+                    else:
+                        reasons.append("⚠️ Слабое накопление - возможен ложный пробой")
+                        confidence -= 20
+                        logger.info(f"  ⚠️ {symbol} - Слабое накопление на пробитом уровне")
         
         # ===== FVG МУЛЬТИТАЙМФРЕЙМОВЫЙ АНАЛИЗ =====
         fvg_analysis = {'has_fvg': False, 'signals': [], 'zones': []}
@@ -2530,6 +2553,27 @@ class MultiTimeframeAnalyzer:
             elif funding < -0.001:
                 reasons.append(f"Негативный фандинг ({funding_pct:.4f}%)")
         
+        # Подсчет медвежьих/бычьих сигналов для DUMP/PUMP
+        bearish_score = 0
+        bullish_score = 0
+        
+        if 'Медвежье пересечение MACD' in str(reasons):
+            bearish_score += 30
+        if 'Бычье пересечение MACD' in str(reasons):
+            bullish_score += 30
+            
+        if 'Цена ниже VWAP' in str(reasons):
+            bearish_score += 20
+        if 'Цена выше VWAP' in str(reasons):
+            bullish_score += 20
+            
+        if 'НЕДЕЛЬНЫЙ ТРЕНД НИСХОДЯЩИЙ' in str(reasons):
+            bearish_score += 40
+        if 'НЕДЕЛЬНЫЙ ТРЕНД ВОСХОДЯЩИЙ' in str(reasons):
+            bullish_score += 40
+        
+        logger.info(f"  📊 {symbol} - Бычий счет: {bullish_score}, Медвежий счет: {bearish_score}")
+
         # ===== ОПРЕДЕЛЕНИЕ БАЗОВОГО НАПРАВЛЕНИЯ =====
         bullish_keywords = ['перепродан', 'Бычье', 'восходящий', 'негативный фандинг', 'выше VWAP', 'пробой']
         bearish_keywords = ['перекуплен', 'Медвежье', 'нисходящий', 'позитивный фандинг', 'ниже VWAP']
@@ -2541,8 +2585,14 @@ class MultiTimeframeAnalyzer:
         base_direction = 'NEUTRAL'
         if accumulation_analysis and accumulation_analysis.get('direction') and accumulation_analysis.get('has_accumulation'):
             base_direction = accumulation_analysis['direction']
-        elif trendline_breakout:
-            base_direction = 'LONG'
+        if trendline_breakout:
+            if alignment['weekly_trend'] == 'НИСХОДЯЩИЙ' and last['rsi'] > 70:
+                # Пробой вверх при медвежьем тренде и перекупленности = ЛОВУШКА!
+                base_direction = 'SHORT 📉 (ловушка быков)'
+                reasons.append("⚠️ Пробой вверх при медвежьем тренде - возможен ложный пробой")
+                confidence -= 20
+            else:
+                base_direction = 'LONG'
         elif bullish > bearish and confidence >= MIN_CONFIDENCE:
             if alignment['weekly_trend'] == 'ВОСХОДЯЩИЙ':
                 base_direction = 'Разворот LONG'
@@ -2648,6 +2698,8 @@ class MultiTimeframeAnalyzer:
             'price_change_24h': metadata.get('price_change_24h', 0),
             'time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'alignment': alignment,
+            'bearish_score': bearish_score,  # ← ДОБАВИТЬ
+            'bullish_score': bullish_score,  # ← ДОБАВИТЬ (опционально)
             **targets
         }
         
@@ -3270,23 +3322,31 @@ class FastPumpScanner:
                         signal['reasons'].insert(0, f"Коррекция после пампа +{pump_change:.1f}%")
 
         else:  # DUMP
+            # Получаем bearish_score из сигнала (нужно передать из generate_signal)
+            bearish_score = signal.get('bearish_score', 0)
+            
             if has_breakout:
                 signal_emoji = "📉"
                 signal_text = f"DUMP {pump_change:.1f}%"
                 signal['direction'] = 'SHORT 📉 (пробой после дампа)'
                 signal['signal_type'] = 'DUMP_BREAKOUT'
-                if 'reasons' in signal:
-                    has_dump_reason = any('Пробой уровня' in r or 'Отскок' in r for r in signal['reasons'])
-                    if not has_dump_reason:
-                        signal['reasons'].insert(0, f"Пробой уровня после дампа {pump_change:.1f}%")
+                if 'reasons' in signal and not any('Отскок' in r for r in signal['reasons']):
+                    signal['reasons'].insert(0, f"Пробой уровня после дампа {pump_change:.1f}%")
             else:
-                signal_emoji = "📊" if pump_change < -1.5 else "📉"
-                signal_text = f"DUMP {pump_change:.1f}%"
-                signal['direction'] = 'LONG 📈 (отскок)'
-                signal['signal_type'] = 'DUMP'
-                if 'reasons' in signal:
-                    has_dump_reason = any('Пробой уровня' in r or 'Отскок' in r for r in signal['reasons'])
-                    if not has_dump_reason:
+                # Без пробоя - проверяем силу медвежьих сигналов
+                if bearish_score >= 50:
+                    signal_emoji = "📉"
+                    signal_text = f"DUMP {pump_change:.1f}%"
+                    signal['direction'] = 'SHORT 📉 (продолжение)'
+                    signal['signal_type'] = 'DUMP'
+                    if 'reasons' in signal and not any('Отскок' in r for r in signal['reasons']):
+                        signal['reasons'].insert(0, f"Продолжение дампа {pump_change:.1f}%")
+                else:
+                    signal_emoji = "📊" if pump_change < -1.5 else "📉"
+                    signal_text = f"DUMP {pump_change:.1f}%"
+                    signal['direction'] = 'LONG 📈 (отскок)'
+                    signal['signal_type'] = 'DUMP'
+                    if 'reasons' in signal and not any('Отскок' in r for r in signal['reasons']):
                         signal['reasons'].insert(0, f"Отскок после дампа {pump_change:.1f}%")
         
         # Определяем силу сигнала по модулю движения
@@ -3368,9 +3428,6 @@ class FastPumpScanner:
         else:
             price_formatted = f"{signal['price']:.2f}"
         
-        price_formatted = price_formatted.rstrip('0').rstrip('.') if '.' in price_formatted else price_formatted
-        line7 = f"💰 Цена текущая: {price_formatted}"
-        
         line8 = ""
         if pump_data:
             start_price = pump_data.get('start_price', signal['price'] / (1 + pump_change/100))
@@ -3378,7 +3435,12 @@ class FastPumpScanner:
                 start_formatted = f"{start_price:.8f}".rstrip('0').rstrip('.')
             else:
                 start_formatted = f"{start_price:.4f}"
-            line8 = f"📈 Рост: {start_formatted} → {price_formatted} за {pump_time:.0f}с"
+            
+            # ✅ ПРАВИЛЬНО: проверяем направление движения
+            if pump_change > 0:
+                line8 = f"📈 Рост: {start_formatted} → {price_formatted} за {pump_time:.0f}с"
+            else:
+                line8 = f"📉 Падение: {start_formatted} → {price_formatted} за {pump_time:.0f}с"
         
         # Форматирование целей
         if signal.get('target_1') and signal.get('target_2') and signal.get('stop_loss'):
