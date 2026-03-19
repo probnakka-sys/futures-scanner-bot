@@ -28,8 +28,15 @@ class BingXWebSocketManager:
         self.max_reconnect_attempts = 10
         self.running = True
         
-        # История цен для обнаружения быстрых движений
-        self.price_history = {}  # {symbol: deque(maxlen=20)}
+        # ✅ Загружаем настройки из конфига
+        from config import WEBSOCKET_ANALYSIS_SETTINGS
+        self.settings = WEBSOCKET_ANALYSIS_SETTINGS
+        
+        # История цен для разных временных окон
+        self.price_history = {}  # {symbol: deque(maxlen=settings['price_history_size'])}
+        
+        # Счетчики для защиты от спама
+        self.signal_counters = {}  # {symbol: {'count': 0, 'minute': timestamp}}
     
     async def connect_ticker_stream(self, symbols: List[str], callback: Callable):
         """
@@ -154,57 +161,92 @@ class BingXWebSocketManager:
     
     async def _check_instant_movement(self, symbol: str) -> Optional[Dict]:
         """
-        Проверка на мгновенное движение (1-2 секунды)
+        Проверка на движение за разные временные окна
         """
-        if symbol not in self.price_history or len(self.price_history[symbol]) < 3:
+        if symbol not in self.price_history or len(self.price_history[symbol]) < 10:
             return None
         
         history = self.price_history[symbol]
         
-        # Берем самую старую и самую новую цену
-        oldest = history[0]
-        newest = history[-1]
+        # Определяем тип монеты (мейджор или щиткоин)
+        is_shitcoin = await self._is_shitcoin(symbol)
+        coin_type = 'shitcoin' if is_shitcoin else 'major'
         
-        time_diff = (newest['time'] - oldest['time']).total_seconds()
-        
-        # Если прошло меньше 5 секунд
-        if time_diff < 5:
-            change_percent = (newest['price'] - oldest['price']) / oldest['price'] * 100
+        # Проверяем разные временные окна
+        for window in self.settings['time_windows']:
+            # Находим цену, которая была window секунд назад
+            target_time = datetime.now() - timedelta(seconds=window)
+            oldest_price = None
             
-            # ✅ Берем пороги из настроек
-            from config import PUMP_SCAN_SETTINGS
+            for record in reversed(history):
+                if record['time'] <= target_time:
+                    oldest_price = record['price']
+                    break
             
-            # Определяем, щиткоин или нет по объему
-            is_shitcoin = False
-            try:
-                # Если есть доступ к fetcher, можно проверить объем
-                if hasattr(self, 'fetcher'):
-                    ticker = await self.fetcher.fetch_ticker(symbol)
-                    volume = ticker.get('volume_24h', 1_000_000)
-                    shitcoin_threshold = PUMP_SCAN_SETTINGS.get('shitcoin_volume_threshold', 500_000)
-                    if volume < shitcoin_threshold:
-                        is_shitcoin = True
-            except:
-                pass
+            if not oldest_price:
+                continue
             
-            # Выбираем порог в зависимости от типа монеты
-            if is_shitcoin:
-                threshold = PUMP_SCAN_SETTINGS.get('shitcoin_instant_threshold', 1.5)
-            else:
-                threshold = PUMP_SCAN_SETTINGS.get('instant_threshold', 2.0)
+            # Считаем изменение
+            current_price = history[-1]['price']
+            change_percent = (current_price - oldest_price) / oldest_price * 100
+            time_diff = (history[-1]['time'] - oldest_price['time']).total_seconds()
+            
+            # Получаем порог для этого окна
+            threshold_key = f"{window}s"
+            threshold = self.settings['thresholds'][coin_type].get(threshold_key, 2.0)
+            
+            # Проверяем, не превысили ли лимит сигналов
+            if self._check_rate_limit(symbol):
+                continue
             
             # Если движение больше порога
             if abs(change_percent) >= threshold:
                 return {
                     'change_percent': change_percent,
                     'time_window': round(time_diff, 1),
-                    'start_price': oldest['price'],
-                    'end_price': newest['price'],
+                    'start_price': oldest_price['price'],
+                    'end_price': current_price,
                     'is_shitcoin': is_shitcoin,
-                    'threshold_used': threshold
+                    'threshold_used': threshold,
+                    'window_used': window
                 }
         
         return None
+
+    def _check_rate_limit(self, symbol: str) -> bool:
+        """Проверка лимита сигналов"""
+        current_minute = datetime.now().strftime('%Y%m%d%H%M')
+        
+        if symbol not in self.signal_counters:
+            self.signal_counters[symbol] = {'count': 1, 'minute': current_minute}
+            return False
+        
+        counter = self.signal_counters[symbol]
+        
+        if counter['minute'] != current_minute:
+            # Новая минута
+            counter['count'] = 1
+            counter['minute'] = current_minute
+            return False
+        
+        if counter['count'] >= self.settings['max_signals_per_minute']:
+            return True
+        
+        counter['count'] += 1
+        return False
+
+    async def _is_shitcoin(self, symbol: str) -> bool:
+        """Определение щиткоина по объему"""
+        try:
+            # Здесь нужно получить объем 24ч
+            # Можно использовать fetcher, если он доступен
+            if hasattr(self, 'fetcher'):
+                ticker = await self.fetcher.fetch_ticker(symbol)
+                volume = ticker.get('volume_24h', 0)
+                return volume < self.settings['min_volume_usdt']['shitcoin']
+        except:
+            pass
+        return False
     
     def get_price(self, symbol: str) -> Optional[float]:
         """Получить последнюю цену"""
