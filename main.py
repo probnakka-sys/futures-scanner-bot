@@ -3221,7 +3221,7 @@ class FastPumpScanner:
     
     async def scan_all_pairs(self) -> List[Dict]:
         """
-        Оптимизированное сканирование всех пар с гибридным подходом
+        Оптимизированное сканирование всех пар с гибкими настройками режима
         """
         logger.info("🚀 ЗАПУСК БЫСТРОГО ПАМП-СКАНЕРА (ГИБРИДНЫЙ)")
         
@@ -3230,19 +3230,88 @@ class FastPumpScanner:
             if not all_pairs:
                 return []
             
-            # ✅ Загружаем настройки умных повторов
-            from config import SMART_REPEAT_SETTINGS
+            # ✅ Загружаем настройки
+            from config import SMART_REPEAT_SETTINGS, SCAN_MODE
+            
             smart_repeat = SMART_REPEAT_SETTINGS
             
             # ✅ Словарь для отслеживания последних сигналов по монетам
             last_signals = {}  # coin: {'time': datetime, 'change': float, 'direction': str}
             
+            # ===== ВЫБОР РЕЖИМА СКАНИРОВАНИЯ =====
+            scan_pairs = []
+            mode = SCAN_MODE.get('mode', 'all')
+            
+            # РЕЖИМ 1: ТОП ПО ОБЪЕМУ
+            if mode == 'top_volume':
+                logger.info("📊 Режим: топ-объем")
+                pairs_with_volume = []
+                
+                # Берем первые 300 пар для скорости
+                for pair in all_pairs[:300]:
+                    try:
+                        ticker = await self.fetcher.fetch_ticker(pair)
+                        volume = ticker.get('volume_24h', 0)
+                        if volume >= SCAN_MODE['top_volume']['min_volume']:
+                            pairs_with_volume.append((pair, volume))
+                    except:
+                        continue
+                
+                pairs_with_volume.sort(key=lambda x: x[1], reverse=True)
+                scan_pairs = [p[0] for p in pairs_with_volume[:SCAN_MODE['top_volume']['count']]]
+                logger.info(f"  📊 Отобрано {len(scan_pairs)} пар по объему")
+            
+            # РЕЖИМ 2: ЩИТКОИНЫ
+            elif mode == 'shitcoin':
+                logger.info("📊 Режим: щиткоины")
+                shitcoins = await self._get_volatile_shitcoins(all_pairs)
+                scan_pairs = shitcoins[:SCAN_MODE['shitcoin']['count']]
+                
+                # Добавляем мейджоры если нужно
+                if SCAN_MODE['shitcoin']['include_majors']:
+                    majors = ['BTC/USDT:USDT', 'ETH/USDT:USDT', 'BNB/USDT:USDT', 
+                            'SOL/USDT:USDT', 'XRP/USDT:USDT']
+                    scan_pairs = majors[:SCAN_MODE['shitcoin']['majors_count']] + scan_pairs
+                
+                logger.info(f"  📊 Отобрано {len(scan_pairs)} щиткоинов")
+            
+            # РЕЖИМ 3: ГИБРИДНЫЙ
+            elif mode == 'hybrid':
+                logger.info("📊 Режим: гибридный")
+                
+                # Топ по объему
+                pairs_with_volume = []
+                for pair in all_pairs[:300]:
+                    try:
+                        ticker = await self.fetcher.fetch_ticker(pair)
+                        volume = ticker.get('volume_24h', 0)
+                        pairs_with_volume.append((pair, volume))
+                    except:
+                        continue
+                pairs_with_volume.sort(key=lambda x: x[1], reverse=True)
+                top_volume = [p[0] for p in pairs_with_volume[:SCAN_MODE['hybrid']['top_volume_count']]]
+                
+                # Щиткоины
+                shitcoins = await self._get_volatile_shitcoins(all_pairs)
+                shitcoins = shitcoins[:SCAN_MODE['hybrid']['shitcoin_count']]
+                
+                # Объединяем
+                scan_pairs = list(set(top_volume + shitcoins))
+                logger.info(f"  📊 Отобрано {len(scan_pairs)} пар (топ-объем: {len(top_volume)}, щиткоины: {len(shitcoins)})")
+            
+            # РЕЖИМ 4: ВСЕ ПАРЫ
+            else:
+                logger.info("📊 Режим: все пары")
+                scan_pairs = all_pairs[:self.max_pairs]
+            
+            # Перемешиваем если нужно
+            if SCAN_MODE.get('randomize', True):
+                random.shuffle(scan_pairs)
+            
             # Запускаем WebSocket мониторинг для быстрых сигналов
             if self.websocket_available:
-                await self.start_websocket_monitoring(all_pairs)
+                await self.start_websocket_monitoring(all_pairs)  # отправляем все пары для WebSocket
             
-            scan_pairs = all_pairs[:self.max_pairs]
-            random.shuffle(scan_pairs)
             logger.info(f"📊 Памп-сканер: анализирую {len(scan_pairs)} пар (WebSocket: {self.websocket_available})")
             
             pump_signals = []
