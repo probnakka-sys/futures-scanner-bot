@@ -39,7 +39,7 @@ PUMP_SCAN_SETTINGS = {
     'max_pairs_to_scan': 600,                    # Было 600
     'include_low_liquidity': True,
     'send_top_pumps': 999,
-    'cooldown_minutes': 15,                       # Было 5
+    'cooldown_minutes': 15,                      # Было 5
     'batch_size': 50,                            # Размер батча для параллельного сканирования (меньше = быстрее, но больше нагрузка) было 100
     'delay_between_batches': 0.3,                # Задержка между батчами в секундах, было 0.1
         # В FastPumpScanner.__init__
@@ -47,7 +47,7 @@ PUMP_SCAN_SETTINGS = {
         # self.delay_between_batches = PUMP_SCAN_SETTINGS.get('delay_between_batches', 0.1)
     
     # Новые настройки для WebSocket
-    'websocket_top_pairs': 200,                   # Сколько пар в WebSocket
+    'websocket_top_pairs': 300,                   # Сколько пар в WebSocket
     'shitcoin_volume_threshold': 1500_000,        # Объем < 0.5M$ = щиткоин
     'websocket_reconnect_delay': 5,               # Задержка перед переподключением
 }
@@ -70,11 +70,11 @@ WEBSOCKET_ANALYSIS_SETTINGS = {
             '60s': 4.0,   # 4% за 60 секунд
         },
         'shitcoin': {
-            '3s': 0.8,    # 0.8% за 3 секунды
-            '5s': 1.0,    # 1% за 5 секунд
-            '10s': 1.5,   # 1.5% за 10 секунд
-            '30s': 2.0,   # 2% за 30 секунд
-            '60s': 2.5,   # 2.5% за 60 секунд
+            '3s': 4,    # 0.8% за 3 секунды
+            '5s': 6,    # 1% за 5 секунд
+            '10s': 8,   # 1.5% за 10 секунд
+            '30s': 10,   # 2% за 30 секунд
+            '60s': 13,   # 2.5% за 60 секунд
         }
     },
     
