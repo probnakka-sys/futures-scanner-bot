@@ -39,7 +39,7 @@ PUMP_SCAN_SETTINGS = {
     'max_pairs_to_scan': 600,                    # Было 600
     'include_low_liquidity': True,
     'send_top_pumps': 999,
-    'cooldown_minutes': 15,                      # Было 5
+    'cooldown_minutes': 15,                       # Было 5
     'batch_size': 50,                            # Размер батча для параллельного сканирования (меньше = быстрее, но больше нагрузка) было 100
     'delay_between_batches': 0.3,                # Задержка между батчами в секундах, было 0.1
         # В FastPumpScanner.__init__
@@ -47,7 +47,7 @@ PUMP_SCAN_SETTINGS = {
         # self.delay_between_batches = PUMP_SCAN_SETTINGS.get('delay_between_batches', 0.1)
     
     # Новые настройки для WebSocket
-    'websocket_top_pairs': 300,                   # Сколько пар в WebSocket
+    'websocket_top_pairs': 200,                   # Сколько пар в WebSocket
     'shitcoin_volume_threshold': 1500_000,        # Объем < 0.5M$ = щиткоин
     'websocket_reconnect_delay': 5,               # Задержка перед переподключением
 }
@@ -70,18 +70,18 @@ WEBSOCKET_ANALYSIS_SETTINGS = {
             '60s': 4.0,   # 4% за 60 секунд
         },
         'shitcoin': {
-            '3s': 4,    # 0.8% за 3 секунды
-            '5s': 6,    # 1% за 5 секунд
-            '10s': 8,   # 1.5% за 10 секунд
-            '30s': 10,   # 2% за 30 секунд
-            '60s': 13,   # 2.5% за 60 секунд
+            '3s': 0.8,    # 0.8% за 3 секунды
+            '5s': 1.0,    # 1% за 5 секунд
+            '10s': 1.5,   # 1.5% за 10 секунд
+            '30s': 2.0,   # 2% за 30 секунд
+            '60s': 2.5,   # 2.5% за 60 секунд
         }
     },
     
     # Минимальный объем для учета
     'min_volume_usdt': {
         'major': 10_000_000,  # 10M$ для мейджоров
-        'shitcoin': 100_000,    # 200K$ для щиткоинов
+        'shitcoin': 200_000,    # 200K$ для щиткоинов
     },
     
     # Максимальное количество сигналов в минуту (защита от спама)
@@ -89,6 +89,43 @@ WEBSOCKET_ANALYSIS_SETTINGS = {
     
     # История цен для анализа (сколько значений хранить)
     'price_history_size': 100,  # ← это нужно для maxlen
+}
+
+# ============== НАСТРОЙКИ СКАНИРОВАНИЯ ПАР ==============
+
+SCAN_MODE = {
+    'mode': 'shitcoin',  # 'all', 'top_volume', 'shitcoin', 'hybrid'
+        # Как переключать режимы:
+        # Только щиткоины (сейчас):         'mode': 'shitcoin'      
+        # Только топ-100 по объему:         'mode': 'top_volume'
+        #                                   'top_volume': {'enabled': True}
+        # Гибрид (50 топ + 150 щиткоинов):  'mode': 'hybrid'
+        #                                   'hybrid': {'enabled': True}
+        # Все пары (600):                   'mode': 'whatever
+    'randomize': True,  # перемешивать ли список
+
+    # Для режима top_volume
+    'top_volume': {
+        'enabled': False,
+        'count': 100,  # топ-100 по объему
+        'min_volume': 0  # минимальный объем
+    },
+    
+    # Для режима shitcoin
+    'shitcoin': {
+        'enabled': True,            # Режим щиткоинов включен
+        'max_volume': 1_500_000,    # объем < 1.5M$
+        'count': 300,               # сколько щиткоинов сканировать
+        'include_majors': True,     # включать ли мейджоры (BTC, ETH...)
+        'majors_count': 5           # сколько мейджоров добавить
+    },
+    
+    # Для гибридного режима
+    'hybrid': {
+        'enabled': False,
+        'top_volume_count': 50,  # топ-50 по объему
+        'shitcoin_count': 150,   # + 150 щиткоинов
+    },    
 }
 
 # ============== НАСТРОЙКИ УМНЫХ ПОВТОРОВ ==============
@@ -265,14 +302,14 @@ INDICATOR_WEIGHTS = {
     'weekly_trend': 20,          # ⬇️ было 35, стало 20
     
     'trend_alignment': 20,
-    'divergence': 20,
+    'divergence': 30,
     'vwap': 12,
     'patterns': 15,
     'pump_dump': 25,
     'fibonacci': 20,
     'btc_correlation': 8,
     'fvg': 35,
-    'imbalance': 20,
+    'imbalance': 35,
     'liquidity': 30,
     'order_blocks': 25,
     'fractals': 15,
