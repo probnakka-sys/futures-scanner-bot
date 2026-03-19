@@ -23,8 +23,8 @@ PAIRS_TO_SCAN = int(os.getenv('PAIRS_TO_SCAN', 50))
 # Реферальные ссылки
 REF_LINKS = {
     'BingX': 'https://bingxdao.com/invite/ZTR83C/',
-    'Bybit': os.getenv('BYBIT_REF_LINK', 'https://www.bybit.com'),
-    'MEXC': os.getenv('MEXC_REF_LINK', 'https://www.mexc.com')
+    'Bybit': os.getenv('BYBIT_REF_LINK', 'https://www.bybit.com/invite?ref=7GNJDR6'),
+    'MEXC': os.getenv('MEXC_REF_LINK', 'https://promote.mexc.com/r/DPJr2UJJDC')
 }
 
 # ============== НАСТРОЙКИ ПАМП-СКАНЕРА ==============
