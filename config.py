@@ -31,9 +31,9 @@ REF_LINKS = {
 
 PUMP_SCAN_SETTINGS = {
     'enabled': True,
-    'threshold': 3.5,                            # % движения для REST API
-    'instant_threshold': 2.0,                    # ⚡ СНИЖЕН ДО 1% для WebSocket (было 2.0)
-    'shitcoin_instant_threshold': 1.5,           # Для щиткоинов еще ниже
+    'threshold': 2.5,                            # % движения для REST API (было 3.5)
+    'instant_threshold': 1.5,                    # ⚡ СНИЖЕН ДО 1% для WebSocket (было 2.0)
+    'shitcoin_instant_threshold': 1,             # Для щиткоинов еще ниже (было 1.5)
     'timeframes': ['1m', '3m', '5m', '15m', '30m'],            # Было ['1m', '3m', '5m']
     'min_volume_usdt': 1000,
     'max_pairs_to_scan': 600,                    # Было 600
@@ -94,7 +94,7 @@ WEBSOCKET_ANALYSIS_SETTINGS = {
 # ============== НАСТРОЙКИ СКАНИРОВАНИЯ ПАР ==============
 
 SCAN_MODE = {
-    'mode': 'shitcoin',  # 'all', 'top_volume', 'shitcoin', 'hybrid'
+    'mode': 'all',  # 'all', 'top_volume', 'shitcoin', 'hybrid'
         # Как переключать режимы:
         # Только щиткоины (сейчас):         'mode': 'shitcoin'      
         # Только топ-100 по объему:         'mode': 'top_volume'
@@ -115,7 +115,7 @@ SCAN_MODE = {
     'shitcoin': {
         'enabled': True,            # Режим щиткоинов включен
         'max_volume': 1_500_000,    # объем < 1.5M$
-        'count': 300,               # сколько щиткоинов сканировать
+        'count': 600,               # сколько щиткоинов сканировать
         'include_majors': True,     # включать ли мейджоры (BTC, ETH...)
         'majors_count': 5           # сколько мейджоров добавить
     },
