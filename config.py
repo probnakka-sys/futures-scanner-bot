@@ -34,14 +34,14 @@ PUMP_SCAN_SETTINGS = {
     'threshold': 3.5,                            # % движения для REST API
     'instant_threshold': 2.0,                    # ⚡ СНИЖЕН ДО 1% для WebSocket (было 2.0)
     'shitcoin_instant_threshold': 1.5,           # Для щиткоинов еще ниже
-    'timeframes': ['1m', '3m', '5m'],            # Было ['1m', '3m', '5m', '15m', '30m']
+    'timeframes': ['1m', '3m', '5m', '15m', '30m'],            # Было ['1m', '3m', '5m']
     'min_volume_usdt': 1000,
     'max_pairs_to_scan': 600,                    # Было 600
     'include_low_liquidity': True,
     'send_top_pumps': 999,
-    'cooldown_minutes': 5,                       # Было 15
-    'batch_size': 100,                            # Размер батча для параллельного сканирования (меньше = быстрее, но больше нагрузка) было 50
-    'delay_between_batches': 0.1,                # Задержка между батчами в секундах, было 0.3
+    'cooldown_minutes': 15,                       # Было 5
+    'batch_size': 50,                            # Размер батча для параллельного сканирования (меньше = быстрее, но больше нагрузка) было 100
+    'delay_between_batches': 0.3,                # Задержка между батчами в секундах, было 0.1
         # В FastPumpScanner.__init__
         # self.batch_size = PUMP_SCAN_SETTINGS.get('batch_size', 100)
         # self.delay_between_batches = PUMP_SCAN_SETTINGS.get('delay_between_batches', 0.1)
