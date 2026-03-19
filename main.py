@@ -2696,8 +2696,8 @@ class FastPumpScanner:
         self.last_pump_signals = {}
         self.cache = CacheManager(ttl=30)
         self.ws_signals_sent = set()  # отслеживаем отправленные через WebSocket сигналы
-        self.batch_size = PUMP_SCAN_SETTINGS.get('batch_size', 100)
-        self.delay_between_batches = PUMP_SCAN_SETTINGS.get('delay_between_batches', 0.1)
+        # self.batch_size = PUMP_SCAN_SETTINGS.get('batch_size', 100)
+        # self.delay_between_batches = PUMP_SCAN_SETTINGS.get('delay_between_batches', 0.1)
         
         # WebSocket менеджер
         try:
