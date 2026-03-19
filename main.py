@@ -3428,6 +3428,9 @@ class FastPumpScanner:
         else:
             price_formatted = f"{signal['price']:.2f}"
         
+        price_formatted = price_formatted.rstrip('0').rstrip('.') if '.' in price_formatted else price_formatted
+        line7 = f"💰 Цена текущая: {price_formatted}"
+
         line8 = ""
         if pump_data:
             start_price = pump_data.get('start_price', signal['price'] / (1 + pump_change/100))
