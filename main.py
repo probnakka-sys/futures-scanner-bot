@@ -2721,6 +2721,8 @@ class MultiTimeframeAnalyzer:
             logger.info(f"⏭️ NEUTRAL сигнал для {symbol}")
             return None
         
+        logger.info(f"  🎯 НАПРАВЛЕНИЕ ПЕРЕД РАСЧЕТОМ ЦЕЛЕЙ: {direction}")
+
         # ===== РАСЧЕТ ЦЕЛЕЙ ПО ATR =====
         atr = last['atr'] if pd.notna(last['atr']) else (last['high'] - last['low']) * 0.3
         current_price = last['close']
@@ -2735,6 +2737,8 @@ class MultiTimeframeAnalyzer:
             targets['target_2'] = current_price - atr * ATR_SETTINGS['short_target_2_mult']
             targets['stop_loss'] = current_price + atr * ATR_SETTINGS['short_stop_loss_mult']
         
+        logger.info(f"  🎯 НАПРАВЛЕНИЕ ПОСЛЕ РАСЧЕТА ЦЕЛЕЙ: {direction}")
+
         # Округление целей
         for key in ['target_1', 'target_2', 'stop_loss']:
             if current_price < 0.0001:
