@@ -281,6 +281,149 @@ INDICATOR_WEIGHTS = {
     'accumulation': 35,
 }
 
+# ============== НАСТРОЙКИ АНАЛИЗА УРОВНЕЙ И ПРОБОЕВ ==============
+
+LEVEL_ANALYSIS_SETTINGS = {
+    'enabled': True,  # вкл/выкл анализ уровней
+    
+    # Какие уровни анализировать
+    'level_types': {
+        'horizontal': True,      # горизонтальные уровни
+        'trendline': True,       # трендовые линии
+        'fvg': True,             # FVG зоны
+        'ema': True,             # EMA уровни (50, 200)
+        'fibonacci': True,       # уровни Фибоначчи
+        'volume_profile': False,  # Volume Profile (если включено)
+    },
+    
+    # Настройки сбора уровней
+    'collection': {
+        'max_levels_per_tf': 10,           # макс уровней с одного ТФ
+        'max_total_levels': 50,             # макс всего уровней
+        'min_touches': 3,                    # мин касаний для значимости
+        'touch_tolerance': 0.3,               # допуск касания в %
+    },
+    
+    # Настройки пробоя
+    'breakout': {
+        'required_candles': 3,                # свечей для подтверждения
+        'min_breakout_percent': 1.0,          # мин размер пробоя (%)
+        'confirmation_percent': 0.5,          # закрепление после пробоя (%)
+        'retrace_threshold': 70,               # % возврата для ложного пробоя
+    },
+    
+    # Веса для разных типов уровней
+    'weights': {
+        'horizontal': {
+            'base': 30,
+            'per_touch': 5,                    # +5 за каждое касание
+            'tf_multiplier': {                  # множитель по ТФ
+                'monthly': 4.0,
+                'weekly': 3.5,
+                'daily': 3.0,
+                'four_hourly': 2.5,
+                'hourly': 2.0,
+                'current': 1.0
+            }
+        },
+        'trendline': {
+            'base': 35,
+            'per_touch': 8,
+            'tf_multiplier': {
+                'monthly': 4.0,
+                'weekly': 3.5,
+                'daily': 3.0,
+                'four_hourly': 2.5,
+                'hourly': 2.0,
+                'current': 1.0
+            }
+        },
+        'fvg': {
+            'base': 40,
+            'size_multiplier': 2,               # множитель от размера FVG
+            'tf_multiplier': {
+                'monthly': 4.0,
+                'weekly': 3.5,
+                'daily': 3.0,
+                'four_hourly': 2.5,
+                'hourly': 2.0,
+                'current': 1.0
+            }
+        },
+        'ema': {
+            'ema_200': 50,
+            'ema_50': 35,
+            'tf_multiplier': {
+                'monthly': 4.0,
+                'weekly': 3.5,
+                'daily': 3.0,
+                'four_hourly': 2.5,
+                'hourly': 2.0,
+                'current': 1.0
+            }
+        },
+        'fibonacci': {
+            'base': 30,
+            'level_multiplier': {                # особо важные уровни
+                '0.618': 1.5,
+                '0.786': 1.3,
+                '0.382': 1.0
+            },
+            'tf_multiplier': {
+                'monthly': 4.0,
+                'weekly': 3.5,
+                'daily': 3.0,
+                'four_hourly': 2.5,
+                'hourly': 2.0,
+                'current': 1.0
+            }
+        }
+    },
+    
+    # Настройки сигналов
+    'signals': {
+        'approach': {
+            'enabled': True,
+            'thresholds': {                      # расстояния для предупреждения
+                'strong': 1.5,                    # для сильных уровней
+                'medium': 1.0,
+                'weak': 0.5
+            },
+            'min_confidence': 20,                  # мин уверенность для сигнала
+            'message': "⚠️ {strength} уровень на {tf}: {distance:.1f}% до пробоя ({touches} касаний)"
+        },
+        
+        'breakout_first': {
+            'enabled': True,
+            'min_confidence': 30,
+            'message': "⚡ ПЕРВЫЙ СИГНАЛ: пробой {direction} на {tf} ({touches} касаний)"
+        },
+        
+        'breakout_confirmed': {
+            'enabled': True,
+            'min_move_percent': 1.0,               # мин движение для подтверждения
+            'min_confidence': 40,
+            'message': "✅ ПРОБОЙ {direction} на {tf} ПОДТВЕРЖДЕН! +{move:.1f}% ({touches} касаний)"
+        },
+        
+        'fakeout': {
+            'enabled': True,
+            'min_retrace': 60,                      # мин % возврата для ложного пробоя
+            'min_confidence': 60,
+            'message': "🚨 ЛОЖНЫЙ ПРОБОЙ {direction} на {tf}! Возврат на {retrace:.0f}%"
+        }
+    },
+    
+    # Приоритеты таймфреймов
+    'tf_priority': ['monthly', 'weekly', 'daily', 'four_hourly', 'hourly', 'current'],
+    
+    # Черный список (игнорировать определенные уровни)
+    'blacklist': {
+        'symbols': [],  # ['BTC', 'ETH'] - не анализировать определенные монеты
+        'levels': []     # игнорировать определенные цены
+    }
+}
+
 # ============== НАСТРОЙКИ СТАТИСТИКИ ==============
 
 STATS_SETTINGS = {
