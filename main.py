@@ -791,7 +791,7 @@ class ChartGenerator:
         
         # ===== ВЕРХНИЙ ГРАФИК =====
         ax1.plot(plot_df.index, plot_df['close'], 
-                color='white', linewidth=2, label='Close')
+                color='white', linewidth=2, label='Цена')
         
         # EMA линии - ВСЕ ДОЛЖНЫ БЫТЬ В ЛЕГЕНДЕ
         if 'ema_9' in plot_df.columns:
@@ -816,23 +816,23 @@ class ChartGenerator:
         
         # Текущая цена
         current_price = signal['price']
-        ax1.axhline(y=current_price, color='#00ff00', 
-                linestyle='--', linewidth=1.5, alpha=0.8,
-                label=f'Current: {current_price:.4f}')
+        ax1.axhline(y=current_price, color='#ffff00', # ← ЖЕЛТЫЙ
+                linestyle='--', linewidth=2.0, alpha=0.9, # потолще и ярче
+                label=f'Текущая: {current_price:.4f}')
         
         # Цели
         if signal.get('target_1'):
             ax1.axhline(y=signal['target_1'], color='#ffaa00', 
                     linestyle='--', linewidth=1.5, alpha=0.8,
-                    label=f'Target 1: {signal["target_1"]}')
+                    label=f'Цель 1: {signal["target_1"]}')
         if signal.get('target_2'):
-            ax1.axhline(y=signal['target_2'], color='#00ff00', 
+            ax1.axhline(y=signal['target_2'], color='#00ff00', # ← ЗЕЛЕНЫЙ 
                     linestyle='--', linewidth=1.5, alpha=0.8,
-                    label=f'Target 2: {signal["target_2"]}')
+                    label=f'Цель 2: {signal["target_2"]}')
         if signal.get('stop_loss'):
             ax1.axhline(y=signal['stop_loss'], color='#ff0000', 
                     linestyle='--', linewidth=1.5, alpha=0.8,
-                    label=f'Stop: {signal["stop_loss"]}')
+                    label=f'Стоп: {signal["stop_loss"]}')
         
         # ===== FVG ЗОНЫ - ТОЛЬКО 2 БЛИЖАЙШИЕ =====
         if 'fvg_zones' in signal and signal['fvg_zones']:
@@ -859,10 +859,14 @@ class ChartGenerator:
                 mid_price = (zone['min'] + zone['max']) / 2
                 label = f"FVG {zone.get('tf_short', '?')} ({zone.get('size', 0):.1f}%)"
                 ax1.text(plot_df.index[-1], mid_price, label, 
-                        color=color, fontsize=8, alpha=0.8,
+                        color='white',  # ← только это поменяли с color=color на color='white'
+                        fontsize=8,     # ← оставляем как было
+                        alpha=0.8,      # ← оставляем как было
                         verticalalignment='center',
                         horizontalalignment='right',
-                        bbox=dict(boxstyle="round,pad=0.2", facecolor='black', alpha=0.5))
+                        bbox=dict(boxstyle="round,pad=0.2", 
+                                facecolor='black', 
+                                alpha=0.5))  # ← оставляем как было
         
         # Заголовок
         ax1.set_title(f'{coin} - {signal["direction"]} (TF: {timeframe}, уверенность {signal["confidence"]}%)', 
@@ -2166,6 +2170,14 @@ class MultiTimeframeAnalyzer:
     
     def analyze_fvg_multi_timeframe(self, dataframes: Dict[str, pd.DataFrame], current_price: float) -> Dict:
         """
+        Анализ FVG на всех таймфреймах с фильтрацией по расстоянию
+        """
+        result = {'has_fvg': False, 'signals': [], 'strength': 0, 'zones': []}
+        all_zones = []
+        
+        # Максимальное расстояние для отображения в причинах (например, 15%)
+        MAX_DISTANCE_PCT = 15.0
+        """
         Анализ FVG на всех таймфреймах с фильтрацией для графика
         """
         result = {'has_fvg': False, 'signals': [], 'strength': 0, 'zones': []}
@@ -2302,11 +2314,40 @@ class MultiTimeframeAnalyzer:
             logger.info(f"    FVG {zone['tf']}: {zone['min']:.6f}-{zone['max']:.6f}, расстояние {zone['sort_distance']*100:.1f}%")
         # ===== КОНЕЦ БЛОКА =====
         
+        # ===== ФИЛЬТРАЦИЯ ПО РАССТОЯНИЮ ДЛЯ ПРИЧИН =====
+        MAX_DISTANCE_PCT = 15.0
+        DISTANCE_THRESHOLDS = {
+            'monthly': 50.0,
+            'weekly': 30.0,
+            'daily': 20.0,
+            'four_hourly': 15.0,
+            'hourly': 10.0,
+            'current': 5.0
+        }
+
+        filtered_zones = []
+        for zone in all_zones:
+            threshold = DISTANCE_THRESHOLDS.get(zone['tf'], MAX_DISTANCE_PCT)
+            
+            if zone['distance_pct'] > threshold:
+                logger.info(f"    ⏭️ FVG {zone['tf']} пропущен - слишком далеко ({zone['distance_pct']:.1f}% > {threshold}%)")
+                continue
+            
+            filtered_zones.append(zone)
+            
+            # Добавляем в причины
+            signal_text = (f"FVG {zone['tf_short']}: {zone['min']:.4f}-{zone['max']:.4f} "
+                        f"(размер {zone['size']:.2f}% {zone['type']}, {zone['distance_text']})")
+            result['signals'].append(signal_text)
+            result['strength'] += zone['strength'] * zone['weight']
+
+        logger.info(f"  📊 Добавлено {len(result['signals'])} FVG в причины (из {len(all_zones)} найденных)")
+
         # ===== ФИЛЬТРАЦИЯ ДЛЯ ГРАФИКА: ТОЛЬКО БЛИЖАЙШИЕ =====
-        if all_zones:
+        if filtered_zones:
             # Добавляем расстояние для сортировки
             zones_with_distance = []
-            for zone in all_zones:
+            for zone in filtered_zones:
                 if zone['in_zone']:
                     zone['sort_distance'] = 0
                 elif zone['min'] > current_price:
@@ -2320,9 +2361,9 @@ class MultiTimeframeAnalyzer:
             zones_with_distance.sort(key=lambda z: z['sort_distance'])
             
             # Берем ТОЛЬКО 2 ближайшие зоны для графика
-            result['zones'] = zones_with_distance[:2]  # ← 2 зоны на графике
+            result['zones'] = zones_with_distance[:2]
             
-            logger.info(f"  🎨 Для графика отобрано {len(result['zones'])} ближайших FVG из {len(all_zones)}")
+            logger.info(f"  🎨 Для графика отобрано {len(result['zones'])} ближайших FVG из {len(filtered_zones)}")
         
         # Ограничиваем силу 100%
         if result['strength'] > 100:
@@ -2634,6 +2675,35 @@ class MultiTimeframeAnalyzer:
                         target_str = f"{zone['max']:.6f}" if zone['max'] < 0.001 else f"{zone['max']:.4f}"
                         reasons.append(f"🎯 Цель: FVG {zone['tf_short']} {target_str} (-{zone['distance_pct']:.1f}%)")
             
+            # ===== НОВАЯ ЛОГИКА СМЕНЫ НАПРАВЛЕНИЯ =====
+    
+            # Если мы в LONG, но сверху 3+ зон FVG - сильное сопротивление
+            if direction == 'LONG' and fvg_above >= 3:
+                old_direction = direction
+                direction = 'SHORT 📉 (сильное сопротивление FVG)'
+                reasons.append(f"🔻 Смена направления: {old_direction} → SHORT (FVG сверху)")
+                confidence += 25
+                logger.info(f"  🔄 Смена направления из-за {fvg_above} FVG сверху")
+            
+            # Если мы в SHORT, но снизу 3+ зон FVG - сильная поддержка
+            elif direction == 'SHORT' and fvg_below >= 3:
+                old_direction = direction
+                direction = 'LONG 📈 (сильная поддержка FVG)'
+                reasons.append(f"🔺 Смена направления: {old_direction} → LONG (FVG снизу)")
+                confidence += 25
+                logger.info(f"  🔄 Смена направления из-за {fvg_below} FVG снизу")
+            
+            # Если цена в зоне FVG - это сильный уровень
+            if fvg_in_zone > 0:
+                if direction == 'LONG':
+                    reasons.append(f"✅ Подтверждение LONG - цена в зоне FVG")
+                    confidence += 15
+                else:
+                    reasons.append(f"✅ Подтверждение SHORT - цена в зоне FVG")
+                    confidence += 15
+            
+            # ===== КОНЕЦ НОВОГО БЛОКА =====                                                    
+
             # Склонение для "зона/зоны/зон"
             if direction == 'LONG' and fvg_above > 0:
                 zone_word = "зона" if fvg_above == 1 else "зоны" if fvg_above <= 4 else "зон"
