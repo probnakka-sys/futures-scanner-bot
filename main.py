@@ -1441,11 +1441,10 @@ class LevelCollector:
         confluence_zones.sort(key=lambda x: (-x['strength'], x['distance']))
         return confluence_zones[:5]  # топ-5 сильных зон
 
-    def calculate_level_strength_score(self, level: Level, df: pd.DataFrame, last: pd.Series, alignment: Dict) -> Dict:
+    def calculate_level_strength_score(self, level: Dict, df: pd.DataFrame, last: pd.Series, alignment: Dict) -> Dict:
         """
         Оценка силы уровня и вероятности разворота/пробоя
         """
-        if level['zone_type'] == 'поддержка':  # ← используем словарь
         result = {
             'strength': 0,           # 0-100
             'probability': 0,        # 0-100 (вероятность разворота)
@@ -1455,8 +1454,8 @@ class LevelCollector:
         }
         
         # ===== 1. КОНВЕРГЕНЦИЯ ТАЙМФРЕЙМОВ =====
-        if hasattr(level, 'timeframes'):
-            tf_count = len(level.timeframes)
+        if 'timeframes' in level:
+            tf_count = len(level['timeframes'])
         else:
             tf_count = 1
         
@@ -1474,7 +1473,7 @@ class LevelCollector:
             result['probability'] += 10
         
         # ===== 2. КАСАНИЯ УРОВНЯ =====
-        touches = level.touches if hasattr(level, 'touches') else 1
+        touches = level.get('touches', 1)
         if touches >= 7:
             result['strength'] += 25
             result['signals'].append(f"🎯 Уровень тестирован {touches} раз (очень сильный)")
@@ -1525,8 +1524,9 @@ class LevelCollector:
         # ===== 5. ТРЕНД =====
         weekly_trend = alignment.get('weekly_trend', '')
         daily_trend = alignment.get('daily_trend', '')
+        zone_type = level.get('zone_type', '')
         
-        if level.zone_type == 'поддержка':
+        if zone_type == 'поддержка':
             if weekly_trend == 'ВОСХОДЯЩИЙ' or daily_trend == 'ВОСХОДЯЩИЙ':
                 result['strength'] += 20
                 result['signals'].append("📈 Тренд вверх (поддержка усилена)")
@@ -1544,8 +1544,7 @@ class LevelCollector:
                 result['direction'] = 'SHORT' if result['probability'] > 50 else 'NEUTRAL'
         
         # ===== 6. ИМПУЛЬС ПОДХОДА =====
-        # (расстояние до уровня и скорость подхода)
-        distance = level.distance if hasattr(level, 'distance') else 100
+        distance = level.get('distance', 100)
         if distance < 1.0:
             result['strength'] += 15
             result['signals'].append(f"⚡ Цена у уровня ({distance:.1f}%)")
