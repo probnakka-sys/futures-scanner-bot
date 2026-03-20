@@ -617,6 +617,53 @@ LEVEL_ANALYSIS_SETTINGS = {
     }
 }
 
+# ============== НАСТРОЙКИ АНАЛИЗА УРОВНЕЙ ==============
+
+LEVEL_ANALYSIS_SETTINGS = {
+    'weights': {
+        'horizontal': {
+            'base': 30,
+            'per_touch': 5,
+            'tf_multiplier': {
+                'monthly': 4.0,
+                'weekly': 3.5,
+                'daily': 3.0,
+                'four_hourly': 2.5,
+                'hourly': 2.0,
+                'current': 1.0
+            }
+        },
+        'fvg': {
+            'base': 40,
+            'size_multiplier': 2,
+            'tf_multiplier': {
+                'monthly': 4.0,
+                'weekly': 3.5,
+                'daily': 3.0,
+                'four_hourly': 2.5,
+                'hourly': 2.0,
+                'current': 1.0
+            }
+        },
+        'ema': {
+            'ema_200': 50,
+            'ema_50': 35,
+            'tf_multiplier': {
+                'monthly': 4.0,
+                'weekly': 3.5,
+                'daily': 3.0,
+                'four_hourly': 2.5,
+                'hourly': 2.0,
+                'current': 1.0
+            }
+        }
+    },
+    'confluence_tolerance': 0.5,
+    'max_distance': 20,
+    'max_levels_to_show': 3,
+    'auto_override_direction': True
+}
+
 # ============== НАСТРОЙКИ СНАЙПЕРСКИХ ТОЧЕК ВХОДА ==============
 
 SNIPER_ENTRY_SETTINGS = {
