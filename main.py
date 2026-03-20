@@ -65,6 +65,12 @@ from config import (
 # Импорт системы статистики
 from signal_stats import SignalStatistics
 
+# Импорт настроек объемов и дисперсии
+from config import VOLUME_ANALYSIS_SETTINGS, DISPERSION_ANALYSIS_SETTINGS
+
+# Импорт снайперские точки входа
+from config import SNIPER_ENTRY_SETTINGS
+
 # Настройка логирования
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -867,6 +873,20 @@ class ChartGenerator:
                         bbox=dict(boxstyle="round,pad=0.2", 
                                 facecolor='black', 
                                 alpha=0.5))  # ← оставляем как было
+
+        # Добавляем отрисовку зон дисперсии
+        if 'dispersion_zones' in signal and signal['dispersion_zones']:
+            for zone in signal['dispersion_zones'][:3]:
+                ax1.axhspan(zone['min'], zone['max'], 
+                        alpha=0.2, color='orange', linewidth=0)
+                
+                # Добавляем метку
+                mid_price = (zone['min'] + zone['max']) / 2
+                ax1.text(plot_df.index[-1], mid_price, 
+                        f"📊 ДИСПЕРСИЯ {zone['strength']:.0f}%", 
+                        color='orange', fontsize=7, alpha=0.7,
+                        verticalalignment='center',
+                        horizontalalignment='right')
         
         # Заголовок
         ax1.set_title(f'{coin} - {signal["direction"]} (TF: {timeframe}, уверенность {signal["confidence"]}%)', 
@@ -1321,9 +1341,8 @@ class LevelCollector:
             level.max_price = current_ema * 1.01
             levels.append(level)
         
-        return levels
+        return levels    
     
-    # ===== НОВЫЙ МЕТОД =====
     def calculate_level_strength(self, level_type: str, tf: str, touches: int, **kwargs) -> int:
         """Расчет силы уровня по настройкам"""
         
@@ -1357,6 +1376,189 @@ class LevelCollector:
             strength = 50 * tf_multiplier.get(tf, 1.0)
         
         return min(100, int(strength))
+
+    def find_confluence_levels(self, all_levels: List[Level], current_price: float, tolerance: float = 0.5) -> List[Dict]:
+        """
+        Поиск уровней, которые совпадают на разных таймфреймах
+        tolerance: допустимое отклонение в процентах (0.5%)
+        """
+        confluence_zones = []
+        
+        # Группируем уровни по цене (с допуском)
+        for level in all_levels:
+            if level.distance > 20:  # не учитываем слишком далекие
+                continue
+                
+            # Ищем другие уровни в этой же ценовой зоне
+            matching_levels = []
+            for other in all_levels:
+                if other == level:
+                    continue
+                # Проверяем, совпадают ли ценовые зоны
+                price_diff = abs(level.price - other.price) / level.price * 100
+                if price_diff <= tolerance:
+                    matching_levels.append(other)
+            
+            if matching_levels:
+                # Собираем все таймфреймы, где есть уровни
+                tfs = [level.tf] + [l.tf for l in matching_levels]
+                unique_tfs = list(set(tfs))
+                
+                # Считаем силу конвергенции
+                strength = len(unique_tfs) * 20  # базовый вес за каждый ТФ
+                for l in [level] + matching_levels:
+                    strength += l.strength / 10
+                
+                # Определяем тип (поддержка или сопротивление)
+                if level.price < current_price:
+                    zone_type = "поддержка"
+                    direction = "LONG"
+                else:
+                    zone_type = "сопротивление"
+                    direction = "SHORT"
+                
+                confluence_zones.append({
+                    'price': level.price,
+                    'zone_type': zone_type,
+                    'direction': direction,
+                    'timeframes': unique_tfs,
+                    'strength': min(100, strength),
+                    'levels': [level] + matching_levels,
+                    'distance': level.distance,
+                    'source': f"Конвергенция на {', '.join(unique_tfs)}"
+                })
+        
+        # Сортируем по силе и расстоянию
+        confluence_zones.sort(key=lambda x: (-x['strength'], x['distance']))
+        return confluence_zones[:5]  # топ-5 сильных зон
+
+    def calculate_level_strength_score(self, level: Level, df: pd.DataFrame, last: pd.Series, alignment: Dict) -> Dict:
+        """
+        Оценка силы уровня и вероятности разворота/пробоя
+        """
+        result = {
+            'strength': 0,           # 0-100
+            'probability': 0,        # 0-100 (вероятность разворота)
+            'direction': None,
+            'signals': [],
+            'action': 'наблюдение'    # 'разворот', 'пробой', 'ложный_пробой'
+        }
+        
+        # ===== 1. КОНВЕРГЕНЦИЯ ТАЙМФРЕЙМОВ =====
+        if hasattr(level, 'timeframes'):
+            tf_count = len(level.timeframes)
+        else:
+            tf_count = 1
+        
+        if tf_count >= 4:
+            result['strength'] += 40
+            result['signals'].append(f"🔥 СУПЕР-КОНВЕРГЕНЦИЯ: {tf_count} ТФ")
+            result['probability'] += 30
+        elif tf_count >= 3:
+            result['strength'] += 30
+            result['signals'].append(f"⭐ Сильная конвергенция: {tf_count} ТФ")
+            result['probability'] += 20
+        elif tf_count >= 2:
+            result['strength'] += 20
+            result['signals'].append(f"📊 Конвергенция: {tf_count} ТФ")
+            result['probability'] += 10
+        
+        # ===== 2. КАСАНИЯ УРОВНЯ =====
+        touches = level.touches if hasattr(level, 'touches') else 1
+        if touches >= 7:
+            result['strength'] += 25
+            result['signals'].append(f"🎯 Уровень тестирован {touches} раз (очень сильный)")
+            result['probability'] += 20
+        elif touches >= 5:
+            result['strength'] += 20
+            result['signals'].append(f"✅ Уровень тестирован {touches} раз")
+            result['probability'] += 15
+        elif touches >= 3:
+            result['strength'] += 12
+            result['signals'].append(f"📌 Уровень тестирован {touches} раза")
+            result['probability'] += 8
+        
+        # ===== 3. ОБЪЕМ НА ПОДХОДЕ =====
+        volume_ratio = last.get('volume_ratio', 1.0)
+        if volume_ratio > 3.0:
+            result['strength'] += 25
+            result['signals'].append(f"🔥 Аномальный объем x{volume_ratio:.1f}")
+            result['probability'] += 15
+        elif volume_ratio > 2.0:
+            result['strength'] += 18
+            result['signals'].append(f"⚡ Высокий объем x{volume_ratio:.1f}")
+            result['probability'] += 10
+        elif volume_ratio > 1.5:
+            result['strength'] += 10
+            result['signals'].append(f"📊 Повышенный объем x{volume_ratio:.1f}")
+            result['probability'] += 5
+        
+        # ===== 4. RSI ЭКСТРЕМУМ =====
+        rsi = last.get('rsi', 50)
+        if rsi > 85:
+            result['strength'] += 15
+            result['signals'].append(f"🔴 RSI сильно перекуплен ({rsi:.1f})")
+            result['probability'] += 15
+        elif rsi > 75:
+            result['strength'] += 10
+            result['signals'].append(f"🟡 RSI перекуплен ({rsi:.1f})")
+            result['probability'] += 8
+        elif rsi < 15:
+            result['strength'] += 15
+            result['signals'].append(f"🟢 RSI сильно перепродан ({rsi:.1f})")
+            result['probability'] += 15
+        elif rsi < 25:
+            result['strength'] += 10
+            result['signals'].append(f"📉 RSI перепродан ({rsi:.1f})")
+            result['probability'] += 8
+        
+        # ===== 5. ТРЕНД =====
+        weekly_trend = alignment.get('weekly_trend', '')
+        daily_trend = alignment.get('daily_trend', '')
+        
+        if level.zone_type == 'поддержка':
+            if weekly_trend == 'ВОСХОДЯЩИЙ' or daily_trend == 'ВОСХОДЯЩИЙ':
+                result['strength'] += 20
+                result['signals'].append("📈 Тренд вверх (поддержка усилена)")
+                result['probability'] += 15
+                result['direction'] = 'LONG'
+            else:
+                result['direction'] = 'LONG' if result['probability'] > 50 else 'NEUTRAL'
+        else:  # сопротивление
+            if weekly_trend == 'НИСХОДЯЩИЙ' or daily_trend == 'НИСХОДЯЩИЙ':
+                result['strength'] += 20
+                result['signals'].append("📉 Тренд вниз (сопротивление усилено)")
+                result['probability'] += 15
+                result['direction'] = 'SHORT'
+            else:
+                result['direction'] = 'SHORT' if result['probability'] > 50 else 'NEUTRAL'
+        
+        # ===== 6. ИМПУЛЬС ПОДХОДА =====
+        # (расстояние до уровня и скорость подхода)
+        distance = level.distance if hasattr(level, 'distance') else 100
+        if distance < 1.0:
+            result['strength'] += 15
+            result['signals'].append(f"⚡ Цена у уровня ({distance:.1f}%)")
+            result['probability'] += 20
+        elif distance < 2.0:
+            result['strength'] += 10
+            result['signals'].append(f"🎯 Цена близко к уровню ({distance:.1f}%)")
+            result['probability'] += 10
+        
+        # ===== 7. ОПРЕДЕЛЕНИЕ ДЕЙСТВИЯ =====
+        result['strength'] = min(100, result['strength'])
+        result['probability'] = min(100, result['probability'])
+        
+        if result['probability'] >= 70:
+            result['action'] = 'разворот'
+        elif result['probability'] >= 50:
+            result['action'] = 'вероятный_разворот'
+        elif result['probability'] >= 30:
+            result['action'] = 'наблюдение'
+        else:
+            result['action'] = 'возможный_пробой'
+        
+        return result
 
 # ============== УНИВЕРСАЛЬНЫЙ ДЕТЕКТОР ПРОБОЕВ ==============
 
@@ -2401,6 +2603,203 @@ class MultiTimeframeAnalyzer:
                     close_count = 0
         
         return False
+
+    def calculate_volume_spike(self, df: pd.DataFrame) -> Dict:
+        """Поиск свечей с аномальным объемом"""
+        from config import VOLUME_ANALYSIS_SETTINGS
+        
+        settings = VOLUME_ANALYSIS_SETTINGS['spike_detector']
+        if not settings['enabled']:
+            return {'spike': False}
+        
+        lookback = settings['lookback']
+        threshold = settings['threshold']
+        
+        if len(df) < lookback + 1:
+            return {'spike': False}
+        
+        last_volume = df['volume'].iloc[-1]
+        avg_volume = df['volume'].iloc[-lookback-1:-1].mean()
+        ratio = last_volume / avg_volume if avg_volume > 0 else 1
+        
+        if ratio > threshold:
+            return {
+                'spike': True,
+                'ratio': ratio,
+                'price': df['close'].iloc[-1],
+                'direction': 'UP' if df['close'].iloc[-1] > df['open'].iloc[-1] else 'DOWN'
+            }
+        return {'spike': False}
+
+    def calculate_volume_dispersion(self, df: pd.DataFrame, hours: int = 2) -> Dict:
+        """Расчет дисперсии объема за указанный период"""
+        from config import VOLUME_ANALYSIS_SETTINGS
+        
+        settings = VOLUME_ANALYSIS_SETTINGS['volume_dispersion']
+        if not settings['enabled']:
+            return {'dispersion': 1.0, 'interpretation': ''}
+        
+        # 4 свечи в час для 15м таймфрейма
+        periods = hours * 4
+        if len(df) < periods:
+            periods = len(df)
+        
+        period_df = df.tail(periods)
+        
+        # Дисперсия объема
+        volume_std = period_df['volume'].std()
+        volume_mean = period_df['volume'].mean()
+        volume_dispersion = volume_std / volume_mean if volume_mean > 0 else 1.0
+        
+        # Интерпретация
+        high_threshold = settings['high_threshold']
+        low_threshold = settings['low_threshold']
+        
+        if volume_dispersion > high_threshold:
+            interpretation = f"🔥 Высокая дисперсия объема x{volume_dispersion:.1f}"
+        elif volume_dispersion < low_threshold:
+            interpretation = f"📊 Низкая дисперсия объема (накопление)"
+        else:
+            interpretation = f"📈 Средняя дисперсия объема x{volume_dispersion:.1f}"
+        
+        return {
+            'dispersion': volume_dispersion,
+            'interpretation': interpretation
+        }
+
+    def calculate_price_dispersion(self, df: pd.DataFrame, hours: int = 2) -> Dict:
+        """Расчет ценовой дисперсии за указанный период"""
+        from config import DISPERSION_ANALYSIS_SETTINGS
+        
+        if not DISPERSION_ANALYSIS_SETTINGS['enabled']:
+            return {'dispersion': 0, 'interpretation': '', 'zones': []}
+        
+        # 4 свечи в час для 15м таймфрейма
+        periods = hours * 4
+        if len(df) < periods:
+            periods = len(df)
+        
+        period_df = df.tail(periods)
+        
+        # Ценовая дисперсия
+        price_std = period_df['close'].std()
+        price_mean = period_df['close'].mean()
+        price_dispersion = (price_std / price_mean) * 100 if price_mean > 0 else 0
+        
+        # Поиск зон высокой дисперсии
+        zones = []
+        if DISPERSION_ANALYSIS_SETTINGS['show_zones_on_chart']:
+            window = 10  # 10 свечей для анализа
+            for i in range(0, len(period_df) - window, window):
+                window_df = period_df.iloc[i:i+window]
+                window_std = window_df['close'].std()
+                window_mean = window_df['close'].mean()
+                window_disp = (window_std / window_mean) * 100 if window_mean > 0 else 0
+                
+                if window_disp > DISPERSION_ANALYSIS_SETTINGS['thresholds']['high']:
+                    zones.append({
+                        'min': window_df['low'].min(),
+                        'max': window_df['high'].max(),
+                        'strength': window_disp,
+                        'start': window_df.index[0],
+                        'end': window_df.index[-1]
+                    })
+        
+        # Интерпретация
+        high_threshold = DISPERSION_ANALYSIS_SETTINGS['thresholds']['high']
+        low_threshold = DISPERSION_ANALYSIS_SETTINGS['thresholds']['low']
+        
+        if price_dispersion > high_threshold:
+            interpretation = f"🔥 ВЫСОКАЯ ДИСПЕРСИЯ ({price_dispersion:.1f}%)"
+        elif price_dispersion < low_threshold:
+            interpretation = f"📊 НИЗКАЯ ДИСПЕРСИЯ ({price_dispersion:.1f}%)"
+        else:
+            interpretation = f"📈 СРЕДНЯЯ ДИСПЕРСИЯ ({price_dispersion:.1f}%)"
+        
+        return {
+            'dispersion': price_dispersion,
+            'interpretation': interpretation,
+            'zones': zones[:DISPERSION_ANALYSIS_SETTINGS['max_zones']]
+        }
+
+    def find_sniper_entry(self, levels: List[Dict], current_price: float, df: pd.DataFrame) -> Optional[Dict]:
+        """
+        Поиск снайперской точки входа (лимитный ордер на уровне)
+        """
+        from config import SNIPER_ENTRY_SETTINGS
+        
+        if not SNIPER_ENTRY_SETTINGS['enabled']:
+            return None
+        
+        for level in levels:
+            # Пропускаем слабые уровни
+            if level.get('strength', 0) < SNIPER_ENTRY_SETTINGS['long']['min_strength']:
+                continue
+            
+            # LONG: покупка на поддержке
+            if level['zone_type'] == 'поддержка':
+                distance = ((current_price - level['price']) / current_price) * 100
+                
+                if distance <= SNIPER_ENTRY_SETTINGS['long']['distance_threshold']:
+                    # Проверяем подтверждение
+                    if SNIPER_ENTRY_SETTINGS['long']['confirmation_volume']:
+                        volume_ratio = df['volume_ratio'].iloc[-1] if 'volume_ratio' in df.columns else 1.0
+                        if volume_ratio < SNIPER_ENTRY_SETTINGS['long']['confirmation_volume']:
+                            continue
+                    
+                    if SNIPER_ENTRY_SETTINGS['long']['confirmation_rsi']:
+                        rsi = df['rsi'].iloc[-1] if 'rsi' in df.columns else 50
+                        if rsi > SNIPER_ENTRY_SETTINGS['long']['confirmation_rsi']:
+                            continue
+                    
+                    # Расчет цен для лимитного ордера
+                    entry_price = level['price'] * (1 + SNIPER_ENTRY_SETTINGS['order']['price_offset'] / 100)
+                    stop_loss = level['price'] * (1 - SNIPER_ENTRY_SETTINGS['order']['stop_loss_offset'] / 100)
+                    take_profit = entry_price * (1 + SNIPER_ENTRY_SETTINGS['order']['take_profit'] / 100)
+                    
+                    return {
+                        'type': 'LONG',
+                        'level_price': level['price'],
+                        'entry_price': entry_price,
+                        'stop_loss': stop_loss,
+                        'take_profit': take_profit,
+                        'strength': level.get('strength', 50),
+                        'message': f"🎯 Снайперский вход LONG: лимит {entry_price:.4f} (уровень {level['price']:.4f})"
+                    }
+            
+            # SHORT: продажа на сопротивлении
+            elif level['zone_type'] == 'сопротивление':
+                distance = ((level['price'] - current_price) / current_price) * 100
+                
+                if distance <= SNIPER_ENTRY_SETTINGS['short']['distance_threshold']:
+                    # Проверяем подтверждение
+                    if SNIPER_ENTRY_SETTINGS['short']['confirmation_volume']:
+                        volume_ratio = df['volume_ratio'].iloc[-1] if 'volume_ratio' in df.columns else 1.0
+                        if volume_ratio < SNIPER_ENTRY_SETTINGS['short']['confirmation_volume']:
+                            continue
+                    
+                    if SNIPER_ENTRY_SETTINGS['short']['confirmation_rsi']:
+                        rsi = df['rsi'].iloc[-1] if 'rsi' in df.columns else 50
+                        if rsi < SNIPER_ENTRY_SETTINGS['short']['confirmation_rsi']:
+                            continue
+                    
+                    # Расчет цен для лимитного ордера
+                    entry_price = level['price'] * (1 - SNIPER_ENTRY_SETTINGS['order']['price_offset'] / 100)
+                    stop_loss = level['price'] * (1 + SNIPER_ENTRY_SETTINGS['order']['stop_loss_offset'] / 100)
+                    take_profit = entry_price * (1 - SNIPER_ENTRY_SETTINGS['order']['take_profit'] / 100)
+                    
+                    return {
+                        'type': 'SHORT',
+                        'level_price': level['price'],
+                        'entry_price': entry_price,
+                        'stop_loss': stop_loss,
+                        'take_profit': take_profit,
+                        'strength': level.get('strength', 50),
+                        'message': f"🎯 Снайперский вход SHORT: лимит {entry_price:.4f} (уровень {level['price']:.4f})"
+                    }
+        
+        return None
+
     def generate_signal(self, dataframes: Dict[str, pd.DataFrame], metadata: Dict, symbol: str, exchange: str) -> Optional[Dict]:
         """
         Генерация торгового сигнала на основе всех индикаторов
@@ -2562,7 +2961,93 @@ class MultiTimeframeAnalyzer:
                         direction = 'SHORT 📉 (ловушка быков)'
                     logger.info(f"  ⚠️ {symbol} - Обнаружен потенциальный ложный пробой!")
         
-         # ===== Анализ накопления после пробоя =====
+        # ===== АНАЛИЗ КОНВЕРГЕНЦИИ УРОВНЕЙ =====
+        if FEATURES['advanced']['patterns']:
+            logger.info(f"  🔍 {symbol} - Анализ конвергенции уровней")
+            level_collector = LevelCollector()
+            
+            # Собираем все уровни
+            all_levels = level_collector.collect_levels(dataframes, last['close'])
+            
+            # Ищем совпадающие уровни
+            confluence_zones = level_collector.find_confluence_levels(all_levels, last['close'], tolerance=0.5)
+            
+            for zone in confluence_zones:
+                reasons.append(f"🎯 {zone['source']}: {zone['zone_type']} на {zone['price']:.4f} (сила {zone['strength']:.0f}%)")
+                
+                if zone['direction'] == 'LONG' and direction != 'LONG':
+                    # Сильный уровень поддержки снизу
+                    confidence += zone['strength'] / 2
+                    if zone['distance'] < 5:
+                        reasons.append(f"⚠️ Близкая сильная поддержка ({zone['distance']:.1f}%)")
+                elif zone['direction'] == 'SHORT' and direction != 'SHORT':
+                    # Сильный уровень сопротивления сверху
+                    confidence += zone['strength'] / 2
+                    if zone['distance'] < 5:
+                        reasons.append(f"⚠️ Близкое сильное сопротивление ({zone['distance']:.1f}%)")
+
+        # ===== АНАЛИЗ КОНВЕРГЕНЦИИ И СИЛЫ УРОВНЕЙ =====
+        if FEATURES['advanced']['patterns']:
+            logger.info(f"  🔍 {symbol} - Анализ силы уровней")
+            level_collector = LevelCollector()
+            
+            # Собираем все уровни
+            all_levels = level_collector.collect_levels(dataframes, last['close'])
+            
+            # Ищем совпадающие уровни (конвергенцию)
+            confluence_zones = level_collector.find_confluence_levels(all_levels, last['close'], tolerance=0.5)
+            
+            # Анализируем каждый сильный уровень
+            for zone in confluence_zones[:3]:  # топ-3 уровня
+                # Оценка силы уровня
+                strength_score = level_collector.calculate_level_strength_score(
+                    zone, df, last, alignment
+                )
+                
+                # Добавляем в причины
+                if strength_score['strength'] >= 70:
+                    reasons.append(f"🔥 {zone['source']}: {zone['zone_type']} на {zone['price']:.4f}")
+                else:
+                    reasons.append(f"⭐ {zone['source']}: {zone['zone_type']} на {zone['price']:.4f}")
+                
+                for signal in strength_score['signals'][:3]:
+                    reasons.append(f"   {signal}")
+                
+                reasons.append(f"   📊 Вероятность разворота: {strength_score['probability']:.0f}%")
+                
+                # Корректируем направление
+                if strength_score['action'] in ['разворот', 'вероятный_разворот']:
+                    if zone['direction'] == 'LONG':
+                        if direction != 'LONG':
+                            old_dir = direction
+                            direction = 'LONG 📈 (разворот от сильного уровня)'
+                            confidence += strength_score['strength'] / 3
+                            reasons.append(f"🔄 Смена направления: {old_dir} → LONG (сильный уровень)")
+                    elif zone['direction'] == 'SHORT':
+                        if direction != 'SHORT':
+                            old_dir = direction
+                            direction = 'SHORT 📉 (разворот от сильного уровня)'
+                            confidence += strength_score['strength'] / 3
+                            reasons.append(f"🔄 Смена направления: {old_dir} → SHORT (сильный уровень)")
+                
+                # Если вероятность пробоя выше
+                elif strength_score['action'] == 'возможный_пробой':
+                    reasons.append(f"⚠️ Возможен пробой уровня (вероятность разворота {strength_score['probability']:.0f}%)")
+                    confidence -= 10
+
+                # ===== СНАЙПЕРСКИЕ ТОЧКИ ВХОДА =====
+                if SNIPER_ENTRY_SETTINGS['enabled'] and confluence_zones:
+                    sniper = self.find_sniper_entry(confluence_zones, last['close'], df)
+                    if sniper:
+                        reasons.append(sniper['message'])
+                        confidence += sniper['strength'] / 5
+                        
+                        # Добавляем в результат для отображения
+                        if 'sniper_entry' not in locals():
+                            signal['sniper_entry'] = sniper
+                        logger.info(f"  🎯 {symbol} - Найдена снайперская точка входа: {sniper['type']} по {sniper['entry_price']:.4f}")
+
+         # ===== АНАЛИЗ НАКОПЛЕНИЯ ПОСЛЕ ПРОБОЯ =====
                 if breakout_level and (last['close'] > breakout_level * 0.99 and last['close'] < breakout_level * 1.01):
                     # Цена тестирует уровень после пробоя
                     if last['volume_ratio'] > 1.5:
@@ -2584,6 +3069,54 @@ class MultiTimeframeAnalyzer:
                     reasons.append(signal_text)
                 confidence += fvg_analysis['strength'] / 5
                 logger.info(f"  ✅ {symbol} - Найдено FVG: {len(fvg_analysis['signals'])} на разных ТФ")
+        
+        # ===== АНАЛИЗ ОБЪЕМОВ =====
+        if VOLUME_ANALYSIS_SETTINGS['enabled']:
+            logger.info(f"  🔍 {symbol} - Анализ объемов")
+            
+            # 1. Детектор аномальных свечей
+            volume_spike = self.calculate_volume_spike(df)
+            if volume_spike['spike']:
+                reasons.append(f"🔥 Аномальный объем x{volume_spike['ratio']:.1f}")
+                confidence += VOLUME_ANALYSIS_SETTINGS['spike_detector']['weight']
+                logger.info(f"  🔥 {symbol} - Объемный всплеск x{volume_spike['ratio']:.1f}")
+            
+            # 2. Дисперсия объема
+            vol_dispersion = self.calculate_volume_dispersion(df, hours=2)
+            if vol_dispersion['dispersion'] != 1.0:
+                reasons.append(vol_dispersion['interpretation'])
+                if vol_dispersion['dispersion'] > VOLUME_ANALYSIS_SETTINGS['volume_dispersion']['high_threshold']:
+                    confidence += VOLUME_ANALYSIS_SETTINGS['volume_dispersion']['weight']
+            
+            # 3. Имбаланс buy/sell (если включен)
+            if VOLUME_ANALYSIS_SETTINGS['imbalance']['enabled'] and self.imbalance:
+                imbalance_result = self.imbalance.analyze(dataframes)
+                if imbalance_result['has_imbalance']:
+                    for signal in imbalance_result['signals']:
+                        reasons.append(signal)
+                    confidence += VOLUME_ANALYSIS_SETTINGS['imbalance']['weight']
+                    logger.info(f"  📊 {symbol} - Имбаланс: {len(imbalance_result['signals'])} сигналов")
+
+        # ===== АНАЛИЗ ДИСПЕРСИИ =====
+        if DISPERSION_ANALYSIS_SETTINGS['enabled']:
+            logger.info(f"  🔍 {symbol} - Анализ дисперсии")
+            
+            # Анализируем за разные периоды
+            dispersion_zones = []
+            for hours, name in [(1, 'час'), (2, 'часа'), (4, 'часа')]:
+                dispersion = self.calculate_price_dispersion(df, hours=hours)
+                if dispersion['dispersion'] > 0:
+                    reasons.append(f"📊 Дисперсия за {name}: {dispersion['interpretation']}")
+                    dispersion_zones = dispersion.get('zones', [])
+                    
+                    # Влияние на уверенность
+                    if dispersion['dispersion'] > DISPERSION_ANALYSIS_SETTINGS['thresholds']['high']:
+                        confidence += DISPERSION_ANALYSIS_SETTINGS['weights']['high']
+                    elif dispersion['dispersion'] < DISPERSION_ANALYSIS_SETTINGS['thresholds']['low']:
+                        confidence += DISPERSION_ANALYSIS_SETTINGS['weights']['low']
+                    else:
+                        confidence += DISPERSION_ANALYSIS_SETTINGS['weights']['medium']
+                    break  # берем только один период для простоты
         
         # ===== ФАНДИНГ =====
         funding = metadata.get('funding_rate')
@@ -2782,6 +3315,11 @@ class MultiTimeframeAnalyzer:
             result['fvg_zones'] = fvg_analysis['zones']
             logger.info(f"  🎨 Добавлено {len(fvg_analysis['zones'])} FVG зон для графика")
         
+        # Добавляем зоны дисперсии для графика
+        if DISPERSION_ANALYSIS_SETTINGS['enabled'] and 'dispersion_zones' in locals() and dispersion_zones:
+            result['dispersion_zones'] = dispersion_zones
+            logger.info(f"  🎨 Добавлено {len(dispersion_zones)} зон дисперсии для графика")
+
         if fib_analysis:
             result['fibonacci'] = fib_analysis
         if accumulation_analysis:
@@ -2789,7 +3327,7 @@ class MultiTimeframeAnalyzer:
         
         logger.info(f"✅ generate_signal успешно завершен для {symbol}")
         return result
-
+    
     def _get_power_text(self, confidence: float) -> str:
         """Определение текста силы сигнала по уверенности"""
         if confidence >= 85:
@@ -3364,6 +3902,20 @@ class FastPumpScanner:
                         else:
                             logger.info(f"📌 {coin} повтор после {time_diff:.0f} мин (cooldown истек)")
                     
+                    # ===== ФИЛЬТР ПО ТИПУ СИГНАЛА (PUMP/DUMP) =====
+                    from config import PUMP_DUMP_FILTER
+
+                    if PUMP_DUMP_FILTER.get('enabled', False):
+                        filter_type = PUMP_DUMP_FILTER.get('type', 'both')
+                        change = signal['pump_dump'][0]['change_percent']
+                        
+                        if filter_type == 'pump_only' and change < 0:
+                            logger.info(f"⏭️ {signal['symbol']} пропущен (только пампы, а это дамп)")
+                            continue
+                        if filter_type == 'dump_only' and change > 0:
+                            logger.info(f"⏭️ {signal['symbol']} пропущен (только дампы, а это памп)")
+                            continue
+
                     # ✅ Сохраняем сигнал в историю
                     last_signals[coin] = {
                         'time': datetime.now(),
