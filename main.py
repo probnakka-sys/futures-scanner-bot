@@ -2262,6 +2262,7 @@ class MultiTimeframeAnalyzer:
         self.fibonacci = None
         self.volume_profile = None
         self.accumulation = None
+        self.imbalance = ImbalanceAnalyzer(IMBALANCE_SETTINGS) if FEATURES['advanced']['imbalance'] else None
         
         # Словарь для перевода таймфреймов
         self.tf_translation = {
