@@ -31,17 +31,17 @@ REF_LINKS = {
 
 PUMP_SCAN_SETTINGS = {
     'enabled': True,
-    'threshold': 2.0,                            # % движения для REST API (было 3.5)
-    'instant_threshold': 1.2,                    # ⚡ СНИЖЕН ДО 1% для WebSocket (было 2.0)
-    'shitcoin_instant_threshold': 0.8,             # Для щиткоинов еще ниже (было 1.5)
-    'timeframes': ['1m', '3m', '5m', '15m', '30m'],            # Было ['1m', '3m', '5m']
+    'threshold': 4.0,                               # Порог % движения для REST API (было 3.5, 2.0)
+    'instant_threshold': 4.0,                       # Порог % движения для WebSocket (мейджоры) (было 2.0, 1.2)
+    'shitcoin_instant_threshold': 6.0,              # Порог % движения для WebSocket (щиткоины) (было 1.5, 0.8)
+    'timeframes': ['1m', '3m', '5m', '15m', '30m'], # Было ['1m', '3m', '5m']
     'min_volume_usdt': 1000,
-    'max_pairs_to_scan': 600,                    # Было 600
+    'max_pairs_to_scan': 600,                       # Было 600
     'include_low_liquidity': True,
     'send_top_pumps': 999,
-    'cooldown_minutes': 15,                       # Было 5
-    'batch_size': 50,                            # Размер батча для параллельного сканирования (меньше = быстрее, но больше нагрузка) было 100
-    'delay_between_batches': 0.3,                # Задержка между батчами в секундах, было 0.1
+    'cooldown_minutes': 15,                         # Было 5
+    'batch_size': 50,                               # Размер батча для параллельного сканирования (меньше = быстрее, но больше нагрузка) было 100
+    'delay_between_batches': 0.3,                   # Задержка между батчами в секундах, было 0.1
         # В FastPumpScanner.__init__
         # self.batch_size = PUMP_SCAN_SETTINGS.get('batch_size', 100)
         # self.delay_between_batches = PUMP_SCAN_SETTINGS.get('delay_between_batches', 0.1)
@@ -50,6 +50,16 @@ PUMP_SCAN_SETTINGS = {
     'websocket_top_pairs': 200,                   # Сколько пар в WebSocket
     'shitcoin_volume_threshold': 1500_000,        # Объем < 0.5M$ = щиткоин
     'websocket_reconnect_delay': 5,               # Задержка перед переподключением
+}
+
+# ============== ФИЛЬТР ПАМП-ДАМП СИГНАЛОВ ==============
+
+PUMP_DUMP_FILTER = {
+    'enabled': True,           # включить фильтр
+    'type': 'both',            # 'both', 'pump_only', 'dump_only'
+    # 'both' - все сигналы
+    # 'pump_only' - только пампы (рост)
+    # 'dump_only' - только дампы (падение)
 }
 
 # ============== НАСТРОЙКИ WEBSOCKET АНАЛИЗА ==============
@@ -256,6 +266,73 @@ ACCUMULATION_SETTINGS = {
     'lookback_period': 50,          # Период для анализа
 }
 
+# ============== НАСТРОЙКИ АНАЛИЗА ОБЪЕМОВ ==============
+
+VOLUME_ANALYSIS_SETTINGS = {
+    'enabled': True,  # вкл/выкл анализ объемов
+    
+    # Детектор аномальных свечей
+    'spike_detector': {
+        'enabled': True,
+        'threshold': 2.5,        # объем x2.5 от среднего = аномалия
+        'lookback': 20,           # период для среднего
+        'weight': 15              # вес в уверенности
+    },
+    
+    # Дисбаланс buy/sell
+    'imbalance': {
+        'enabled': True,
+        'threshold': 0.3,         # >0.3 = бычий, <-0.3 = медвежий
+        'weight': 15
+    },
+    
+    # Volume Profile (уже есть, просто включаем)
+    'volume_profile': {
+        'enabled': True,
+        'timeframes': ['daily', 'weekly', 'monthly']
+    },
+    
+    # Дисперсия объема
+    'volume_dispersion': {
+        'enabled': True,
+        'hours': 2,               # за сколько часов анализировать
+        'high_threshold': 2.0,    # >2x = высокая дисперсия
+        'low_threshold': 0.7,     # <0.7x = низкая дисперсия
+        'weight': 10
+    }
+}
+
+# ============== НАСТРОЙКИ АНАЛИЗА ДИСПЕРСИИ ==============
+
+DISPERSION_ANALYSIS_SETTINGS = {
+    'enabled': True,  # вкл/выкл анализ дисперсии
+    
+    # Периоды анализа
+    'timeframes': {
+        'short': 1,      # 1 час
+        'medium': 2,     # 2 часа
+        'long': 4        # 4 часа
+    },
+    
+    # Пороги для интерпретации
+    'thresholds': {
+        'high': 5.0,     # >5% = высокая дисперсия
+        'medium': 2.0,   # 2-5% = средняя дисперсия
+        'low': 1.5       # <1.5% = низкая дисперсия
+    },
+    
+    # Влияние на уверенность
+    'weights': {
+        'high': 15,      # бонус за высокую дисперсию
+        'low': 10,       # бонус за низкую дисперсию (накопление)
+        'medium': 5
+    },
+    
+    # Зоны дисперсии для графика
+    'show_zones_on_chart': True,  # показывать зоны на графике
+    'max_zones': 3                 # максимум зон на графике
+}
+
 # ============== НАСТРОЙКИ ФИБОНАЧЧИ ==============
 
 FIBONACCI_SETTINGS = {
@@ -316,6 +393,85 @@ INDICATOR_WEIGHTS = {
     'smart_money': 35,
     'volume_profile': 30,
     'accumulation': 35,
+}
+
+# ============== НАСТРОЙКИ АНАЛИЗА СИЛЫ УРОВНЕЙ ==============
+
+LEVEL_STRENGTH_SETTINGS = {
+    'enabled': True,  # вкл/выкл анализ силы уровней
+    
+    # Веса для разных факторов
+    'weights': {
+        'convergence': {
+            '4_tf': 40,
+            '3_tf': 30,
+            '2_tf': 20,
+            '1_tf': 0
+        },
+        'touches': {
+            '7_plus': 25,
+            '5_plus': 20,
+            '3_plus': 12,
+            'default': 0
+        },
+        'volume': {
+            'extreme': 25,    # >3x
+            'high': 18,       # >2x
+            'medium': 10,     # >1.5x
+            'default': 0
+        },
+        'rsi': {
+            'extreme_overbought': 15,   # >85
+            'overbought': 10,           # >75
+            'extreme_oversold': 15,     # <15
+            'oversold': 10,             # <25
+            'default': 0
+        },
+        'trend': {
+            'aligned': 20,      # тренд в сторону уровня
+            'default': 0
+        },
+        'distance': {
+            'very_close': 15,   # <1%
+            'close': 10,        # <2%
+            'default': 0
+        }
+    },
+    
+    # Пороги вероятности разворота
+    'probability_thresholds': {
+        'strong_reversal': 70,      # >70% = сильный разворот
+        'likely_reversal': 50,      # >50% = вероятный разворот
+        'observation': 30,          # >30% = наблюдение
+        'breakout': 30              # <30% = возможен пробой
+    },
+    
+    # Допуск для совпадения уровней (в процентах)
+    'confluence_tolerance': 0.5,    # 0.5% = уровни считаются совпадающими
+    
+    # Максимальное расстояние для учета уровня (в %)
+    'max_distance': 20,             # уровни дальше 20% не учитываем
+    
+    # Количество отображаемых сильных уровней
+    'max_levels_to_show': 3,
+    
+    # Автоматическая смена направления при сильном уровне
+    'auto_override_direction': True,  # менять направление если уровень сильный
+
+    # Агрессивный (много сигналов):    
+    # 'probability_thresholds': {
+    #     'strong_reversal': 50,   # снижены пороги
+    #     'likely_reversal': 40,
+    # }
+
+    # Консервативный (только сильные сигналы):    
+    # 'probability_thresholds': {
+    #     'strong_reversal': 85,   # повышенные пороги
+    #     'likely_reversal': 70,
+    # }
+
+    # Без автоматической смены направления:    
+    # 'auto_override_direction': False  # только предупреждения, без смены
 }
 
 # ============== НАСТРОЙКИ АНАЛИЗА УРОВНЕЙ И ПРОБОЕВ ==============
@@ -458,6 +614,35 @@ LEVEL_ANALYSIS_SETTINGS = {
     'blacklist': {
         'symbols': [],  # ['BTC', 'ETH'] - не анализировать определенные монеты
         'levels': []     # игнорировать определенные цены
+    }
+}
+
+# ============== НАСТРОЙКИ СНАЙПЕРСКИХ ТОЧЕК ВХОДА ==============
+
+SNIPER_ENTRY_SETTINGS = {
+    'enabled': True,  # вкл/выкл анализ снайперских точек
+    
+    # Для LONG (покупка на поддержке)
+    'long': {
+        'distance_threshold': 0.5,   # расстояние до уровня в %
+        'min_strength': 50,           # минимальная сила уровня
+        'confirmation_volume': 1.5,   # нужен ли объем x1.5
+        'confirmation_rsi': 30        # RSI должен быть < 30
+    },
+    
+    # Для SHORT (продажа на сопротивлении)
+    'short': {
+        'distance_threshold': 0.5,   # расстояние до уровня в %
+        'min_strength': 50,           # минимальная сила уровня
+        'confirmation_volume': 1.5,   # нужен ли объем x1.5
+        'confirmation_rsi': 70        # RSI должен быть > 70
+    },
+    
+    # Настройки лимитного ордера
+    'order': {
+        'price_offset': 0.1,          # отступ от уровня в %
+        'stop_loss_offset': 0.5,      # стоп-лосс за уровнем в %
+        'take_profit': 3.0            # тейк-профит в % от входа
     }
 }
 
