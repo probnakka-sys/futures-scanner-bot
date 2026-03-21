@@ -73,7 +73,6 @@ from config import (
     TIMEFRAME_WEIGHTS,
     EMA_TOUCH_SETTINGS
 )
-)
 
 from config import BREAKOUT_CONFIRMATION_SETTINGS
 
