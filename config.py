@@ -264,7 +264,7 @@ INDICATOR_SETTINGS = {
     'macd_fast': 12,
     'macd_slow': 26,
     'macd_signal': 9,
-    'ema_periods': [9, 14, 21, 28, 50, 100],  # ← добавили EMA 14, 28, 100
+    'ema_periods': [9, 14, 21, 28, 50, 100, 200],  # ← добавили EMA 14, 28, 100
     # EMA 200 оставляем опционально
     'bollinger_period': 20,
     'bollinger_std': 2,
