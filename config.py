@@ -31,9 +31,9 @@ REF_LINKS = {
 
 PUMP_SCAN_SETTINGS = {
     'enabled': True,
-    'threshold': 4.0,                               # Порог % движения для REST API (было 3.5, 2.0)
+    'threshold': 5.0,                               # Порог % движения для REST API (было 3.5, 2.0)
     'instant_threshold': 4.0,                       # Порог % движения для WebSocket (мейджоры) (было 2.0, 1.2)
-    'shitcoin_instant_threshold': 6.0,              # Порог % движения для WebSocket (щиткоины) (было 1.5, 0.8)
+    'shitcoin_instant_threshold': 7.0,              # Порог % движения для WebSocket (щиткоины) (было 1.5, 0.8)
     'timeframes': ['1m', '3m', '5m', '15m', '30m'], # Было ['1m', '3m', '5m']
     'min_volume_usdt': 1000,
     'max_pairs_to_scan': 600,                       # Было 600
