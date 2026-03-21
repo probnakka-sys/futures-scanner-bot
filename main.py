@@ -71,10 +71,11 @@ from config import (
     WEBSOCKET_ANALYSIS_SETTINGS,
     FAKEOUT_SETTINGS,
     TIMEFRAME_WEIGHTS,
-    EMA_TOUCH_SETTINGS
+    EMA_TOUCH_SETTINGS,
+    BREAKOUT_CONFIRMATION_SETTINGS
 )
 
-from config import BREAKOUT_CONFIRMATION_SETTINGS
+# from config import BREAKOUT_CONFIRMATION_SETTINGS
 
 # Импорт системы статистики
 from signal_stats import SignalStatistics
