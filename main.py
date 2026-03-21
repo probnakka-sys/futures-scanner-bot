@@ -2393,10 +2393,19 @@ class MultiTimeframeAnalyzer:
                 alignment[f'{tf_name}_trend'] = trend
                 
                 # Добавляем сигнал для сильных трендов (БЕЗ ЭМОДЗИ)
-                if tf_name in ['weekly', 'monthly'] and last['ema_9'] > last['ema_200']:
-                    alignment['signals'].append(f"{tf_names[tf_name].upper()} ТРЕНД ВОСХОДЯЩИЙ (выше EMA 200)")
-                elif tf_name in ['weekly', 'monthly'] and last['ema_9'] < last['ema_200']:
-                    alignment['signals'].append(f"{tf_names[tf_name].upper()} ТРЕНД НИСХОДЯЩИЙ (ниже EMA 200)")
+                if tf_name in ['weekly', 'monthly']:
+                    # Проверяем, есть ли колонка ema_200
+                    if 'ema_200' in df.columns and pd.notna(last.get('ema_200')):
+                        if last['ema_9'] > last['ema_200']:
+                            alignment['signals'].append(f"{tf_names[tf_name].upper()} ТРЕНД ВОСХОДЯЩИЙ (выше EMA 200)")
+                        elif last['ema_9'] < last['ema_200']:
+                            alignment['signals'].append(f"{tf_names[tf_name].upper()} ТРЕНД НИСХОДЯЩИЙ (ниже EMA 200)")
+                    # Fallback на EMA 50 если EMA 200 нет (на всякий случай)
+                    elif 'ema_50' in df.columns:
+                        if last['ema_9'] > last['ema_50']:
+                            alignment['signals'].append(f"{tf_names[tf_name].upper()} ТРЕНД ВОСХОДЯЩИЙ (выше EMA 50)")
+                        elif last['ema_9'] < last['ema_50']:
+                            alignment['signals'].append(f"{tf_names[tf_name].upper()} ТРЕНД НИСХОДЯЩИЙ (ниже EMA 50)")
         
         # Считаем согласованность
         trends = []
