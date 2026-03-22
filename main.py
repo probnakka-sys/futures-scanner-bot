@@ -834,6 +834,12 @@ class ChartGenerator:
         
     def create_chart(self, df: pd.DataFrame, signal: Dict, coin: str, timeframe: str = '15m') -> BytesIO:
         """Создание графика с ценой, индикаторами и целями"""
+
+        import matplotlib.font_manager as fm
+        # Подавляем предупреждения о шрифтах
+        import warnings
+        warnings.filterwarnings('ignore', category=UserWarning, module='matplotlib')
+
         plt.style.use(self.style)
         
         plot_df = df.tail(100).copy()
@@ -2301,7 +2307,7 @@ class MultiTimeframeAnalyzer:
         self.accumulation = None
         self.imbalance = ImbalanceAnalyzer(IMBALANCE_SETTINGS) if FEATURES['advanced']['imbalance'] else None
         self.breakout_tracker = BreakoutTracker()
-        
+
         # Словарь для перевода таймфреймов
         self.tf_translation = {
             'monthly': 'месячный',
@@ -2484,6 +2490,10 @@ class MultiTimeframeAnalyzer:
                 continue
             
             df = dataframes[tf_name]
+
+            if df is None or df.empty or len(df) < 20:
+                logger.info(f"    ⏭️ {tf_name}: недостаточно данных ({len(df) if df is not None else 0} свечей)")
+                continue
             
             # Создаем временный SMC анализатор для этого ТФ
             smc_temp = SmartMoneyAnalyzer(SMC_SETTINGS)
@@ -2632,19 +2642,19 @@ class MultiTimeframeAnalyzer:
 
     def _is_fvg_closed(self, df: pd.DataFrame, fvg: Dict) -> bool:
         """
-        Проверка, закрыта ли зона FVG
+        Проверка, закрыта ли зона FVG (БОЛЕЕ МЯГКАЯ ВЕРСИЯ)
+        FVG считается закрытым, только если цена ПОЛНОСТЬЮ прошла через зону
+        и закрепилась с другой стороны на 2+ свечах
         """
         last_idx = len(df) - 1
-        
-        # Увеличиваем с 50 до 200 свечей
-        start_idx = max(0, last_idx - 200)  # проверяем последние 200 свечей
+        start_idx = max(0, last_idx - 100)  # увеличили до 100 свечей
         
         close_count = 0
         for i in range(start_idx, last_idx):
             candle = df.iloc[i]
             
             if fvg['type'] == 'bullish':
-                # Проверяем, закрылась ли свеча НИЖЕ зоны
+                # Бычий FVG закрывается при падении НИЖЕ зоны
                 if candle['close'] < fvg['price_min']:
                     close_count += 1
                     if close_count >= 2:  # нужно 2 подтверждения
@@ -2652,6 +2662,7 @@ class MultiTimeframeAnalyzer:
                 else:
                     close_count = 0  # сбрасываем, если вышли из зоны
             else:
+                # Медвежий FVG закрывается при росте ВЫШЕ зоны
                 if candle['close'] > fvg['price_max']:
                     close_count += 1
                     if close_count >= 2:
@@ -2665,19 +2676,28 @@ class MultiTimeframeAnalyzer:
         """Анализ касаний цены EMA уровней"""
         result = {'touches': [], 'signals': []}
         
+        # Защита от пустых данных
+        if df is None or df.empty or last is None:
+            return result
+        
         for period in [9, 14, 21, 28, 50, 100]:
             ema_col = f'ema_{period}'
             if ema_col not in df.columns:
                 continue
             
-            ema_value = last[ema_col]
-            price = last['close']
+            ema_value = last.get(ema_col)
+            if pd.isna(ema_value):
+                continue
+            
+            price = last.get('close')
+            if pd.isna(price):
+                continue
+            
             distance = abs(price - ema_value) / price * 100
             
-            if distance < 0.5:  # цена очень близко к EMA
+            if distance < 0.5:
                 result['touches'].append(period)
                 
-                # Определяем направление
                 if price > ema_value:
                     result['signals'].append(f"📊 Цена у EMA {period} (поддержка)")
                 else:
@@ -2977,7 +2997,7 @@ class MultiTimeframeAnalyzer:
         Генерация торгового сигнала на основе всех индикаторов
         """
         logger.info(f"🔄 generate_signal начал работу для {symbol}")
-        
+
         global BREAKOUT_CONFIRMATION_SETTINGS
         
         if 'current' not in dataframes or dataframes['current'].empty:
@@ -3523,6 +3543,7 @@ class MultiTimeframeAnalyzer:
             'exchange': exchange,
             'price': current_price,
             'direction': direction,
+            'atr': atr,
             'signal_type': signal_type,
             'signal_power': self._get_power_text(confidence),
             'confidence': round(confidence, 1),
@@ -4293,7 +4314,20 @@ class FastPumpScanner:
                 signal_text = f"DUMP {pump_change:.1f}%"
                 signal['direction'] = 'SHORT 📉 (пробой после дампа)'
                 signal['signal_type'] = 'DUMP_BREAKOUT'
+                
+                # ===== ПЕРЕСЧИТЫВАЕМ ЦЕЛИ ДЛЯ SHORT =====
+                current_price = signal['price']
+                atr = signal.get('atr', 0)
+                
+                if atr > 0:
+                    from config import ATR_SETTINGS
+                    signal['target_1'] = current_price - atr * ATR_SETTINGS['short_target_1_mult']
+                    signal['target_2'] = current_price - atr * ATR_SETTINGS['short_target_2_mult']
+                    signal['stop_loss'] = current_price + atr * ATR_SETTINGS['short_stop_loss_mult']
+                    logger.info(f"  📊 Пересчитаны цели для SHORT: t1={signal['target_1']:.6f}, t2={signal['target_2']:.6f}, sl={signal['stop_loss']:.6f}")
+                
                 logger.info(f"  📊 format_pump_message: СМЕНА! {old_dir} → {signal['direction']} (DUMP + пробой)")
+                
                 if 'reasons' in signal and not any('Отскок' in r for r in signal['reasons']):
                     signal['reasons'].insert(0, f"Пробой уровня после дампа {pump_change:.1f}%")
             else:
