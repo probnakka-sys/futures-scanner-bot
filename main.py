@@ -4047,6 +4047,7 @@ class MultiTimeframeAnalyzer:
 
 class FastPumpScanner:
     def __init__(self, fetcher: BaseExchangeFetcher, settings: Dict = None, analyzer=None, telegram_bot=None, chart_generator=None):
+        logger.info(f"📦 FastPumpScanner: fetcher type = {type(fetcher)}, value = {fetcher}")
         self.fetcher = fetcher
         self.settings = settings or PUMP_SCAN_SETTINGS
         self.analyzer = analyzer
@@ -5024,6 +5025,13 @@ class MultiExchangeScannerBot:
         # ===== ИНИЦИАЛИЗАЦИЯ БИРЖ =====
         from config import EXCHANGES, PROXY_SETTINGS
         
+        # ===== ДИАГНОСТИКА =====
+        logger.info("=" * 50)
+        logger.info("🔍 ДИАГНОСТИКА self.fetchers:")
+        for name, fetcher in self.fetchers.items():
+            logger.info(f"   {name}: type = {type(fetcher)}, value = {fetcher}")
+        logger.info("=" * 50)
+
         # Получаем прокси если включен
         proxy = None
         if PROXY_SETTINGS.get('enabled', False):
