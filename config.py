@@ -31,9 +31,9 @@ REF_LINKS = {
 
 PUMP_SCAN_SETTINGS = {
     'enabled': True,
-    'threshold': 4.0,                               # Порог % движения для REST API (было 3.5, 2.0)
-    'instant_threshold': 4.0,                       # Порог % движения для WebSocket (мейджоры) (было 2.0, 1.2)
-    'shitcoin_instant_threshold': 6.0,              # Порог % движения для WebSocket (щиткоины) (было 1.5, 0.8)
+    'threshold': 4.0,                               # Порог % движения для REST API (было 3.5, 2.0) 3.0
+    'instant_threshold': 4.0,                       # Порог % движения для WebSocket (мейджоры) (было 2.0, 1.2) 2.5
+    'shitcoin_instant_threshold': 6.0,              # Порог % движения для WebSocket (щиткоины) (было 1.5, 0.8) 2.0
     'timeframes': ['1m', '3m', '5m', '15m', '30m'], # Было ['1m', '3m', '5m']
     'min_volume_usdt': 1000,
     'max_pairs_to_scan': 600,                       # Было 600
@@ -217,7 +217,7 @@ FEATURES = {
         'order_blocks': True,
         'fractals': True,
         'smart_money': True,
-        'volume_profile': False,      # Отключено до исправления
+        'volume_profile': True,      # Отключено до исправления
         'accumulation': True,         # Новый анализатор накопления
     },
     
