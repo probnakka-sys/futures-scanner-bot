@@ -3934,24 +3934,24 @@ class MultiTimeframeAnalyzer:
         return result
     
     def analyze_price_squeeze(self, df: pd.DataFrame, level_price: float, touches: int) -> Dict:
-    """
-    Анализ "поджатия" цены к уровню
-    """
-    recent = df.tail(20)
-    touches_recent = 0
-    
-    for _, row in recent.iterrows():
-        if abs(row['close'] - level_price) / level_price < 0.003:  # 0.3% допуск
-            touches_recent += 1
-    
-    if touches_recent >= 3:
-        return {
-            'squeeze': True,
-            'strength': min(100, touches_recent * 20),
-            'message': f"🔥 Цена поджимается к уровню ({touches_recent} касаний за 20 свечей)"
-        }
-    
-    return {'squeeze': False}
+        """
+        Анализ "поджатия" цены к уровню
+        """
+        recent = df.tail(20)
+        touches_recent = 0
+        
+        for _, row in recent.iterrows():
+            if abs(row['close'] - level_price) / level_price < 0.003:  # 0.3% допуск
+                touches_recent += 1
+        
+        if touches_recent >= 3:
+            return {
+                'squeeze': True,
+                'strength': min(100, touches_recent * 20),
+                'message': f"🔥 Цена поджимается к уровню ({touches_recent} касаний за 20 свечей)"
+            }
+        
+        return {'squeeze': False}
     
     def _get_power_text(self, confidence: float) -> str:
         """Определение текста силы сигнала по уверенности"""
