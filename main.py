@@ -5524,8 +5524,15 @@ class MultiExchangeScannerBot:
         logger.info("🚀 НАЧАЛО ОСНОВНОГО СКАНИРОВАНИЯ")
         logger.info("="*50)
         
+        # ===== ДИАГНОСТИКА =====
+        logger.info("🔍 self.fetchers в scan_all:")
+        for name, fetcher in self.fetchers.items():
+            logger.info(f"   {name}: type = {type(fetcher)}, value = {fetcher}")
+        # ========================
+        
         all_signals = []
         for name, fetcher in self.fetchers.items():
+            logger.info(f"🔍 Вызов scan_exchange: name={name}, fetcher type={type(fetcher)}")
             signals = await self.scan_exchange(name, fetcher)
             all_signals.extend(signals)
         
