@@ -36,13 +36,13 @@ EXCHANGES = {
         'type': 'swap'
     },
     'bybit': {
-        'enabled': True,
+        'enabled': False,
         'api_key': '',
         'api_secret': '',
         'type': 'linear'
     },
     'mexc': {
-        'enabled': True,
+        'enabled': False,
         'api_key': '',
         'api_secret': '',
         'type': 'future'
