@@ -4570,8 +4570,9 @@ class MultiExchangeScannerBot:
             self.analyzer.set_fibonacci(self.fibonacci)
             logger.info("✅ Анализатор Фибоначчи инициализирован")
         
+        # Volume Profile (импорт вынесен ДО условия)
+        from config import VOLUME_PROFILE_SETTINGS
         if FEATURES['advanced']['volume_profile'] and VOLUME_PROFILE_SETTINGS.get('enabled', False):
-            from config import VOLUME_PROFILE_SETTINGS
             self.volume_profile = VolumeProfileAnalyzer(VOLUME_PROFILE_SETTINGS)
             self.analyzer.set_volume_profile(self.volume_profile)
             logger.info("✅ Volume Profile анализатор инициализирован")
