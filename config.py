@@ -52,11 +52,12 @@ EXCHANGES = {
 # ============== НАСТРОЙКИ ПРОКСИ ==============
 
 PROXY_SETTINGS = {
-    'enabled': False,  # включить прокси
-    'http': 'http://your-proxy:port',   # например: 'http://proxy.example.com:8080'
+    'enabled': False,           # включить прокси принудительно
+    'auto_detect': True,        # автоматически включать при ошибках
+    'auto_detect_exchanges': ['bybit', 'mexc'],  # для каких бирж авто-детект
+    'http': 'http://your-proxy:port',
     'https': 'https://your-proxy:port',
-    # Если нужна аутентификация:
-    # 'auth': 'username:password',
+    'auth': None,               # 'username:password' если нужна авторизация
 }
 
 # ============== НАСТРОЙКИ ПАМП-СКАНЕРА ==============
