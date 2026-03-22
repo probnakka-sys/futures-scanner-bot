@@ -27,6 +27,28 @@ REF_LINKS = {
     'MEXC': os.getenv('MEXC_REF_LINK', 'https://promote.mexc.com/r/DPJr2UJJDC')
 }
 
+# ============== НАСТРОЙКИ БИРЖ ==============  ← ВСТАВИТЬ СЮДА
+EXCHANGES = {
+    'bingx': {
+        'enabled': True,
+        'api_key': os.getenv('BINGX_API_KEY', ''),
+        'api_secret': os.getenv('BINGX_SECRET_KEY', ''),
+        'type': 'swap'
+    },
+    'bybit': {
+        'enabled': True,
+        'api_key': '',
+        'api_secret': '',
+        'type': 'linear'
+    },
+    'mexc': {
+        'enabled': True,
+        'api_key': '',
+        'api_secret': '',
+        'type': 'future'
+    }
+}
+
 # ============== НАСТРОЙКИ ПАМП-СКАНЕРА ==============
 
 PUMP_SCAN_SETTINGS = {
@@ -179,8 +201,8 @@ ATR_SETTINGS = {
 FEATURES = {
     'exchanges': {
         'bingx': {'enabled': True},
-        'bybit': {'enabled': False},
-        'mexc': {'enabled': False},
+        'bybit': {'enabled': True},
+        'mexc': {'enabled': True},
     },
     
     'data_sources': {
@@ -362,7 +384,7 @@ FIBONACCI_SETTINGS = {
 # ============== НАСТРОЙКИ VOLUME PROFILE ==============
 
 VOLUME_PROFILE_SETTINGS = {
-    'enabled': False,
+    'enabled': True,
     'lookback_bars': 100,
     'value_area_pct': 70,
     'min_hvn_strength': 2.0,
@@ -502,7 +524,7 @@ LEVEL_ANALYSIS_SETTINGS = {
         'fvg': True,             # FVG зоны
         'ema': True,             # EMA уровни (50, 200)
         'fibonacci': True,       # уровни Фибоначчи
-        'volume_profile': False,  # Volume Profile (если включено)
+        'volume_profile': True,  # Volume Profile (если включено)
     },
     
     # Настройки сбора уровней
@@ -796,5 +818,58 @@ EMA_TOUCH_SETTINGS = {
         '5m': 3,
         '3m': 2,
         '1m': 1
+    }
+}
+
+# ============== МЛАДШИЕ ТАЙМФРЕЙМЫ ==============
+
+MINOR_TIMEFRAMES = {
+    '1m': '1m',
+    '3m': '3m',
+    '5m': '5m',
+    '15m': '15m',      # уже есть
+    '30m': '30m',
+}
+
+# В TIMEFRAMES добавьте все
+TIMEFRAMES = {
+    '1m': MINOR_TIMEFRAMES['1m'],
+    '3m': MINOR_TIMEFRAMES['3m'],
+    '5m': MINOR_TIMEFRAMES['5m'],
+    'current': FEATURES['timeframes']['current'],
+    '30m': MINOR_TIMEFRAMES['30m'],
+    'hourly': '1h',
+    'daily': '1d',
+    'weekly': '1w',
+    'monthly': '1M',
+}
+
+# ============== НАСТРОЙКИ МЛАДШИХ ТАЙМФРЕЙМОВ ==============
+
+MINOR_TF_SETTINGS = {
+    'enabled': True,  # вкл/выкл анализ младших ТФ (1м, 3м, 5м, 30м)
+    
+    # Какие таймфреймы анализировать
+    'timeframes': {
+        '1m': {'enabled': True, 'weight': 0.5, 'purpose': 'confirmation'},      # только подтверждение
+        '3m': {'enabled': True, 'weight': 0.6, 'purpose': 'confirmation'},
+        '5m': {'enabled': True, 'weight': 0.7, 'purpose': 'confirmation'},
+        '30m': {'enabled': True, 'weight': 1.2, 'purpose': 'analysis'},          # и анализ
+    },
+    
+    # Для чего использовать
+    'purposes': {
+        'confirmation': {      # только для подтверждения
+            'add_to_reasons': True,
+            'affect_confidence': True,
+            'change_direction': False,   # НЕ меняют направление!
+            'max_weight': 10
+        },
+        'analysis': {          # для полного анализа
+            'add_to_reasons': True,
+            'affect_confidence': True,
+            'change_direction': True,    # могут менять направление
+            'max_weight': 20
+        }
     }
 }
