@@ -86,6 +86,8 @@ from config import VOLUME_ANALYSIS_SETTINGS, DISPERSION_ANALYSIS_SETTINGS
 # Импорт снайперские точки входа
 from config import SNIPER_ENTRY_SETTINGS
 
+from config import MINOR_TF_SETTINGS
+
 # Настройка логирования
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -1264,7 +1266,8 @@ class LevelCollector:
         all_levels = []
         
         # Приоритет таймфреймов (старшие важнее)
-        tf_priority = ['monthly', 'weekly', 'daily', 'four_hourly', 'hourly', 'current']
+        # tf_priority = ['monthly', 'weekly', 'daily', 'four_hourly', 'hourly', 'current']
+        tf_priority = ['monthly', 'weekly', 'daily', 'four_hourly', 'hourly', '30m', 'current', '5m', '3m', '1m']
         tf_weights = {'monthly': 4.0, 'weekly': 3.5, 'daily': 3.0, 
                      'four_hourly': 2.5, 'hourly': 2.0, 'current': 1.0}
         
@@ -1306,6 +1309,87 @@ class LevelCollector:
         
         return all_levels[:20]  # топ-20 ближайших уровней
     
+    def check_approach_to_levels(self, dataframes: Dict[str, pd.DataFrame], current_price: float, 
+                                touch_count: int = 3, threshold: float = 0.5) -> List[Dict]:
+        """
+        Проверка приближения к любым уровням на любом таймфрейме
+        """
+        warnings = []
+        
+        # Собираем все уровни
+        all_levels = self.collect_levels(dataframes, current_price)
+        
+        # Словарь для перевода таймфреймов
+        tf_translate = {
+            'monthly': '1м',
+            'weekly': '1н',
+            'daily': '1д',
+            'four_hourly': '4ч',
+            'hourly': '1ч',
+            'current': '15м'
+        }
+        
+        for level in all_levels[:20]:  # проверяем топ-20 ближайших
+            # Пропускаем уже пробитые уровни
+            if level.is_broken:
+                continue
+            
+            # Пропускаем слишком далекие уровни
+            if level.distance > threshold:
+                continue
+            
+            # Получаем короткое название таймфрейма
+            tf_short = tf_translate.get(level.tf, level.tf)
+            
+            # Для сопротивления (цена под уровнем)
+            if level.level_type in ['horizontal_resistance', 'trendline_resistance', 'fib_resistance']:
+                if current_price < level.price:
+                    distance_pct = ((level.price - current_price) / current_price) * 100
+                    
+                    if distance_pct <= threshold:
+                        # Определяем силу уровня
+                        strength = "🟡 СРЕДНИЙ"
+                        if level.touches >= 7:
+                            strength = "🔴 ОЧЕНЬ СИЛЬНЫЙ"
+                        elif level.touches >= 5:
+                            strength = "🟠 СИЛЬНЫЙ"
+                        
+                        warnings.append({
+                            'type': 'resistance',
+                            'level': level,
+                            'distance': distance_pct,
+                            'touches': level.touches,
+                            'tf': tf_short,
+                            'source': level.source,
+                            'strength_text': strength,
+                            'message': f"⚠️ {strength} уровень на {tf_short}: {distance_pct:.1f}% до пробоя ({level.touches} касаний)"
+                        })
+            
+            # Для поддержки (цена над уровнем)
+            elif level.level_type in ['horizontal_support', 'trendline_support', 'fib_support']:
+                if current_price > level.price:
+                    distance_pct = ((current_price - level.price) / current_price) * 100
+                    
+                    if distance_pct <= threshold:
+                        strength = "🟡 СРЕДНИЙ"
+                        if level.touches >= 7:
+                            strength = "🔴 ОЧЕНЬ СИЛЬНЫЙ"
+                        elif level.touches >= 5:
+                            strength = "🟠 СИЛЬНЫЙ"
+                        
+                        warnings.append({
+                            'type': 'support',
+                            'level': level,
+                            'distance': distance_pct,
+                            'touches': level.touches,
+                            'tf': tf_short,
+                            'source': level.source,
+                            'strength_text': strength,
+                            'message': f"⚠️ {strength} уровень на {tf_short}: {distance_pct:.1f}% до пробоя ({level.touches} касаний)"
+                        })
+        
+        return warnings
+
     def _find_horizontal_levels(self, df: pd.DataFrame, tf: str, weight: float) -> List[Level]:
         """Поиск горизонтальных уровней"""
         levels = []
@@ -1889,8 +1973,18 @@ class FibonacciAnalyzer:
         """Мультитаймфреймовый анализ Фибоначчи с переводом на русский"""
         result = {'has_confluence': False, 'signals': [], 'strength': 0, 'levels': {}}
         
+        # Словарь для перевода таймфреймов (короткие названия)
+        tf_short = {
+            'monthly': '1м',
+            'weekly': '1н',
+            'daily': '1д',
+            'four_hourly': '4ч',
+            'hourly': '1ч',
+            'current': '15м'
+        }
+        
         # Приоритет таймфреймов (от большего к меньшему)
-        tf_priority = ['monthly', 'weekly', 'daily', 'hourly', 'current']
+        tf_priority = ['monthly', 'weekly', 'daily', 'four_hourly', 'hourly', 'current']
         
         for tf_name in tf_priority:
             if tf_name not in dataframes or dataframes[tf_name] is None:
@@ -1908,11 +2002,19 @@ class FibonacciAnalyzer:
                     weight = 2.5
                 elif tf_name == 'daily':
                     weight = 2.0
+                elif tf_name == 'four_hourly':
+                    weight = 1.8
                 elif tf_name == 'hourly':
                     weight = 1.5
                 
-                # Добавляем сигналы с уже переведенными таймфреймами
-                result['signals'].extend(tf_result['signals'])
+                # Добавляем сигналы с переведенными таймфреймами
+                for signal in tf_result['signals']:
+                    # Заменяем полное название на короткое
+                    tf_short_name = tf_short.get(tf_name, tf_name)
+                    # Формируем сигнал с коротким названием
+                    short_signal = signal.replace(tf_name, tf_short_name)
+                    result['signals'].append(short_signal)
+                
                 result['strength'] += tf_result['strength'] * weight
                 result['levels'][tf_name] = tf_result['levels']
                 result['has_confluence'] = True
@@ -1933,77 +2035,144 @@ class VolumeProfileAnalyzer:
         self.va_pct = self.settings.get('value_area_pct', 70)
     
     def calculate_volume_profile(self, df: pd.DataFrame) -> Dict:
-        """Расчет Volume Profile"""
+        """Расчет Volume Profile с защитой от ошибок"""
         if df is None or len(df) < 20:
             return {}
         
-        recent = df.tail(self.lookback).copy()
-        price_precision = 6 if recent['close'].max() < 0.1 else 4 if recent['close'].max() < 10 else 2
-        
-        volume_by_price = {}
-        for _, row in recent.iterrows():
-            price_step = 10 ** (-price_precision)
-            price_levels = np.arange(round(row['low'], price_precision), round(row['high'], price_precision) + price_step, price_step)
-            vol_per_level = row['volume'] / len(price_levels) if len(price_levels) > 0 else 0
-            for price in price_levels:
-                price_key = round(price, price_precision)
-                volume_by_price[price_key] = volume_by_price.get(price_key, 0) + vol_per_level
-        
-        if not volume_by_price:
+        try:
+            recent = df.tail(self.lookback).copy()
+            
+            # Динамическая точность в зависимости от цены
+            max_price = recent['close'].max()
+            if max_price < 0.00001:
+                price_precision = 8
+            elif max_price < 0.0001:
+                price_precision = 7
+            elif max_price < 0.001:
+                price_precision = 6
+            elif max_price < 0.01:
+                price_precision = 5
+            elif max_price < 0.1:
+                price_precision = 4
+            elif max_price < 1:
+                price_precision = 3
+            else:
+                price_precision = 2
+            
+            volume_by_price = {}
+            
+            for _, row in recent.iterrows():
+                price_step = 10 ** (-price_precision)
+                low = round(row['low'], price_precision)
+                high = round(row['high'], price_precision)
+                
+                # Защита от некорректных данных
+                if high <= low:
+                    continue
+                
+                price_levels = np.arange(low, high + price_step, price_step)
+                if len(price_levels) == 0:
+                    continue
+                
+                vol_per_level = row['volume'] / len(price_levels)
+                for price in price_levels:
+                    price_key = round(price, price_precision)
+                    volume_by_price[price_key] = volume_by_price.get(price_key, 0) + vol_per_level
+            
+            if not volume_by_price:
+                return {}
+            
+            sorted_prices = sorted(volume_by_price.keys())
+            volumes = [volume_by_price[p] for p in sorted_prices]
+            
+            # Находим POC (Point of Control)
+            max_vol_idx = np.argmax(volumes)
+            poc_price = sorted_prices[max_vol_idx]
+            
+            total_volume = sum(volumes)
+            
+            # Находим Value Area (VAH и VAL)
+            price_vol_pairs = list(zip(sorted_prices, volumes))
+            price_vol_pairs.sort(key=lambda x: x[1], reverse=True)
+            
+            cum_vol = 0
+            value_area_prices = []
+            for price, vol in price_vol_pairs:
+                cum_vol += vol
+                value_area_prices.append(price)
+                if cum_vol >= total_volume * self.va_pct / 100:
+                    break
+            
+            val = min(value_area_prices) if value_area_prices else poc_price
+            vah = max(value_area_prices) if value_area_prices else poc_price
+            
+            # Находим High Volume Nodes
+            avg_volume = total_volume / len(volumes) if len(volumes) > 0 else 1
+            hvn_threshold = avg_volume * self.settings.get('min_hvn_strength', 2.0)
+            hvn_levels = [p for p, v in zip(sorted_prices, volumes) if v > hvn_threshold]
+            
+            return {
+                'poc': poc_price,
+                'val': val,
+                'vah': vah,
+                'hvn': hvn_levels[:5],
+                'total_volume': total_volume,
+                'price_precision': price_precision
+            }
+            
+        except Exception as e:
+            logger.error(f"Ошибка в Volume Profile: {e}")
             return {}
-        
-        sorted_prices = sorted(volume_by_price.keys())
-        volumes = [volume_by_price[p] for p in sorted_prices]
-        max_vol_idx = np.argmax(volumes)
-        poc_price = sorted_prices[max_vol_idx]
-        
-        total_volume = sum(volumes)
-        price_vol_pairs = list(zip(sorted_prices, volumes))
-        price_vol_pairs.sort(key=lambda x: x[1], reverse=True)
-        
-        cum_vol, value_area_prices = 0, []
-        for price, vol in price_vol_pairs:
-            cum_vol += vol
-            value_area_prices.append(price)
-            if cum_vol >= total_volume * self.va_pct / 100:
-                break
-        
-        val, vah = min(value_area_prices), max(value_area_prices)
-        avg_volume = total_volume / len(volumes)
-        hvn_threshold = avg_volume * self.settings.get('min_hvn_strength', 2.0)
-        hvn_levels = [p for p, v in zip(sorted_prices, volumes) if v > hvn_threshold]
-        
-        return {
-            'poc': poc_price,
-            'val': val,
-            'vah': vah,
-            'hvn': hvn_levels[:5],
-            'total_volume': total_volume
-        }
     
     def check_price_reaction(self, current_price: float, vp_data: Dict) -> List[Dict]:
         """Проверка реакции цены на уровни Volume Profile"""
-        reactions, distance = [], self.settings.get('confluence_distance', 0.5)
         if not vp_data:
-            return reactions
+            return []
         
-        poc_dist = abs(current_price - vp_data['poc']) / current_price * 100
-        if poc_dist < distance:
-            reactions.append({'level': 'POC', 'strength': 90, 'description': f"Цена у POC ({vp_data['poc']:.2f})"})
+        reactions = []
+        distance = self.settings.get('confluence_distance', 0.5)
         
-        val_dist = abs(current_price - vp_data['val']) / current_price * 100
-        if val_dist < distance:
-            reactions.append({'level': 'VAL', 'strength': 75, 'description': f"Цена у VAL ({vp_data['val']:.2f})"})
-        
-        vah_dist = abs(current_price - vp_data['vah']) / current_price * 100
-        if vah_dist < distance:
-            reactions.append({'level': 'VAH', 'strength': 75, 'description': f"Цена у VAH ({vp_data['vah']:.2f})"})
-        
-        for hvn in vp_data['hvn'][:1]:
-            hvn_dist = abs(current_price - hvn) / current_price * 100
-            if hvn_dist < distance:
-                reactions.append({'level': 'HVN', 'strength': 80, 'description': f"Цена в зоне HVN ({hvn:.2f})"})
-                break
+        try:
+            # POC
+            poc_dist = abs(current_price - vp_data['poc']) / current_price * 100
+            if poc_dist < distance:
+                reactions.append({
+                    'level': 'POC', 
+                    'strength': 90, 
+                    'description': f"Цена у POC ({vp_data['poc']:.{vp_data.get('price_precision', 4)}f})"
+                })
+            
+            # VAL
+            val_dist = abs(current_price - vp_data['val']) / current_price * 100
+            if val_dist < distance:
+                reactions.append({
+                    'level': 'VAL', 
+                    'strength': 75, 
+                    'description': f"Цена у VAL ({vp_data['val']:.{vp_data.get('price_precision', 4)}f})"
+                })
+            
+            # VAH
+            vah_dist = abs(current_price - vp_data['vah']) / current_price * 100
+            if vah_dist < distance:
+                reactions.append({
+                    'level': 'VAH', 
+                    'strength': 75, 
+                    'description': f"Цена у VAH ({vp_data['vah']:.{vp_data.get('price_precision', 4)}f})"
+                })
+            
+            # HVN
+            for hvn in vp_data.get('hvn', [])[:1]:
+                hvn_dist = abs(current_price - hvn) / current_price * 100
+                if hvn_dist < distance:
+                    reactions.append({
+                        'level': 'HVN', 
+                        'strength': 80, 
+                        'description': f"Цена в зоне HVN ({hvn:.{vp_data.get('price_precision', 4)}f})"
+                    })
+                    break
+                    
+        except Exception as e:
+            logger.error(f"Ошибка в check_price_reaction: {e}")
         
         return reactions
     
@@ -2012,21 +2181,30 @@ class VolumeProfileAnalyzer:
         result = {'has_confluence': False, 'signals': [], 'strength': 0, 'levels': {}}
         target_tfs = self.settings.get('timeframes', ['daily', 'weekly', 'monthly'])
         
+        tf_weights = {'monthly': 3.0, 'weekly': 2.5, 'daily': 2.0}
+        
         for tf_name in target_tfs:
             if tf_name not in dataframes or dataframes[tf_name] is None:
                 continue
             
             df = dataframes[tf_name]
             vp_data = self.calculate_volume_profile(df)
+            
             if vp_data:
-                reactions = self.check_price_reaction(df['close'].iloc[-1], vp_data)
-                weight = 3.0 if tf_name == 'monthly' else 2.5 if tf_name == 'weekly' else 2.0 if tf_name == 'daily' else 1.0
-                
-                for r in reactions:
-                    result['has_confluence'] = True
-                    result['signals'].append(f"📊 {tf_name}: {r['description']}")
-                    result['strength'] += r['strength'] * weight
-                    result['levels'][tf_name] = vp_data
+                try:
+                    current_price = df['close'].iloc[-1]
+                    reactions = self.check_price_reaction(current_price, vp_data)
+                    weight = tf_weights.get(tf_name, 1.0)
+                    
+                    for r in reactions:
+                        result['has_confluence'] = True
+                        result['signals'].append(f"📊 {tf_name}: {r['description']}")
+                        result['strength'] += r['strength'] * weight
+                        result['levels'][tf_name] = vp_data
+                        
+                except Exception as e:
+                    logger.error(f"Ошибка при анализе {tf_name}: {e}")
+                    continue
         
         if result['strength'] > 100:
             result['strength'] = 100
@@ -2295,6 +2473,103 @@ class BingxFetcher(BaseExchangeFetcher):
     async def close(self):
         await self.exchange.close()
 
+# ============== УНИВЕРСАЛЬНЫЙ ФЕТЧЕР ДЛЯ ВСЕХ БИРЖ ==============
+
+class MultiExchangeFetcher:
+    """Универсальный фетчер для всех бирж через CCXT (с публичным API)"""
+    
+    def __init__(self, exchange_id: str, api_key: str = None, api_secret: str = None):
+        self.exchange_id = exchange_id
+        self.name = exchange_id.capitalize()
+        
+        # Создаем экземпляр биржи через CCXT
+        exchange_class = getattr(ccxt, exchange_id)
+        
+        # Параметры для публичного API (без ключей)
+        config = {
+            'enableRateLimit': True,
+            'options': {
+                'adjustForTimeDifference': True
+            }
+        }
+        
+        # Если ключи предоставлены — добавляем
+        if api_key and api_secret:
+            config['apiKey'] = api_key
+            config['secret'] = api_secret
+            logger.info(f"✅ {self.name} инициализирован (с API ключами)")
+        else:
+            logger.info(f"✅ {self.name} инициализирован (публичный API, без ключей)")
+        
+        self.exchange = exchange_class(config)
+        
+        # Настройка типа рынка
+        if exchange_id == 'mexc':
+            self.exchange.options['defaultType'] = 'future'
+        elif exchange_id == 'bybit':
+            self.exchange.options['defaultType'] = 'linear'  # USDT perpetual
+        elif exchange_id == 'bingx':
+            self.exchange.options['defaultType'] = 'swap'
+    
+    async def fetch_all_pairs(self) -> List[str]:
+        """Получение всех фьючерсных пар (публичный API)"""
+        try:
+            await self.exchange.load_markets()
+            usdt_pairs = []
+            
+            for symbol, market in self.exchange.markets.items():
+                if (market['quote'] == 'USDT' and 
+                    market['active'] and 
+                    market['type'] in ['swap', 'future', 'linear']):
+                    usdt_pairs.append(symbol)
+            
+            logger.info(f"📊 {self.name}: загружено {len(usdt_pairs)} пар")
+            return usdt_pairs
+        except Exception as e:
+            logger.error(f"❌ {self.name} ошибка: {e}")
+            return []
+    
+    async def fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 200) -> Optional[pd.DataFrame]:
+        """Получение OHLCV данных (публичный API)"""
+        try:
+            ohlcv = await self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+            if not ohlcv or len(ohlcv) < 20:
+                return None
+            
+            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            df.set_index('timestamp', inplace=True)
+            return df
+        except Exception as e:
+            logger.debug(f"Ошибка {self.name} {symbol}: {e}")
+            return None
+    
+    async def fetch_funding_rate(self, symbol: str) -> Optional[float]:
+        """Получение ставки фондирования (публичный API)"""
+        try:
+            funding = await self.exchange.fetch_funding_rate(symbol)
+            if funding and 'fundingRate' in funding:
+                return funding['fundingRate']
+            return 0.0
+        except:
+            return 0.0
+    
+    async def fetch_ticker(self, symbol: str) -> Dict:
+        """Получение тикера (публичный API)"""
+        try:
+            ticker = await self.exchange.fetch_ticker(symbol)
+            return {
+                'volume_24h': ticker.get('quoteVolume'),
+                'price_change_24h': ticker.get('percentage'),
+                'last': ticker.get('last')
+            }
+        except:
+            return {}
+    
+    async def close(self):
+        """Закрытие соединения"""
+        await self.exchange.close()
+
 # ============== МУЛЬТИТАЙМФРЕЙМ АНАЛИЗАТОР ==============
 
 class MultiTimeframeAnalyzer:
@@ -2368,27 +2643,44 @@ class MultiTimeframeAnalyzer:
         """Анализ согласованности трендов на разных таймфреймах"""
         alignment = {
             'trend_alignment': 0,
-            'current_trend': None,
-            'hourly_trend': None,
-            'four_hourly_trend': None,
-            'daily_trend': None,
-            'weekly_trend': None,
-            'monthly_trend': None,
-            'signals': []
+            'signals': [],
+            'trends': {}  # для хранения всех трендов
         }
         
         # Словарь для перевода
         tf_names = {
-            'current': '15-минутный',
-            'hourly': 'часовой',
-            'four_hourly': '4-часовой',
-            'daily': 'дневной',
-            'weekly': 'недельный',
-            'monthly': 'месячный'
+            '1m': '1м',
+            '3m': '3м',
+            '5m': '5м',
+            'current': '15м',
+            '30m': '30м',
+            'hourly': '1ч',
+            'four_hourly': '4ч',
+            'daily': '1д',
+            'weekly': '1н',
+            'monthly': '1м'
         }
         
-        # Анализируем каждый таймфрейм
-        for tf_name in ['current', 'hourly', 'four_hourly', 'daily', 'weekly', 'monthly']:
+        # Веса для разных ТФ
+        tf_weights = {
+            '1m': 0.5,
+            '3m': 0.6,
+            '5m': 0.7,
+            'current': 1.0,
+            '30m': 1.2,
+            'hourly': 1.5,
+            'four_hourly': 2.0,
+            'daily': 2.5,
+            'weekly': 3.0,
+            'monthly': 3.5
+        }
+        
+        # Собираем все таймфреймы в правильном порядке
+        tf_order = ['1m', '3m', '5m', 'current', '30m', 'hourly', 'four_hourly', 'daily', 'weekly', 'monthly']
+        
+        trends_list = []
+        
+        for tf_name in tf_order:
             if tf_name not in dataframes or dataframes[tf_name] is None or dataframes[tf_name].empty:
                 continue
             
@@ -2398,38 +2690,31 @@ class MultiTimeframeAnalyzer:
             # Определяем тренд по EMA 9 и 21
             if pd.notna(last.get('ema_9')) and pd.notna(last.get('ema_21')):
                 trend = 'ВОСХОДЯЩИЙ' if last['ema_9'] > last['ema_21'] else 'НИСХОДЯЩИЙ'
-                alignment[f'{tf_name}_trend'] = trend
+                alignment['trends'][tf_name] = trend
                 
-                # Добавляем сигнал для сильных трендов (БЕЗ ЭМОДЗИ)
-                if tf_name in ['weekly', 'monthly']:
-                    # Проверяем, есть ли колонка ema_200
-                    if 'ema_200' in df.columns and pd.notna(last.get('ema_200')):
-                        if last['ema_9'] > last['ema_200']:
-                            alignment['signals'].append(f"{tf_names[tf_name].upper()} ТРЕНД ВОСХОДЯЩИЙ (выше EMA 200)")
-                        elif last['ema_9'] < last['ema_200']:
-                            alignment['signals'].append(f"{tf_names[tf_name].upper()} ТРЕНД НИСХОДЯЩИЙ (ниже EMA 200)")
-                    # Fallback на EMA 50 если EMA 200 нет (на всякий случай)
-                    elif 'ema_50' in df.columns:
-                        if last['ema_9'] > last['ema_50']:
-                            alignment['signals'].append(f"{tf_names[tf_name].upper()} ТРЕНД ВОСХОДЯЩИЙ (выше EMA 50)")
-                        elif last['ema_9'] < last['ema_50']:
-                            alignment['signals'].append(f"{tf_names[tf_name].upper()} ТРЕНД НИСХОДЯЩИЙ (ниже EMA 50)")
+                # Для младших ТФ (1м, 3м, 5м) — только для информации
+                if tf_name in ['1m', '3m', '5m'] and MINOR_TF_SETTINGS['enabled']:
+                    alignment['signals'].append(f"{tf_names[tf_name]}: {trend} (подтверждение)")
+                
+                # Для остальных ТФ — добавляем в согласованность
+                elif tf_name not in ['1m', '3m', '5m']:
+                    trends_list.append(trend)
+                    
+                    # Добавляем сигнал для сильных трендов
+                    if tf_name in ['weekly', 'monthly'] and last['ema_9'] > last['ema_200']:
+                        alignment['signals'].append(f"{tf_names[tf_name]} ТРЕНД ВОСХОДЯЩИЙ (выше EMA 200)")
+                    elif tf_name in ['weekly', 'monthly'] and last['ema_9'] < last['ema_200']:
+                        alignment['signals'].append(f"{tf_names[tf_name]} ТРЕНД НИСХОДЯЩИЙ (ниже EMA 200)")
         
-        # Считаем согласованность
-        trends = []
-        for tf_name in ['current', 'hourly', 'four_hourly', 'daily', 'weekly', 'monthly']:
-            if alignment.get(f'{tf_name}_trend'):
-                trends.append(alignment[f'{tf_name}_trend'])
-        
-        if trends:
-            bullish = trends.count('ВОСХОДЯЩИЙ')
-            bearish = trends.count('НИСХОДЯЩИЙ')
-            alignment['trend_alignment'] = (max(bullish, bearish) / len(trends)) * 100
+        # Считаем согласованность (только для основных ТФ)
+        if trends_list:
+            bullish = trends_list.count('ВОСХОДЯЩИЙ')
+            bearish = trends_list.count('НИСХОДЯЩИЙ')
+            alignment['trend_alignment'] = (max(bullish, bearish) / len(trends_list)) * 100
             
-            # Добавляем сигнал о согласованности (БЕЗ ЭМОДЗИ)
-            if alignment['trend_alignment'] >= 80 and len(trends) >= 3:
+            if alignment['trend_alignment'] >= 80 and len(trends_list) >= 3:
                 direction = "бычий" if bullish > bearish else "медвежий"
-                alignment['signals'].append(f"Тренды согласованы: {alignment['trend_alignment']:.0f}% ({direction}, {len(trends)} ТФ)")
+                alignment['signals'].append(f"Тренды согласованы: {alignment['trend_alignment']:.0f}% ({direction}, {len(trends_list)} ТФ)")
         
         return alignment
     
@@ -2449,7 +2734,8 @@ class MultiTimeframeAnalyzer:
         all_zones = []  # временный список всех найденных зон
         
         # Приоритет таймфреймов
-        tf_priority = ['monthly', 'weekly', 'daily', 'four_hourly', 'hourly', 'current']
+        # tf_priority = ['monthly', 'weekly', 'daily', 'four_hourly', 'hourly', 'current']
+        tf_priority = ['monthly', 'weekly', 'daily', 'four_hourly', 'hourly', '30m', 'current', '5m', '3m', '1m']
         
         # Словари для форматирования
         tf_short = {
@@ -3155,6 +3441,23 @@ class MultiTimeframeAnalyzer:
                         direction = 'SHORT 📉 (ловушка быков)'
                     logger.info(f"  ⚠️ {symbol} - Обнаружен потенциальный ложный пробой!")
         
+        # ===== ПРИБЛИЖЕНИЕ К УРОВНЯМ =====
+        if FEATURES['advanced']['patterns']:
+            logger.info(f"  🔍 {symbol} - Проверка приближения к уровням")
+            
+            trend_analyzer = TrendLineAnalyzer()
+            current_tf = TIMEFRAMES.get('current', '15m')
+            
+            # Проверяем приближение к трендовым линиям
+            approaching = trend_analyzer.check_approaching_trendline(
+                df, last['close'], touch_count=3, threshold=0.5
+            )
+            
+            for warning in approaching:
+                reasons.append(warning['message'])
+                confidence += 10  # бонус за приближение
+                logger.info(f"  ⚠️ {symbol} - {warning['message']}")
+
         # ===== ПОДТВЕРЖДЕНИЕ ПРОБОЕВ =====
         if FEATURES['advanced']['patterns'] and BREAKOUT_CONFIRMATION_SETTINGS['enabled']:
             logger.info(f"  🔍 {symbol} - Проверка подтвержденных пробоев")
@@ -3212,6 +3515,20 @@ class MultiTimeframeAnalyzer:
                     confidence += zone['strength'] / 2
                     if zone['distance'] < 5:
                         reasons.append(f"⚠️ Близкое сильное сопротивление ({zone['distance']:.1f}%)")
+
+        # ===== ПРИБЛИЖЕНИЕ К ЛЮБЫМ УРОВНЯМ =====
+        if FEATURES['advanced']['patterns']:
+            logger.info(f"  🔍 {symbol} - Анализ приближения к уровням")
+            
+            level_collector = LevelCollector()
+            approaching = level_collector.check_approach_to_levels(
+                dataframes, last['close'], touch_count=3, threshold=0.5
+            )
+            
+            for warning in approaching:
+                reasons.append(warning['message'])
+                confidence += 10
+                logger.info(f"  ⚠️ {symbol} - {warning['message']}")
 
         # ===== АНАЛИЗ КОНВЕРГЕНЦИИ И СИЛЫ УРОВНЕЙ =====
         if FEATURES['advanced']['patterns']:
@@ -3297,6 +3614,45 @@ class MultiTimeframeAnalyzer:
                 confidence += fvg_analysis['strength'] / 5
                 logger.info(f"  ✅ {symbol} - Найдено FVG: {len(fvg_analysis['signals'])} на разных ТФ")
         
+        # ===== ПОДТВЕРЖДЕНИЕ ОТ МЛАДШИХ ТАЙМФРЕЙМОВ =====
+        if MINOR_TF_SETTINGS['enabled']:
+            logger.info(f"  🔍 {symbol} - Проверка подтверждения от младших ТФ")
+            
+            confirmation_score = 0
+            minor_signals = []
+            
+            # Проверяем 1м, 3м, 5м
+            for tf_name in ['1m', '3m', '5m']:
+                if tf_name not in dataframes or dataframes[tf_name] is None:
+                    continue
+                
+                tf_df = dataframes[tf_name]
+                tf_last = tf_df.iloc[-1]
+                
+                # Проверяем направление на младшем ТФ
+                if direction == 'LONG' and tf_last['ema_9'] > tf_last['ema_21']:
+                    confirmation_score += 1
+                    minor_signals.append(f"✅ {tf_name} подтверждает LONG")
+                elif direction == 'SHORT' and tf_last['ema_9'] < tf_last['ema_21']:
+                    confirmation_score += 1
+                    minor_signals.append(f"✅ {tf_name} подтверждает SHORT")
+            
+            # Добавляем в причины
+            if confirmation_score >= 2:
+                reasons.append(f"✅ Подтверждение от {confirmation_score} младших ТФ")
+                confidence += 10
+                logger.info(f"  ✅ {symbol} - Подтверждение от {confirmation_score} младших ТФ")
+
+        # ===== VOLUME PROFILE АНАЛИЗ =====
+        if FEATURES['advanced']['volume_profile'] and self.volume_profile:
+            logger.info(f"  🔍 {symbol} - Анализ Volume Profile")
+            vp_analysis = self.volume_profile.analyze_multi_timeframe(dataframes)
+            if vp_analysis['has_confluence']:
+                for signal in vp_analysis['signals']:
+                    reasons.append(signal)
+                confidence += vp_analysis['strength'] / 5
+                logger.info(f"  ✅ {symbol} - Volume Profile: найдено {len(vp_analysis['signals'])} сигналов")
+
         # ===== АНАЛИЗ КАСАНИЙ EMA =====
         ema_touch = self.analyze_ema_touch(df, last)
         for signal in ema_touch['signals']:
@@ -3576,6 +3932,26 @@ class MultiTimeframeAnalyzer:
         
         logger.info(f"✅ generate_signal успешно завершен для {symbol}")
         return result
+    
+    def analyze_price_squeeze(self, df: pd.DataFrame, level_price: float, touches: int) -> Dict:
+    """
+    Анализ "поджатия" цены к уровню
+    """
+    recent = df.tail(20)
+    touches_recent = 0
+    
+    for _, row in recent.iterrows():
+        if abs(row['close'] - level_price) / level_price < 0.003:  # 0.3% допуск
+            touches_recent += 1
+    
+    if touches_recent >= 3:
+        return {
+            'squeeze': True,
+            'strength': min(100, touches_recent * 20),
+            'message': f"🔥 Цена поджимается к уровню ({touches_recent} касаний за 20 свечей)"
+        }
+    
+    return {'squeeze': False}
     
     def _get_power_text(self, confidence: float) -> str:
         """Определение текста силы сигнала по уверенности"""
@@ -4410,7 +4786,12 @@ class FastPumpScanner:
                 line2 += f" / {funding_emoji} {funding:.3f}%"
         
         exchange_link = REF_LINKS.get(signal['exchange'], '#')
-        line3 = f"💲 Trade: <a href='{exchange_link}'>{signal['exchange']}</a>"
+        # Формируем ссылки на все биржи
+        bingx_link = REF_LINKS.get('BingX', '#')
+        bybit_link = REF_LINKS.get('Bybit', '#')
+        mexc_link = REF_LINKS.get('MEXC', '#')
+
+        line3 = f"💲 Trade: <a href='{bingx_link}'>BingX</a> | <a href='{bybit_link}'>Bybit</a> | <a href='{mexc_link}'>MEXC</a>"
         
         line4 = ""
         line5 = f"📊 Направление: {signal['direction']}"
@@ -4585,9 +4966,48 @@ class MultiExchangeScannerBot:
             logger.info("✅ Анализатор накопления инициализирован")
         
         # Инициализация бирж
-        if FEATURES['exchanges'].get('bingx', {}).get('enabled', False):
-            self.fetchers['BingX'] = BingxFetcher()
+        # if FEATURES['exchanges'].get('bingx', {}).get('enabled', False):
+        #     self.fetchers['BingX'] = BingxFetcher()
         
+        # ===== ИНИЦИАЛИЗАЦИЯ БИРЖ (НОВЫЙ КОД) =====
+        from config import EXCHANGES
+        
+        # BingX
+        if EXCHANGES['bingx']['enabled']:
+            self.fetchers['BingX'] = MultiExchangeFetcher(
+                'bingx',
+                EXCHANGES['bingx']['api_key'],
+                EXCHANGES['bingx']['api_secret']
+            )
+            logger.info("✅ BingX инициализирован")
+        
+        # Bybit
+        if EXCHANGES['bybit']['enabled']:
+            self.fetchers['Bybit'] = MultiExchangeFetcher(
+                'bybit',
+                EXCHANGES['bybit']['api_key'],
+                EXCHANGES['bybit']['api_secret']
+            )
+            logger.info("✅ Bybit инициализирован")
+        
+        # MEXC
+        if EXCHANGES['mexc']['enabled']:
+            self.fetchers['MEXC'] = MultiExchangeFetcher(
+                'mexc',
+                EXCHANGES['mexc']['api_key'],
+                EXCHANGES['mexc']['api_secret']
+            )
+            logger.info("✅ MEXC инициализирован")
+        
+        # Инициализация статистики
+        if STATS_SETTINGS['enabled'] and STATS_SETTINGS['stats_chat_id']:
+            self.stats = SignalStatistics(self.telegram_bot, STATS_SETTINGS['stats_chat_id'])
+            logger.info("✅ Система статистики инициализирована")
+            
+            # Запускаем фоновые задачи
+            asyncio.create_task(self.stats_updater_loop())
+            asyncio.create_task(self.daily_report_loop())
+
         # Инициализация статистики
         if STATS_SETTINGS['enabled'] and STATS_SETTINGS['stats_chat_id']:
             self.stats = SignalStatistics(self.telegram_bot, STATS_SETTINGS['stats_chat_id'])
@@ -4775,7 +5195,12 @@ class MultiExchangeScannerBot:
                 line2 += f" / {funding_emoji} {funding:.3f}%"
         
         exchange_link = REF_LINKS.get(signal['exchange'], '#')
-        line3 = f"💲 Trade: <a href='{exchange_link}'>{signal['exchange']}</a>"
+        # Формируем ссылки на все биржи
+        bingx_link = REF_LINKS.get('BingX', '#')
+        bybit_link = REF_LINKS.get('Bybit', '#')
+        mexc_link = REF_LINKS.get('MEXC', '#')
+
+        line3 = f"💲 Trade: <a href='{bingx_link}'>BingX</a> | <a href='{bybit_link}'>Bybit</a> | <a href='{mexc_link}'>MEXC</a>"
         
         line4 = ""
         line5 = f"📊 Направление: {signal['direction']}"
