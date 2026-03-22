@@ -201,8 +201,8 @@ ATR_SETTINGS = {
 FEATURES = {
     'exchanges': {
         'bingx': {'enabled': True},
-        'bybit': {'enabled': True},
-        'mexc': {'enabled': True},
+        'bybit': {'enabled': False},
+        'mexc': {'enabled': False},
     },
     
     'data_sources': {
