@@ -49,6 +49,16 @@ EXCHANGES = {
     }
 }
 
+# ============== НАСТРОЙКИ ПРОКСИ ==============
+
+PROXY_SETTINGS = {
+    'enabled': False,  # включить прокси
+    'http': 'http://your-proxy:port',   # например: 'http://proxy.example.com:8080'
+    'https': 'https://your-proxy:port',
+    # Если нужна аутентификация:
+    # 'auth': 'username:password',
+}
+
 # ============== НАСТРОЙКИ ПАМП-СКАНЕРА ==============
 
 PUMP_SCAN_SETTINGS = {
