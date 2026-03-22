@@ -2977,6 +2977,8 @@ class MultiTimeframeAnalyzer:
         """
         logger.info(f"🔄 generate_signal начал работу для {symbol}")
         
+        global BREAKOUT_CONFIRMATION_SETTINGS
+        
         if 'current' not in dataframes or dataframes['current'].empty:
             logger.warning(f"⚠️ Нет current данных для {symbol}")
             return None
