@@ -53,7 +53,7 @@ EXCHANGES = {
 
 PROXY_SETTINGS = {
     'enabled': False,           # включить прокси принудительно
-    'auto_detect': True,        # автоматически включать при ошибках
+    'auto_detect': False,        # автоматически включать при ошибках
     'auto_detect_exchanges': ['bybit', 'mexc'],  # для каких бирж авто-детект
     'http': 'http://your-proxy:port',
     'https': 'https://your-proxy:port',
