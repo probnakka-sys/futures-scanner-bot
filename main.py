@@ -5093,16 +5093,7 @@ class MultiExchangeScannerBot:
             # Запускаем фоновые задачи
             asyncio.create_task(self.stats_updater_loop())
             asyncio.create_task(self.daily_report_loop())
-
-        # Инициализация статистики
-        if STATS_SETTINGS['enabled'] and STATS_SETTINGS['stats_chat_id']:
-            self.stats = SignalStatistics(self.telegram_bot, STATS_SETTINGS['stats_chat_id'])
-            logger.info("✅ Система статистики инициализирована")
             
-            # Запускаем фоновые задачи
-            asyncio.create_task(self.stats_updater_loop())
-            asyncio.create_task(self.daily_report_loop())
-    
     def extract_coin(self, symbol: str) -> str:
         if '/USDT' in symbol:
             return symbol.split('/')[0]
