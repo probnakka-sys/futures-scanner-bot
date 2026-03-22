@@ -2300,6 +2300,7 @@ class MultiTimeframeAnalyzer:
         self.volume_profile = None
         self.accumulation = None
         self.imbalance = ImbalanceAnalyzer(IMBALANCE_SETTINGS) if FEATURES['advanced']['imbalance'] else None
+        self.breakout_tracker = BreakoutTracker()
         
         # Словарь для перевода таймфреймов
         self.tf_translation = {
