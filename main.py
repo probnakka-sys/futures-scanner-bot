@@ -88,6 +88,44 @@ from config import SNIPER_ENTRY_SETTINGS
 
 from config import MINOR_TF_SETTINGS
 
+# ===== ИНИЦИАЛИЗАЦИЯ БИРЖ =====
+from config import EXCHANGES, PROXY_SETTINGS
+
+# Получаем прокси если включен
+proxy = None
+if PROXY_SETTINGS.get('enabled', False):
+    proxy = PROXY_SETTINGS.get('https', PROXY_SETTINGS.get('http'))
+
+# BingX
+if EXCHANGES['bingx']['enabled']:
+    self.fetchers['BingX'] = MultiExchangeFetcher(
+        'bingx',
+        EXCHANGES['bingx']['api_key'],
+        EXCHANGES['bingx']['api_secret'],
+        proxy  # ← передаем прокси
+    )
+    logger.info("✅ BingX инициализирован")
+
+# Bybit
+if EXCHANGES['bybit']['enabled']:
+    self.fetchers['Bybit'] = MultiExchangeFetcher(
+        'bybit',
+        EXCHANGES['bybit']['api_key'],
+        EXCHANGES['bybit']['api_secret'],
+        proxy
+    )
+    logger.info("✅ Bybit инициализирован")
+
+# MEXC
+if EXCHANGES['mexc']['enabled']:
+    self.fetchers['MEXC'] = MultiExchangeFetcher(
+        'mexc',
+        EXCHANGES['mexc']['api_key'],
+        EXCHANGES['mexc']['api_secret'],
+        proxy
+    )
+    logger.info("✅ MEXC инициализирован")
+
 # Настройка логирования
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -2493,6 +2531,14 @@ class MultiExchangeFetcher:
             }
         }
         
+        # Добавляем прокси если указан
+        if proxy:
+            config['proxies'] = {
+                'http': proxy,
+                'https': proxy
+            }
+            logger.info(f"✅ {self.name} использует прокси: {proxy}")
+
         # Если ключи предоставлены — добавляем
         if api_key and api_secret:
             config['apiKey'] = api_key
@@ -3757,7 +3803,7 @@ class MultiTimeframeAnalyzer:
         if accumulation_analysis and accumulation_analysis.get('direction') and accumulation_analysis.get('has_accumulation'):
             base_direction = accumulation_analysis['direction']
         if trendline_breakout:
-            if alignment['weekly_trend'] == 'НИСХОДЯЩИЙ' and last['rsi'] > 70:
+            if alignment.get['weekly_trend'] == 'НИСХОДЯЩИЙ' and last['rsi'] > 70:
                 # Пробой вверх при медвежьем тренде и перекупленности = ЛОВУШКА!
                 base_direction = 'SHORT 📉 (ловушка быков)'
                 reasons.append("⚠️ Пробой вверх при медвежьем тренде - возможен ложный пробой")
