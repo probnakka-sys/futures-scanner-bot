@@ -2576,7 +2576,7 @@ class MultiExchangeFetcher:
     
     async def fetch_with_retry(self, fetch_func, *args, **kwargs):
         """Выполняет запрос с автоматическим переключением прокси"""
-        logger.info(f"🔍 fetch_with_retry: fetch_func = {fetch_func.__name__}, args = {args}")
+        # logger.info(f"🔍 fetch_with_retry: fetch_func = {fetch_func.__name__}, args = {args}")
         try:
             return await fetch_func(self.exchange, *args, **kwargs)
         except Exception as e:
@@ -2635,11 +2635,11 @@ class MultiExchangeFetcher:
     
     async def fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 200) -> Optional[pd.DataFrame]:
         """Получение OHLCV данных с авто-переключением"""
-        logger.info(f"🔍 fetch_ohlcv: self.exchange type = {type(self.exchange)}, name = {self.name}, symbol = {symbol}")
+        # logger.info(f"🔍 fetch_ohlcv: self.exchange type = {type(self.exchange)}, name = {self.name}, symbol = {symbol}")
         return await self.fetch_with_retry(self._fetch_ohlcv_impl, symbol, timeframe, limit)
 
     async def _fetch_ohlcv_impl(self, exchange, symbol: str, timeframe: str, limit: int = 200) -> Optional[pd.DataFrame]:
-        logger.info(f"🔍 _fetch_ohlcv_impl: exchange type = {type(exchange)}, symbol = {symbol}")
+        # logger.info(f"🔍 _fetch_ohlcv_impl: exchange type = {type(exchange)}, symbol = {symbol}")
         try:
             ohlcv = await exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
             if not ohlcv or len(ohlcv) < 20:
@@ -2649,7 +2649,7 @@ class MultiExchangeFetcher:
             df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
             df.set_index('timestamp', inplace=True)
-            logger.info(f"✅ {self.name}: загружено {len(df)} свечей для {symbol}")
+            # logger.info(f"✅ {self.name}: загружено {len(df)} свечей для {symbol}")
             return df
         except Exception as e:
             logger.error(f"❌ {self.name} ошибка при загрузке {symbol}: {e}")
