@@ -3746,46 +3746,52 @@ class MultiTimeframeAnalyzer:
         # ===== АНАЛИЗ КАСАНИЙ EMA =====
         try:
             ema_touch = self.analyze_ema_touch(df, last)
-            for signal in ema_touch['signals']:
-                reasons.append(signal)
-                confidence += 5
+            if ema_touch and 'signals' in ema_touch:
+                for signal in ema_touch['signals']:
+                    reasons.append(signal)
+                    confidence += 5
+            else:
+                logger.debug(f"  ⚠️ {symbol} - analyze_ema_touch вернул None")
         except Exception as e:
             logger.error(f"❌ Ошибка в analyze_ema_touch для {symbol}: {e}")
         
         # ===== АНАЛИЗ КАСАНИЙ EMA НА ВСЕХ ТАЙМФРЕЙМАХ =====
         try:
             ema_touch_analysis = self.analyze_ema_touch_multi_timeframe(dataframes, last['close'])
-            if ema_touch_analysis['signals']:
-                for signal in ema_touch_analysis['signals']:
-                    reasons.append(signal)
-                confidence += ema_touch_analysis['strength'] / 10
-                logger.info(f"  ✅ {symbol} - Найдено {len(ema_touch_analysis['signals'])} касаний EMA")
+            if ema_touch_analysis and 'signals' in ema_touch_analysis:
+                if ema_touch_analysis['signals']:
+                    for signal in ema_touch_analysis['signals']:
+                        reasons.append(signal)
+                    confidence += ema_touch_analysis.get('strength', 0) / 10
+                    logger.info(f"  ✅ {symbol} - Найдено {len(ema_touch_analysis['signals'])} касаний EMA")
         except Exception as e:
             logger.error(f"❌ Ошибка в analyze_ema_touch_multi_timeframe для {symbol}: {e}")
+            import traceback
+            traceback.print_exc()
         
         # ===== АНАЛИЗ ОБЪЕМОВ =====
-        if VOLUME_ANALYSIS_SETTINGS['enabled']:
+        if VOLUME_ANALYSIS_SETTINGS.get('enabled', False):
             try:
                 logger.info(f"  🔍 {symbol} - Анализ объемов")
                 
                 # 1. Детектор аномальных свечей
                 volume_spike = self.calculate_volume_spike(df)
-                if volume_spike['spike']:
+                if volume_spike and volume_spike.get('spike'):
                     reasons.append(f"🔥 Аномальный объем x{volume_spike['ratio']:.1f}")
                     confidence += VOLUME_ANALYSIS_SETTINGS['spike_detector']['weight']
                     logger.info(f"  🔥 {symbol} - Объемный всплеск x{volume_spike['ratio']:.1f}")
                 
                 # 2. Дисперсия объема
                 vol_dispersion = self.calculate_volume_dispersion(df, hours=2)
-                if vol_dispersion['dispersion'] != 1.0:
+                if vol_dispersion and vol_dispersion.get('dispersion', 1.0) != 1.0:
                     reasons.append(vol_dispersion['interpretation'])
                     if vol_dispersion['dispersion'] > VOLUME_ANALYSIS_SETTINGS['volume_dispersion']['high_threshold']:
                         confidence += VOLUME_ANALYSIS_SETTINGS['volume_dispersion']['weight']
                 
-                # 3. Имбаланс buy/sell (если включен)
+                # 3. Имбаланс buy/sell
                 if VOLUME_ANALYSIS_SETTINGS['imbalance']['enabled'] and self.imbalance:
                     imbalance_result = self.imbalance.analyze(dataframes)
-                    if imbalance_result['has_imbalance']:
+                    if imbalance_result and imbalance_result.get('has_imbalance'):
                         for signal in imbalance_result['signals']:
                             reasons.append(signal)
                         confidence += VOLUME_ANALYSIS_SETTINGS['imbalance']['weight']
@@ -3796,14 +3802,14 @@ class MultiTimeframeAnalyzer:
                 traceback.print_exc()
 
         # ===== АНАЛИЗ ДИСПЕРСИИ =====
-        if DISPERSION_ANALYSIS_SETTINGS['enabled']:
+        if DISPERSION_ANALYSIS_SETTINGS.get('enabled', False):
             try:
                 logger.info(f"  🔍 {symbol} - Анализ дисперсии")
                 
                 dispersion_zones = []
                 for hours, name in [(1, 'час'), (2, 'часа'), (4, 'часа')]:
                     dispersion = self.calculate_price_dispersion(df, hours=hours)
-                    if dispersion['dispersion'] > 0:
+                    if dispersion and dispersion.get('dispersion', 0) > 0:
                         reasons.append(f"📊 Дисперсия за {name}: {dispersion['interpretation']}")
                         dispersion_zones = dispersion.get('zones', [])
                         
