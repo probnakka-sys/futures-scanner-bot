@@ -2807,187 +2807,139 @@ class MultiTimeframeAnalyzer:
         """
         Анализ FVG на всех таймфреймах с фильтрацией по расстоянию
         """
-        result = {'has_fvg': False, 'signals': [], 'strength': 0, 'zones': []}
-        all_zones = []
-        
-        # Максимальное расстояние для отображения в причинах (например, 15%)
-        MAX_DISTANCE_PCT = 15.0
-        """
-        Анализ FVG на всех таймфреймах с фильтрацией для графика
-        """
-        result = {'has_fvg': False, 'signals': [], 'strength': 0, 'zones': []}
-        all_zones = []  # временный список всех найденных зон
-        
-        # Приоритет таймфреймов
-        # tf_priority = ['monthly', 'weekly', 'daily', 'four_hourly', 'hourly', 'current']
-        tf_priority = ['monthly', 'weekly', 'daily', 'four_hourly', 'hourly', '30m', 'current', '5m', '3m', '1m']
-        
-        # Словари для форматирования
-        tf_short = {
-            'monthly': '1м',
-            'weekly': '1н',
-            'daily': '1д',
-            'four_hourly': '4ч',
-            'hourly': '1ч',
-            'current': '15м'
-        }
-        
-        tf_weights = {
-            'monthly': 4.0,
-            'weekly': 3.5,
-            'daily': 2.5,
-            'four_hourly': 2.0,
-            'hourly': 1.5,
-            'current': 1.0
-        }
-        
-        tf_names_ru = {
-            'monthly': 'месячный',
-            'weekly': 'недельный',
-            'daily': 'дневной',
-            'four_hourly': '4-часовой',
-            'hourly': 'часовой',
-            'current': '15-минутный'
-        }
-        
-        dir_emoji = {
-            'bullish': '📈',
-            'bearish': '📉'
-        }
-        
-        # Анализируем каждый таймфрейм
-        for tf_name in tf_priority:
-            if tf_name not in dataframes or dataframes[tf_name] is None:
-                continue
+        try:
+            result = {'has_fvg': False, 'signals': [], 'strength': 0, 'zones': []}
+            all_zones = []
             
-            df = dataframes[tf_name]
-
-            if df is None or df.empty or len(df) < 20:
-                logger.info(f"    ⏭️ {tf_name}: недостаточно данных ({len(df) if df is not None else 0} свечей)")
-                continue
+            # Приоритет таймфреймов
+            tf_priority = ['monthly', 'weekly', 'daily', 'four_hourly', 'hourly', '30m', 'current', '5m', '3m', '1m']
             
-            # Создаем временный SMC анализатор для этого ТФ
-            smc_temp = SmartMoneyAnalyzer(SMC_SETTINGS)
-            fvg_list = smc_temp.find_fair_value_gaps(df)
+            # Словари для форматирования
+            tf_short = {
+                'monthly': '1м',
+                'weekly': '1н',
+                'daily': '1д',
+                'four_hourly': '4ч',
+                'hourly': '1ч',
+                'current': '15м'
+            }
             
-            logger.info(f"    🔍 {tf_name}: найдено {len(fvg_list)} FVG кандидатов")
+            tf_weights = {
+                'monthly': 4.0,
+                'weekly': 3.5,
+                'daily': 2.5,
+                'four_hourly': 2.0,
+                'hourly': 1.5,
+                'current': 1.0
+            }
             
-            for fvg in fvg_list:
-                # Проверяем, не закрыта ли зона
-                if self._is_fvg_closed(df, fvg):
-                    logger.info(f"    ⏭️ {tf_name} FVG пропущен (закрыт)")
+            tf_names_ru = {
+                'monthly': 'месячный',
+                'weekly': 'недельный',
+                'daily': 'дневной',
+                'four_hourly': '4-часовой',
+                'hourly': 'часовой',
+                'current': '15-минутный'
+            }
+            
+            dir_emoji = {
+                'bullish': '📈',
+                'bearish': '📉'
+            }
+            
+            # Анализируем каждый таймфрейм
+            for tf_name in tf_priority:
+                if tf_name not in dataframes or dataframes[tf_name] is None:
                     continue
                 
-                # Проверяем, находится ли текущая цена в зоне FVG
-                in_zone = (fvg['price_min'] <= current_price <= fvg['price_max'])
-                
-                # Рассчитываем расстояние до зоны
-                if in_zone:
-                    distance_pct = 0
-                    distance_text = "в зоне"
-                    zone_type = "тест"
-                elif current_price < fvg['price_min']:
-                    distance_pct = ((fvg['price_min'] - current_price) / current_price) * 100
-                    distance_text = f"выше на {distance_pct:.1f}%"
-                    zone_type = "сопротивление сверху"
-                else:  # current_price > fvg['price_max']
-                    distance_pct = ((current_price - fvg['price_max']) / current_price) * 100
-                    distance_text = f"ниже на {distance_pct:.1f}%"
-                    zone_type = "поддержка снизу"
-                
-                # Логируем найденный FVG
-                logger.info(f"    ✅ {tf_name} FVG: {fvg['price_min']:.6f}-{fvg['price_max']:.6f}, {distance_text}")
-                
-                # Форматируем цены зоны
-                if fvg['price_min'] < 0.001:
-                    zone_str = f"{fvg['price_min']:.6f}-{fvg['price_max']:.6f}"
-                elif fvg['price_min'] < 0.1:
-                    zone_str = f"{fvg['price_min']:.4f}-{fvg['price_max']:.4f}"
-                else:
-                    zone_str = f"{fvg['price_min']:.2f}-{fvg['price_max']:.2f}"
-                
-                # Формируем сигнал
-                size_pct = fvg.get('size', 0)
-                tf_ru = tf_names_ru.get(tf_name, tf_name)
-                direction = "бычий" if fvg['type'] == 'bullish' else "медвежий"
-                
-                signal_text = (f"FVG {tf_short[tf_name]}: {zone_str} "
-                            f"(размер {size_pct:.2f}% {dir_emoji[fvg['type']]} {zone_type}, {distance_text})")
-                
-                result['has_fvg'] = True
-                result['signals'].append(signal_text)
-                
-                # Сохраняем зону для графиков и анализа
-                all_zones.append({
-                    'tf': tf_name,
-                    'tf_short': tf_short[tf_name],
-                    'tf_ru': tf_ru,
-                    'min': fvg['price_min'],
-                    'max': fvg['price_max'],
-                    'type': fvg['type'],
-                    'dir_emoji': dir_emoji[fvg['type']],
-                    'size': size_pct,
-                    'distance_pct': distance_pct,
-                    'in_zone': in_zone,
-                    'zone_type': zone_type,
-                    'distance_text': distance_text,
-                    'weight': tf_weights.get(tf_name, 1.0),
-                    'strength': fvg['strength']
-                })
-                
-                # Увеличиваем силу с весом таймфрейма
-                result['strength'] += fvg['strength'] * tf_weights.get(tf_name, 1.0)
+                df = dataframes[tf_name]
 
-        # ===== ВСТАВЬТЕ ЭТОТ БЛОК ЗДЕСЬ =====
-        # После сбора всех зон, перед фильтрацией
-        logger.info(f"  📊 Всего найдено FVG: {len(all_zones)}")
-        for zone in all_zones:
-            # Добавляем расстояние для сортировки если еще нет
-            if 'sort_distance' not in zone:
-                if zone['in_zone']:
-                    zone['sort_distance'] = 0
-                elif zone['min'] > current_price:
-                    zone['sort_distance'] = (zone['min'] - current_price) / current_price
-                else:
-                    zone['sort_distance'] = (current_price - zone['max']) / current_price
-            
-            logger.info(f"    FVG {zone['tf']}: {zone['min']:.6f}-{zone['max']:.6f}, расстояние {zone['sort_distance']*100:.1f}%")
-        # ===== КОНЕЦ БЛОКА =====
-        
-        # ===== ФИЛЬТРАЦИЯ ПО РАССТОЯНИЮ ДЛЯ ПРИЧИН =====
-        MAX_DISTANCE_PCT = 15.0
-        DISTANCE_THRESHOLDS = {
-            'monthly': 50.0,
-            'weekly': 30.0,
-            'daily': 20.0,
-            'four_hourly': 15.0,
-            'hourly': 10.0,
-            'current': 5.0
-        }
+                if df is None or df.empty or len(df) < 20:
+                    logger.info(f"    ⏭️ {tf_name}: недостаточно данных ({len(df) if df is not None else 0} свечей)")
+                    continue
+                
+                try:
+                    # Создаем временный SMC анализатор для этого ТФ
+                    smc_temp = SmartMoneyAnalyzer(SMC_SETTINGS)
+                    fvg_list = smc_temp.find_fair_value_gaps(df)
+                    
+                    logger.info(f"    🔍 {tf_name}: найдено {len(fvg_list)} FVG кандидатов")
+                    
+                    for fvg in fvg_list:
+                        # Проверяем, не закрыта ли зона
+                        if self._is_fvg_closed(df, fvg):
+                            logger.info(f"    ⏭️ {tf_name} FVG пропущен (закрыт)")
+                            continue
+                        
+                        # Проверяем, находится ли текущая цена в зоне FVG
+                        in_zone = (fvg['price_min'] <= current_price <= fvg['price_max'])
+                        
+                        # Рассчитываем расстояние до зоны
+                        if in_zone:
+                            distance_pct = 0
+                            distance_text = "в зоне"
+                            zone_type = "тест"
+                        elif current_price < fvg['price_min']:
+                            distance_pct = ((fvg['price_min'] - current_price) / current_price) * 100
+                            distance_text = f"выше на {distance_pct:.1f}%"
+                            zone_type = "сопротивление сверху"
+                        else:  # current_price > fvg['price_max']
+                            distance_pct = ((current_price - fvg['price_max']) / current_price) * 100
+                            distance_text = f"ниже на {distance_pct:.1f}%"
+                            zone_type = "поддержка снизу"
+                        
+                        # Логируем найденный FVG
+                        logger.info(f"    ✅ {tf_name} FVG: {fvg['price_min']:.6f}-{fvg['price_max']:.6f}, {distance_text}")
+                        
+                        # Форматируем цены зоны
+                        if fvg['price_min'] < 0.001:
+                            zone_str = f"{fvg['price_min']:.6f}-{fvg['price_max']:.6f}"
+                        elif fvg['price_min'] < 0.1:
+                            zone_str = f"{fvg['price_min']:.4f}-{fvg['price_max']:.4f}"
+                        else:
+                            zone_str = f"{fvg['price_min']:.2f}-{fvg['price_max']:.2f}"
+                        
+                        # Формируем сигнал
+                        size_pct = fvg.get('size', 0)
+                        tf_ru = tf_names_ru.get(tf_name, tf_name)
+                        direction = "бычий" if fvg['type'] == 'bullish' else "медвежий"
+                        
+                        signal_text = (f"FVG {tf_short[tf_name]}: {zone_str} "
+                                    f"(размер {size_pct:.2f}% {dir_emoji[fvg['type']]} {zone_type}, {distance_text})")
+                        
+                        result['has_fvg'] = True
+                        result['signals'].append(signal_text)
+                        
+                        # Сохраняем зону для графиков и анализа
+                        all_zones.append({
+                            'tf': tf_name,
+                            'tf_short': tf_short[tf_name],
+                            'tf_ru': tf_ru,
+                            'min': fvg['price_min'],
+                            'max': fvg['price_max'],
+                            'type': fvg['type'],
+                            'dir_emoji': dir_emoji[fvg['type']],
+                            'size': size_pct,
+                            'distance_pct': distance_pct,
+                            'in_zone': in_zone,
+                            'zone_type': zone_type,
+                            'distance_text': distance_text,
+                            'weight': tf_weights.get(tf_name, 1.0),
+                            'strength': fvg['strength']
+                        })
+                        
+                        # Увеличиваем силу с весом таймфрейма
+                        result['strength'] += fvg['strength'] * tf_weights.get(tf_name, 1.0)
+                        
+                except Exception as e:
+                    logger.error(f"    ❌ Ошибка при обработке {tf_name}: {e}")
+                    continue
 
-        filtered_zones = []
-        for zone in all_zones:
-            threshold = DISTANCE_THRESHOLDS.get(zone['tf'], MAX_DISTANCE_PCT)
+            # После сбора всех зон
+            logger.info(f"  📊 Всего найдено FVG: {len(all_zones)}")
             
-            if zone['distance_pct'] > threshold:
-                logger.info(f"    ⏭️ FVG {zone['tf']} пропущен - слишком далеко ({zone['distance_pct']:.1f}% > {threshold}%)")
-                continue
-            
-            filtered_zones.append(zone)
-            
-            # Добавляем в причины
-            signal_text = (f"FVG {zone['tf_short']}: {zone['min']:.4f}-{zone['max']:.4f} "
-                        f"(размер {zone['size']:.2f}% {zone['type']}, {zone['distance_text']})")
-            result['signals'].append(signal_text)
-            result['strength'] += zone['strength'] * zone['weight']
-
-        logger.info(f"  📊 Добавлено {len(result['signals'])} FVG в причины (из {len(all_zones)} найденных)")
-
-        # ===== ФИЛЬТРАЦИЯ ДЛЯ ГРАФИКА: ТОЛЬКО БЛИЖАЙШИЕ =====
-        if filtered_zones:
             # Добавляем расстояние для сортировки
-            zones_with_distance = []
-            for zone in filtered_zones:
+            for zone in all_zones:
                 if zone['in_zone']:
                     zone['sort_distance'] = 0
                 elif zone['min'] > current_price:
@@ -2995,21 +2947,48 @@ class MultiTimeframeAnalyzer:
                 else:
                     zone['sort_distance'] = (current_price - zone['max']) / current_price
                 
-                zones_with_distance.append(zone)
+                logger.info(f"    FVG {zone['tf']}: {zone['min']:.6f}-{zone['max']:.6f}, расстояние {zone['sort_distance']*100:.1f}%")
             
-            # Сортируем по расстоянию
-            zones_with_distance.sort(key=lambda z: z['sort_distance'])
+            # Фильтрация по расстоянию
+            MAX_DISTANCE_PCT = 15.0
+            DISTANCE_THRESHOLDS = {
+                'monthly': 50.0,
+                'weekly': 30.0,
+                'daily': 20.0,
+                'four_hourly': 15.0,
+                'hourly': 10.0,
+                'current': 5.0
+            }
+
+            filtered_zones = []
+            for zone in all_zones:
+                threshold = DISTANCE_THRESHOLDS.get(zone['tf'], MAX_DISTANCE_PCT)
+                
+                if zone['distance_pct'] > threshold:
+                    logger.info(f"    ⏭️ FVG {zone['tf']} пропущен - слишком далеко ({zone['distance_pct']:.1f}% > {threshold}%)")
+                    continue
+                
+                filtered_zones.append(zone)
+
+            logger.info(f"  📊 Добавлено {len(filtered_zones)} FVG после фильтрации")
+
+            # Фильтрация для графика
+            if filtered_zones:
+                filtered_zones.sort(key=lambda z: z['sort_distance'])
+                result['zones'] = filtered_zones[:2]
+                logger.info(f"  🎨 Для графика отобрано {len(result['zones'])} ближайших FVG")
             
-            # Берем ТОЛЬКО 2 ближайшие зоны для графика
-            result['zones'] = zones_with_distance[:2]
+            # Ограничиваем силу 100%
+            if result['strength'] > 100:
+                result['strength'] = 100
             
-            logger.info(f"  🎨 Для графика отобрано {len(result['zones'])} ближайших FVG из {len(filtered_zones)}")
-        
-        # Ограничиваем силу 100%
-        if result['strength'] > 100:
-            result['strength'] = 100
-        
-        return result
+            return result
+            
+        except Exception as e:
+            logger.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА в analyze_fvg_multi_timeframe: {e}")
+            import traceback
+            traceback.print_exc()
+            return {'has_fvg': False, 'signals': [], 'strength': 0, 'zones': []}
 
     def _is_fvg_closed(self, df: pd.DataFrame, fvg: Dict) -> bool:
         """
@@ -3042,6 +3021,9 @@ class MultiTimeframeAnalyzer:
                     close_count = 0
         
         return False
+    except Exception as e:
+        logger.error(f"Ошибка в _is_fvg_closed: {e}")
+        return True  # В случае ошибки считаем зону закрытой
 
     def analyze_ema_touch(self, df: pd.DataFrame, last: pd.Series) -> Dict:
         """Анализ касаний цены EMA уровней"""
