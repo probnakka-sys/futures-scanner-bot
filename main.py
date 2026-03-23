@@ -3021,7 +3021,7 @@ class MultiTimeframeAnalyzer:
                     close_count = 0
         
         return False
-    except Exception as e:
+        except Exception as e:
         logger.error(f"Ошибка в _is_fvg_closed: {e}")
         return True  # В случае ошибки считаем зону закрытой
 
