@@ -2808,6 +2808,7 @@ class MultiTimeframeAnalyzer:
         Анализ FVG на всех таймфреймах с фильтрацией по расстоянию
         """
         try:
+            logger.info(f"  🔍 Анализ FVG начат")
             result = {'has_fvg': False, 'signals': [], 'strength': 0, 'zones': []}
             all_zones = []
             
@@ -2982,6 +2983,7 @@ class MultiTimeframeAnalyzer:
             if result['strength'] > 100:
                 result['strength'] = 100
             
+            logger.info(f"  🔍 Анализ FVG начат")
             return result
             
         except Exception as e:
@@ -3680,13 +3682,21 @@ class MultiTimeframeAnalyzer:
         # ===== FVG МУЛЬТИТАЙМФРЕЙМОВЫЙ АНАЛИЗ =====
         fvg_analysis = {'has_fvg': False, 'signals': [], 'zones': []}
         if FEATURES['advanced']['smart_money']:
-            logger.info(f"  🔍 {symbol} - Анализ FVG на всех таймфреймах")
-            fvg_analysis = self.analyze_fvg_multi_timeframe(dataframes, last['close'])
-            if fvg_analysis['has_fvg']:
-                for signal_text in fvg_analysis['signals']:
-                    reasons.append(signal_text)
-                confidence += fvg_analysis['strength'] / 5
-                logger.info(f"  ✅ {symbol} - Найдено FVG: {len(fvg_analysis['signals'])} на разных ТФ")
+            try:
+                logger.info(f"  🔍 {symbol} - Анализ FVG на всех таймфреймах")
+                fvg_analysis = self.analyze_fvg_multi_timeframe(dataframes, last['close'])
+                logger.info(f"  📊 FVG анализ вернул: has_fvg={fvg_analysis.get('has_fvg', False)}, zones={len(fvg_analysis.get('zones', []))}")
+                if fvg_analysis['has_fvg']:
+                    for signal_text in fvg_analysis['signals']:
+                        reasons.append(signal_text)
+                    confidence += fvg_analysis['strength'] / 5
+                    logger.info(f"  ✅ {symbol} - Найдено FVG: {len(fvg_analysis['signals'])} на разных ТФ")
+            except Exception as e:
+                logger.error(f"❌ Ошибка в FVG анализе для {symbol}: {e}")
+                import traceback
+                traceback.print_exc()
+                # Продолжаем выполнение с пустым fvg_analysis
+                fvg_analysis = {'has_fvg': False, 'signals': [], 'zones': []}
         
         # ===== ПОДТВЕРЖДЕНИЕ ОТ МЛАДШИХ ТАЙМФРЕЙМОВ =====
         if MINOR_TF_SETTINGS['enabled']:
