@@ -2990,12 +2990,13 @@ class MultiTimeframeAnalyzer:
             traceback.print_exc()
             return {'has_fvg': False, 'signals': [], 'strength': 0, 'zones': []}
 
-    def _is_fvg_closed(self, df: pd.DataFrame, fvg: Dict) -> bool:
-        """
-        Проверка, закрыта ли зона FVG (БОЛЕЕ МЯГКАЯ ВЕРСИЯ)
-        FVG считается закрытым, только если цена ПОЛНОСТЬЮ прошла через зону
-        и закрепилась с другой стороны на 2+ свечах
-        """
+   def _is_fvg_closed(self, df: pd.DataFrame, fvg: Dict) -> bool:
+    """
+    Проверка, закрыта ли зона FVG (БОЛЕЕ МЯГКАЯ ВЕРСИЯ)
+    FVG считается закрытым, только если цена ПОЛНОСТЬЮ прошла через зону
+    и закрепилась с другой стороны на 2+ свечах
+    """
+    try:
         last_idx = len(df) - 1
         start_idx = max(0, last_idx - 100)  # увеличили до 100 свечей
         
@@ -3021,7 +3022,8 @@ class MultiTimeframeAnalyzer:
                     close_count = 0
         
         return False
-        except Exception as e:
+        
+    except Exception as e:
         logger.error(f"Ошибка в _is_fvg_closed: {e}")
         return True  # В случае ошибки считаем зону закрытой
 
