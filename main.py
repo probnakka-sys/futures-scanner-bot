@@ -2990,42 +2990,42 @@ class MultiTimeframeAnalyzer:
             traceback.print_exc()
             return {'has_fvg': False, 'signals': [], 'strength': 0, 'zones': []}
 
-   def _is_fvg_closed(self, df: pd.DataFrame, fvg: Dict) -> bool:
-    """
-    Проверка, закрыта ли зона FVG (БОЛЕЕ МЯГКАЯ ВЕРСИЯ)
-    FVG считается закрытым, только если цена ПОЛНОСТЬЮ прошла через зону
-    и закрепилась с другой стороны на 2+ свечах
-    """
-    try:
-        last_idx = len(df) - 1
-        start_idx = max(0, last_idx - 100)  # увеличили до 100 свечей
-        
-        close_count = 0
-        for i in range(start_idx, last_idx):
-            candle = df.iloc[i]
+    def _is_fvg_closed(self, df: pd.DataFrame, fvg: Dict) -> bool:
+        """
+        Проверка, закрыта ли зона FVG (БОЛЕЕ МЯГКАЯ ВЕРСИЯ)
+        FVG считается закрытым, только если цена ПОЛНОСТЬЮ прошла через зону
+        и закрепилась с другой стороны на 2+ свечах
+        """
+        try:
+            last_idx = len(df) - 1
+            start_idx = max(0, last_idx - 100)  # увеличили до 100 свечей
             
-            if fvg['type'] == 'bullish':
-                # Бычий FVG закрывается при падении НИЖЕ зоны
-                if candle['close'] < fvg['price_min']:
-                    close_count += 1
-                    if close_count >= 2:  # нужно 2 подтверждения
-                        return True
+            close_count = 0
+            for i in range(start_idx, last_idx):
+                candle = df.iloc[i]
+                
+                if fvg['type'] == 'bullish':
+                    # Бычий FVG закрывается при падении НИЖЕ зоны
+                    if candle['close'] < fvg['price_min']:
+                        close_count += 1
+                        if close_count >= 2:  # нужно 2 подтверждения
+                            return True
+                    else:
+                        close_count = 0  # сбрасываем, если вышли из зоны
                 else:
-                    close_count = 0  # сбрасываем, если вышли из зоны
-            else:
-                # Медвежий FVG закрывается при росте ВЫШЕ зоны
-                if candle['close'] > fvg['price_max']:
-                    close_count += 1
-                    if close_count >= 2:
-                        return True
-                else:
-                    close_count = 0
-        
-        return False
-        
-    except Exception as e:
-        logger.error(f"Ошибка в _is_fvg_closed: {e}")
-        return True  # В случае ошибки считаем зону закрытой
+                    # Медвежий FVG закрывается при росте ВЫШЕ зоны
+                    if candle['close'] > fvg['price_max']:
+                        close_count += 1
+                        if close_count >= 2:
+                            return True
+                    else:
+                        close_count = 0
+            
+            return False
+            
+        except Exception as e:
+            logger.error(f"Ошибка в _is_fvg_closed: {e}")
+            return True  # В случае ошибки считаем зону закрытой
 
     def analyze_ema_touch(self, df: pd.DataFrame, last: pd.Series) -> Dict:
         """Анализ касаний цены EMA уровней"""
