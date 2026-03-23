@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import websockets
+import gzip
 from typing import Dict, List, Optional, Callable
 from datetime import datetime, timedelta  # ✅ ДОБАВЛЕН timedelta
 import random
@@ -110,19 +111,28 @@ class BingXWebSocketManager:
         Обработка входящего сообщения
         """
         try:
+            # ✅ РАСПАКОВКА GZIP
+            if isinstance(message, bytes):
+                try:
+                    # Пробуем распаковать gzip
+                    decompressed = gzip.decompress(message)
+                    message = decompressed.decode('utf-8')
+                except:
+                    # Если не gzip, просто декодируем
+                    message = message.decode('utf-8', errors='ignore')
+            
             data = json.loads(message)
             
             # Проверяем, что это обновление цены
-            if 'dataType' in data and 'ticker' in data.get('dataType', ''):
+            if 'data' in data and 'c' in data.get('data', {}):
                 await self._process_ticker(data, symbols, callback)
             elif 'ping' in data:
-                # Отвечаем на ping
                 return
             else:
                 logger.debug(f"Получено сообщение: {data}")
                 
         except json.JSONDecodeError:
-            logger.error(f"Ошибка декодирования JSON: {message}")
+            logger.error(f"Ошибка декодирования JSON: {message[:200]}")
         except Exception as e:
             logger.error(f"Ошибка обработки сообщения: {e}")
     
