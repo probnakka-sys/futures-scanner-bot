@@ -3369,6 +3369,11 @@ class MultiTimeframeAnalyzer:
         """
         logger.info(f"🔄 generate_signal начал работу для {symbol}")
 
+        # ===== ДИАГНОСТИКА =====
+        logger.info(f"📊 ДИАГНОСТИКА: {symbol} - загружено {len(dataframes)} таймфреймов")
+        for tf_name in dataframes.keys():
+            logger.info(f"   - {tf_name}: {len(dataframes[tf_name]) if dataframes[tf_name] is not None else 0} свечей")
+
         global BREAKOUT_CONFIRMATION_SETTINGS
         
         if 'current' not in dataframes or dataframes['current'].empty:
@@ -4019,7 +4024,7 @@ class MultiTimeframeAnalyzer:
             logger.info(f"🎯 ПОТЕНЦИАЛЬНЫЙ СИГНАЛ: {symbol} - {direction} (уверенность {confidence:.1f}%)")
         else:
             logger.info(f"⏭️ {symbol} - НЕТ СИГНАЛА: direction={direction}, confidence={confidence:.1f}%")
-            
+
         logger.info(f"✅ generate_signal успешно завершен для {symbol}")
         return result
     
@@ -5405,6 +5410,11 @@ class MultiExchangeScannerBot:
     
     async def scan_exchange(self, name: str, fetcher: BaseExchangeFetcher) -> List[Dict]:
         logger.info(f"🔍 Сканирую {name}...")
+
+        # ===== ДОБАВЬТЕ ДИАГНОСТИКУ СЮДА =====
+        logger.info(f"📊 ДИАГНОСТИКА scan_exchange: name={name}, fetcher type={type(fetcher)}")
+        # ====================================
+
         signals = []
         
         try:
