@@ -4089,7 +4089,7 @@ class FastPumpScanner:
             from websocket_manager import BingXWebSocketManager
             self.ws_manager = BingXWebSocketManager(
                 os.getenv('BINGX_API_KEY'),
-                os.getenv('BINGX_SECRET_KEY')
+                os.getenv('BINGX_SECRET_KEY'),
                 telegram_bot  # ✅ ПЕРЕДАЕМ TELEGRAM_BOT
             )
             self.websocket_available = True
