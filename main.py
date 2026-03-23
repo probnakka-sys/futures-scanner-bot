@@ -3842,10 +3842,24 @@ class MultiTimeframeAnalyzer:
         bullish = sum(1 for r in reasons if any(k in r for k in bullish_keywords))
         bearish = sum(1 for r in reasons if any(k in r for k in bearish_keywords))
         
+        # ✅ ДОБАВЬТЕ НОРМАЛИЗАЦИЮ УВЕРЕННОСТИ
+        normalized_confidence = min(confidence, 100)  # ← ОГРАНИЧИВАЕМ ДО 100
+
         # Базовое направление от индикаторов
         base_direction = 'NEUTRAL'
+
+        # ✅ ДОБАВЬТЕ ЛОГИКУ ПО КЛЮЧЕВЫМ СЛОВАМ
+        if bullish > bearish and bullish > 0:
+            base_direction = 'LONG'
+            logger.info(f"  🎯 Направление по ключевым словам: LONG (бычьих: {bullish}, медвежьих: {bearish})")
+        elif bearish > bullish and bearish > 0:
+            base_direction = 'SHORT'
+            logger.info(f"  🎯 Направление по ключевым словам: SHORT (медвежьих: {bearish}, бычьих: {bullish})")
+
         if accumulation_analysis and accumulation_analysis.get('direction') and accumulation_analysis.get('has_accumulation'):
             base_direction = accumulation_analysis['direction']
+            logger.info(f"  🎯 Направление от накопления: {base_direction}")
+
         if trendline_breakout:
             if alignment.get['weekly_trend'] == 'НИСХОДЯЩИЙ' and last['rsi'] > 70:
                 # Пробой вверх при медвежьем тренде и перекупленности = ЛОВУШКА!
@@ -3854,6 +3868,8 @@ class MultiTimeframeAnalyzer:
                 confidence -= 20
             else:
                 base_direction = 'LONG'
+                logger.info(f"  🎯 Направление от пробоя: LONG")
+
         elif bullish > bearish and confidence >= MIN_CONFIDENCE:
             if alignment['weekly_trend'] == 'ВОСХОДЯЩИЙ':
                 base_direction = 'Разворот LONG'
