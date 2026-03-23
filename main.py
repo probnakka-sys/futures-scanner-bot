@@ -4015,6 +4015,11 @@ class MultiTimeframeAnalyzer:
         if accumulation_analysis:
             result['accumulation'] = accumulation_analysis
         
+        if direction != 'NEUTRAL' and confidence >= MIN_CONFIDENCE:
+            logger.info(f"🎯 ПОТЕНЦИАЛЬНЫЙ СИГНАЛ: {symbol} - {direction} (уверенность {confidence:.1f}%)")
+        else:
+            logger.info(f"⏭️ {symbol} - НЕТ СИГНАЛА: direction={direction}, confidence={confidence:.1f}%")
+            
         logger.info(f"✅ generate_signal успешно завершен для {symbol}")
         return result
     
