@@ -5028,54 +5028,8 @@ class MultiExchangeScannerBot:
         
         self.divergence = DivergenceAnalyzer() if FEATURES['advanced']['divergence'] else None
         self.imbalance = ImbalanceAnalyzer(IMBALANCE_SETTINGS) if FEATURES['advanced']['imbalance'] else None
-        self.liquidity = LiquidityAnalyzer(LIQUIDITY_SETTINGS) if FEATURES['advanced']['liquidity'] else None
+        self.liquidity = LiquidityAnalyzer(LIQUIDITY_SETTINGS) if FEATURES['advanced']['liquidity'] else None        
         
-        # ===== ИНИЦИАЛИЗАЦИЯ БИРЖ =====
-        from config import EXCHANGES, PROXY_SETTINGS
-        
-        # ===== ДИАГНОСТИКА =====
-        logger.info("=" * 50)
-        logger.info("🔍 ДИАГНОСТИКА self.fetchers:")
-        for name, fetcher in self.fetchers.items():
-            logger.info(f"   {name}: type = {type(fetcher)}, value = {fetcher}")
-        logger.info("=" * 50)
-
-        # Получаем прокси если включен
-        proxy = None
-        if PROXY_SETTINGS.get('enabled', False):
-            proxy = PROXY_SETTINGS.get('https', PROXY_SETTINGS.get('http'))
-            logger.info(f"🌐 Прокси включен: {proxy}")
-        
-        # BingX
-        if EXCHANGES['bingx']['enabled']:
-            self.fetchers['BingX'] = MultiExchangeFetcher(
-                'bingx',
-                EXCHANGES['bingx']['api_key'],
-                EXCHANGES['bingx']['api_secret'],
-                proxy
-            )
-            logger.info("✅ BingX инициализирован")
-        
-        # Bybit
-        if EXCHANGES['bybit']['enabled']:
-            self.fetchers['Bybit'] = MultiExchangeFetcher(
-                'bybit',
-                EXCHANGES['bybit']['api_key'],
-                EXCHANGES['bybit']['api_secret'],
-                proxy
-            )
-            logger.info("✅ Bybit инициализирован")
-        
-        # MEXC
-        if EXCHANGES['mexc']['enabled']:
-            self.fetchers['MEXC'] = MultiExchangeFetcher(
-                'mexc',
-                EXCHANGES['mexc']['api_key'],
-                EXCHANGES['mexc']['api_secret'],
-                proxy
-            )
-            logger.info("✅ MEXC инициализирован")
-
         # Инициализация дополнительных анализаторов
         if FEATURES['advanced']['fibonacci']:
             from config import FIBONACCI_SETTINGS
@@ -5098,8 +5052,8 @@ class MultiExchangeScannerBot:
             logger.info("✅ Анализатор накопления инициализирован")
         
         # Инициализация бирж
-        # if FEATURES['exchanges'].get('bingx', {}).get('enabled', False):
-        #     self.fetchers['BingX'] = BingxFetcher()
+        if FEATURES['exchanges'].get('bingx', {}).get('enabled', False):
+        self.fetchers['BingX'] = BingxFetcher()
                    
         # Инициализация статистики
         if STATS_SETTINGS['enabled'] and STATS_SETTINGS['stats_chat_id']:
