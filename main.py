@@ -5546,10 +5546,14 @@ class MultiExchangeScannerBot:
         return pump_signals
     
     async def send_signal(self, signal: Dict, pump_only: bool = False):
+        logger.info(f"📤 ОТПРАВКА СИГНАЛА: {signal['symbol']} - {signal['direction']}")
+        
         if pump_only and not signal.get('pump_dump'):
+            logger.info(f"⏭️ Пропущен (pump_only)")
             return
         
         if signal['confidence'] < MIN_CONFIDENCE:
+            logger.info(f"⏭️ Низкая уверенность: {signal['confidence']}% < {MIN_CONFIDENCE}%")
             return
         
         coin = self.extract_coin(signal['symbol'])
