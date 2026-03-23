@@ -5053,7 +5053,7 @@ class MultiExchangeScannerBot:
         
         # Инициализация бирж
         if FEATURES['exchanges'].get('bingx', {}).get('enabled', False):
-        self.fetchers['BingX'] = BingxFetcher()
+            self.fetchers['BingX'] = BingxFetcher()
                    
         # Инициализация статистики
         if STATS_SETTINGS['enabled'] and STATS_SETTINGS['stats_chat_id']:
