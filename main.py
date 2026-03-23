@@ -4090,6 +4090,7 @@ class FastPumpScanner:
             self.ws_manager = BingXWebSocketManager(
                 os.getenv('BINGX_API_KEY'),
                 os.getenv('BINGX_SECRET_KEY')
+                telegram_bot  # ✅ ПЕРЕДАЕМ TELEGRAM_BOT
             )
             self.websocket_available = True
             logger.info("✅ WebSocket менеджер инициализирован")
@@ -4270,19 +4271,16 @@ class FastPumpScanner:
         """
         symbol = signal_data['symbol']
 
-        # ✅ Запоминаем, что сигнал отправлен
         if not hasattr(self, 'ws_signals_sent'):
             self.ws_signals_sent = set()
         
         self.ws_signals_sent.add(symbol)
-        # Через 60 секунд удаляем из памяти
         asyncio.create_task(self._remove_from_ws_cache(symbol, 60))
 
         movement = signal_data['movement']
         coin = symbol.split('/')[0].replace('USDT', '')
         is_shitcoin = signal_data.get('is_shitcoin', False)
         
-        # Эмодзи для щиткоинов - ⚡, для мейджоров - 🚀
         if is_shitcoin:
             direction_emoji = "⚡"
             coin_type = " [ЩИТКОИН]"
@@ -4296,20 +4294,21 @@ class FastPumpScanner:
             f"💰 Цена: {signal_data['price']:.6f}"
         )
         
-        # Создаем простую клавиатуру
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        from config import PUMP_CHAT_ID
+        
         keyboard = InlineKeyboardMarkup([[
             InlineKeyboardButton(f"📋 Копировать {coin}", callback_data=f"copy_{coin}")
         ]])
         
-        # Отправляем в памп-группу
         try:
-            await self.fetcher.telegram_bot.send_message(
+            await self.telegram_bot.send_message(
                 chat_id=PUMP_CHAT_ID,
                 text=msg,
                 parse_mode='HTML',
                 reply_markup=keyboard
             )
-            logger.info(f"⚡ Отправлен мгновенный сигнал для {symbol} (щиткоин: {is_shitcoin})")
+            logger.info(f"⚡ Отправлен мгновенный сигнал для {symbol}")
         except Exception as e:
             logger.error(f"Ошибка отправки мгновенного сигнала: {e}")
     
@@ -4379,7 +4378,7 @@ class FastPumpScanner:
                 
                 # Отправляем подтвержденный сигнал
                 try:
-                    await self.fetcher.telegram_bot.send_message(
+                    await self.telegram_bot.send_message(
                         chat_id=PUMP_CHAT_ID,
                         text=f"✅ ПОДТВЕРЖДЕНО\n\n{msg}",
                         parse_mode='HTML',
