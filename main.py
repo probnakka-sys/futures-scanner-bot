@@ -2430,16 +2430,18 @@ class MultiTimeframeAnalyzer:
         return df
     
     def analyze_timeframe_alignment(self, dataframes: Dict[str, pd.DataFrame]) -> Dict:
-        """Анализ согласованности трендов на разных таймфреймах"""
+        """Анализ согласованности трендов на разных таймфреймах (включая младшие)"""
         alignment = {
             'trend_alignment': 0,
+            'signals': [],
+            'trends': {},
+            # Добавляем ключи для совместимости со старым кодом
             'current_trend': None,
             'hourly_trend': None,
             'four_hourly_trend': None,
             'daily_trend': None,
             'weekly_trend': None,
             'monthly_trend': None,
-            'signals': []
         }
         
         # Словарь для перевода
@@ -2486,6 +2488,20 @@ class MultiTimeframeAnalyzer:
             if pd.notna(last.get('ema_9')) and pd.notna(last.get('ema_21')):
                 trend = 'ВОСХОДЯЩИЙ' if last['ema_9'] > last['ema_21'] else 'НИСХОДЯЩИЙ'
                 alignment['trends'][tf_name] = trend
+                
+                # Сохраняем в отдельные поля для совместимости со старым кодом
+                if tf_name == 'current':
+                    alignment['current_trend'] = trend
+                elif tf_name == 'hourly':
+                    alignment['hourly_trend'] = trend
+                elif tf_name == 'four_hourly':
+                    alignment['four_hourly_trend'] = trend
+                elif tf_name == 'daily':
+                    alignment['daily_trend'] = trend
+                elif tf_name == 'weekly':
+                    alignment['weekly_trend'] = trend
+                elif tf_name == 'monthly':
+                    alignment['monthly_trend'] = trend
                 
                 # Для младших ТФ (1м, 3м, 5м) — только для информации
                 if tf_name in ['1m', '3m', '5m'] and MINOR_TF_SETTINGS['enabled']:
