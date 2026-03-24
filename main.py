@@ -68,14 +68,8 @@ from config import (
     SCAN_MODE,
     SMART_REPEAT_SETTINGS,
     PUMP_DUMP_FILTER,
-    WEBSOCKET_ANALYSIS_SETTINGS,
-    FAKEOUT_SETTINGS,
-    TIMEFRAME_WEIGHTS,
-    EMA_TOUCH_SETTINGS,
-    BREAKOUT_CONFIRMATION_SETTINGS
+    WEBSOCKET_ANALYSIS_SETTINGS
 )
-
-# from config import BREAKOUT_CONFIRMATION_SETTINGS
 
 # Импорт системы статистики
 from signal_stats import SignalStatistics
@@ -574,30 +568,29 @@ class TrendLineAnalyzer:
 # ============== ОТСЛЕЖИВАНИЕ ПРОБОЕВ ==============
 
 class BreakoutTracker:
-    """Отслеживание пробоев с комбинированным подтверждением"""
+    """Отслеживание пробоев и их закрепления"""
     
     def __init__(self):
-        self.potential_breakouts = {}  # отслеживаем потенциальные пробои
+        self.potential_breakouts = {}  # {symbol_tf: {'line': line, 'first_cross_time': time, 'confirmations': 0}}
         self.confirmed_breakouts = set()
     
     def check_breakout_confirmation(self, symbol: str, tf: str, df: pd.DataFrame, line: Dict, current_price: float, 
-                                   required_candles: int = 3, required_percent: float = 0.5,
-                                   volume_confirmation: float = 2.0, confirmation_mode: str = 'any_two') -> Optional[Dict]:
+                                   required_candles: int = 3, required_percent: float = 0.5) -> Optional[Dict]:
         """
-        Комбинированная проверка закрепления пробоя
-        - required_candles: сколько свечей нужно
-        - required_percent: на сколько процентов нужно закрепиться
-        - volume_confirmation: какой объем нужен для подтверждения (x от среднего)
-        - confirmation_mode: 'any_two', 'all', 'any_one'
+        Проверка закрепления пробоя
+        required_candles: сколько свечей нужно для подтверждения
+        required_percent: на сколько процентов нужно закрепиться
         """
         key = f"{symbol}_{tf}_{id(line)}"
         
         # Определяем направление пробоя
         if line['type'] == 'resistance':
+            # Пробой сопротивления вверх
             is_broken = current_price > line['current_level']
             confirmation_price = line['current_level'] * (1 + required_percent/100)
             direction = "вверх"
         else:
+            # Пробой поддержки вниз
             is_broken = current_price < line['current_level']
             confirmation_price = line['current_level'] * (1 - required_percent/100)
             direction = "вниз"
@@ -605,76 +598,47 @@ class BreakoutTracker:
         # Если пробоя нет
         if not is_broken:
             if key in self.potential_breakouts:
+                # Цена вернулась - сбрасываем счетчик
                 del self.potential_breakouts[key]
             return None
         
-        # Есть пробой
+        # Если пробой есть
         if key not in self.potential_breakouts:
             # Первый раз видим пробой
-            avg_volume = df['volume'].rolling(20).mean().iloc[-1] if len(df) > 20 else df['volume'].mean()
-            current_volume = df['volume'].iloc[-1]
-            volume_ratio = current_volume / avg_volume if avg_volume > 0 else 1
-            
             self.potential_breakouts[key] = {
                 'line': line,
                 'first_cross_time': datetime.now(),
                 'first_cross_price': current_price,
                 'direction': direction,
-                'confirmations': {
-                    'candles': 1,
-                    'price': current_price >= confirmation_price if direction == 'вверх' else current_price <= confirmation_price,
-                    'volume': volume_ratio >= volume_confirmation
-                },
-                'max_price': current_price,
-                'min_price': current_price,
-                'tf': tf,
-                'volume_ratio': volume_ratio
+                'confirmations': 1,
+                'tf': tf
             }
-            return None
+            return None  # еще рано
         
         # Уже отслеживаем этот пробой
         tracker = self.potential_breakouts[key]
         
-        # Обновляем максимум/минимум
-        tracker['max_price'] = max(tracker['max_price'], current_price)
-        tracker['min_price'] = min(tracker['min_price'], current_price)
-        
-        # Обновляем подтверждения
-        tracker['confirmations']['candles'] += 1
-        
-        if direction == 'вверх':
-            tracker['confirmations']['price'] = current_price >= confirmation_price
+        # Проверяем, закрепилась ли цена
+        if direction == "вверх":
+            if current_price >= confirmation_price:
+                tracker['confirmations'] += 1
+            else:
+                # Цена вернулась - сбрасываем
+                del self.potential_breakouts[key]
+                return None
         else:
-            tracker['confirmations']['price'] = current_price <= confirmation_price
+            if current_price <= confirmation_price:
+                tracker['confirmations'] += 1
+            else:
+                del self.potential_breakouts[key]
+                return None
         
-        # Считаем количество выполненных условий
-        conditions_met = 0
-        if tracker['confirmations']['candles'] >= required_candles:
-            conditions_met += 1
-        if tracker['confirmations']['price']:
-            conditions_met += 1
-        if tracker['confirmations']['volume']:
-            conditions_met += 1
-        
-        # Проверяем по выбранному режиму
-        should_confirm = False
-        if confirmation_mode == 'all':
-            should_confirm = conditions_met == 3
-        elif confirmation_mode == 'any_two':
-            should_confirm = conditions_met >= 2
-        elif confirmation_mode == 'any_one':
-            should_confirm = conditions_met >= 1
-        
-        if should_confirm:
+        # Проверяем, достаточно ли подтверждений
+        if tracker['confirmations'] >= required_candles:
             # Пробой подтвержден!
             self.confirmed_breakouts.add(key)
             
-            # Рассчитываем размер движения
-            if direction == 'вверх':
-                move_percent = ((tracker['max_price'] - line['current_level']) / line['current_level']) * 100
-            else:
-                move_percent = ((line['current_level'] - tracker['min_price']) / line['current_level']) * 100
-            
+            # Формируем результат
             result = {
                 'line': line,
                 'tf': tf,
@@ -682,14 +646,12 @@ class BreakoutTracker:
                 'touches': line['touches'],
                 'breakout_price': tracker['first_cross_price'],
                 'current_price': current_price,
-                'move_percent': move_percent,
                 'confirmations': tracker['confirmations'],
-                'message': (f"✅ ПРОБОЙ {direction} на {tf} ПОДТВЕРЖДЕН! "
-                           f"(свечей: {tracker['confirmations']['candles']}/{required_candles}, "
-                           f"закрепление: {'✅' if tracker['confirmations']['price'] else '❌'}, "
-                           f"объем: x{tracker['volume_ratio']:.1f})")
+                'message': (f"✅ Пробой {direction} на {tf} ПОДТВЕРЖДЕН! "
+                           f"({tracker['confirmations']} свечей, {line['touches']} касаний)")
             }
             
+            # Удаляем из отслеживания
             del self.potential_breakouts[key]
             return result
         
@@ -705,40 +667,38 @@ class FakeoutDetector:
         self.confirmed_fakeouts = set()  # подтвержденные ложные пробои
     
     def check_fakeout(self, symbol: str, tf: str, df: pd.DataFrame, line: Dict, current_price: float,
-                     breakout_distance: float = None,  # теперь берется из конфига
-                     retrace_threshold: float = None,
-                     confirmation_candles: int = None) -> Optional[Dict]:
+                     breakout_distance: float = 1.0,  # на сколько пробили (минимум 1%)
+                     retrace_threshold: float = 0.7,  # какой возврат считаем ложным (70% от пробоя)
+                     confirmation_candles: int = 2) -> Optional[Dict]:
         """
-        Проверка на ложный пробой с настройками из конфига
+        Проверка на ложный пробой
+        
+        breakout_distance: минимальный размер пробоя (1%)
+        retrace_threshold: какой % от пробоя должен вернуться (70%)
+        confirmation_candles: сколько свечей для подтверждения
         """
-        from config import FAKEOUT_SETTINGS
-        
-        # Берем настройки из конфига, если не переданы явно
-        if breakout_distance is None:
-            breakout_distance = FAKEOUT_SETTINGS.get('breakout_distance', 2.0)
-        if retrace_threshold is None:
-            retrace_threshold = FAKEOUT_SETTINGS.get('retrace_threshold', 70) / 100
-        if confirmation_candles is None:
-            confirmation_candles = FAKEOUT_SETTINGS.get('confirmation_candles', 2)
-        
         key = f"{symbol}_{tf}_{id(line)}"
         
         # Определяем тип линии
         if line['type'] == 'resistance':
+            # Пробой сопротивления вверх
             is_breakout = current_price > line['current_level']
             breakout_direction = "вверх"
         else:
+            # Пробой поддержки вниз
             is_breakout = current_price < line['current_level']
             breakout_direction = "вниз"
         
         # Если пробоя нет - ничего не делаем
         if not is_breakout:
             if key in self.potential_fakeouts:
+                # Если отслеживали, но пробой исчез - удаляем
                 del self.potential_fakeouts[key]
             return None
         
         # Есть пробой
         if key not in self.potential_fakeouts:
+            # Первый раз видим пробой - запоминаем
             breakout_price = current_price
             breakout_size = abs((current_price - line['current_level']) / line['current_level'] * 100)
             
@@ -774,10 +734,12 @@ class FakeoutDetector:
         
         # Анализируем, был ли это ложный пробой
         if line['type'] == 'resistance':
+            # Для пробоя вверх: считаем откат от максимума
             max_price = tracker['max_price']
             current_retrace = ((max_price - current_price) / (max_price - line['current_level'])) * 100
             
             if current_retrace >= retrace_threshold * 100:
+                # Цена вернулась к уровню или ниже - это ложный пробой!
                 fakeout = {
                     'type': 'fakeout',
                     'direction': 'вверх',
@@ -797,6 +759,7 @@ class FakeoutDetector:
                 del self.potential_fakeouts[key]
                 return fakeout
         else:
+            # Для пробоя вниз: считаем откат от минимума
             min_price = tracker['min_price']
             current_retrace = ((current_price - min_price) / (line['current_level'] - min_price)) * 100
             
@@ -834,12 +797,6 @@ class ChartGenerator:
         
     def create_chart(self, df: pd.DataFrame, signal: Dict, coin: str, timeframe: str = '15m') -> BytesIO:
         """Создание графика с ценой, индикаторами и целями"""
-
-        import matplotlib.font_manager as fm
-        # Подавляем предупреждения о шрифтах
-        import warnings
-        warnings.filterwarnings('ignore', category=UserWarning, module='matplotlib')
-
         plt.style.use(self.style)
         
         plot_df = df.tail(100).copy()
@@ -2306,8 +2263,7 @@ class MultiTimeframeAnalyzer:
         self.volume_profile = None
         self.accumulation = None
         self.imbalance = ImbalanceAnalyzer(IMBALANCE_SETTINGS) if FEATURES['advanced']['imbalance'] else None
-        self.breakout_tracker = BreakoutTracker()
-
+        
         # Словарь для перевода таймфреймов
         self.tf_translation = {
             'monthly': 'месячный',
@@ -2401,19 +2357,10 @@ class MultiTimeframeAnalyzer:
                 alignment[f'{tf_name}_trend'] = trend
                 
                 # Добавляем сигнал для сильных трендов (БЕЗ ЭМОДЗИ)
-                if tf_name in ['weekly', 'monthly']:
-                    # Проверяем, есть ли колонка ema_200
-                    if 'ema_200' in df.columns and pd.notna(last.get('ema_200')):
-                        if last['ema_9'] > last['ema_200']:
-                            alignment['signals'].append(f"{tf_names[tf_name].upper()} ТРЕНД ВОСХОДЯЩИЙ (выше EMA 200)")
-                        elif last['ema_9'] < last['ema_200']:
-                            alignment['signals'].append(f"{tf_names[tf_name].upper()} ТРЕНД НИСХОДЯЩИЙ (ниже EMA 200)")
-                    # Fallback на EMA 50 если EMA 200 нет (на всякий случай)
-                    elif 'ema_50' in df.columns:
-                        if last['ema_9'] > last['ema_50']:
-                            alignment['signals'].append(f"{tf_names[tf_name].upper()} ТРЕНД ВОСХОДЯЩИЙ (выше EMA 50)")
-                        elif last['ema_9'] < last['ema_50']:
-                            alignment['signals'].append(f"{tf_names[tf_name].upper()} ТРЕНД НИСХОДЯЩИЙ (ниже EMA 50)")
+                if tf_name in ['weekly', 'monthly'] and last['ema_9'] > last['ema_200']:
+                    alignment['signals'].append(f"{tf_names[tf_name].upper()} ТРЕНД ВОСХОДЯЩИЙ (выше EMA 200)")
+                elif tf_name in ['weekly', 'monthly'] and last['ema_9'] < last['ema_200']:
+                    alignment['signals'].append(f"{tf_names[tf_name].upper()} ТРЕНД НИСХОДЯЩИЙ (ниже EMA 200)")
         
         # Считаем согласованность
         trends = []
@@ -2490,10 +2437,6 @@ class MultiTimeframeAnalyzer:
                 continue
             
             df = dataframes[tf_name]
-
-            if df is None or df.empty or len(df) < 20:
-                logger.info(f"    ⏭️ {tf_name}: недостаточно данных ({len(df) if df is not None else 0} свечей)")
-                continue
             
             # Создаем временный SMC анализатор для этого ТФ
             smc_temp = SmartMoneyAnalyzer(SMC_SETTINGS)
@@ -2642,19 +2585,19 @@ class MultiTimeframeAnalyzer:
 
     def _is_fvg_closed(self, df: pd.DataFrame, fvg: Dict) -> bool:
         """
-        Проверка, закрыта ли зона FVG (БОЛЕЕ МЯГКАЯ ВЕРСИЯ)
-        FVG считается закрытым, только если цена ПОЛНОСТЬЮ прошла через зону
-        и закрепилась с другой стороны на 2+ свечах
+        Проверка, закрыта ли зона FVG
         """
         last_idx = len(df) - 1
-        start_idx = max(0, last_idx - 100)  # увеличили до 100 свечей
+        
+        # Увеличиваем с 50 до 200 свечей
+        start_idx = max(0, last_idx - 200)  # проверяем последние 200 свечей
         
         close_count = 0
         for i in range(start_idx, last_idx):
             candle = df.iloc[i]
             
             if fvg['type'] == 'bullish':
-                # Бычий FVG закрывается при падении НИЖЕ зоны
+                # Проверяем, закрылась ли свеча НИЖЕ зоны
                 if candle['close'] < fvg['price_min']:
                     close_count += 1
                     if close_count >= 2:  # нужно 2 подтверждения
@@ -2662,7 +2605,6 @@ class MultiTimeframeAnalyzer:
                 else:
                     close_count = 0  # сбрасываем, если вышли из зоны
             else:
-                # Медвежий FVG закрывается при росте ВЫШЕ зоны
                 if candle['close'] > fvg['price_max']:
                     close_count += 1
                     if close_count >= 2:
@@ -2672,130 +2614,6 @@ class MultiTimeframeAnalyzer:
         
         return False
 
-    def analyze_ema_touch(self, df: pd.DataFrame, last: pd.Series) -> Dict:
-        """Анализ касаний цены EMA уровней"""
-        result = {'touches': [], 'signals': []}
-        
-        # Защита от пустых данных
-        if df is None or df.empty or last is None:
-            return result
-        
-        for period in [9, 14, 21, 28, 50, 100]:
-            ema_col = f'ema_{period}'
-            if ema_col not in df.columns:
-                continue
-            
-            ema_value = last.get(ema_col)
-            if pd.isna(ema_value):
-                continue
-            
-            price = last.get('close')
-            if pd.isna(price):
-                continue
-            
-            distance = abs(price - ema_value) / price * 100
-            
-            if distance < 0.5:
-                result['touches'].append(period)
-                
-                if price > ema_value:
-                    result['signals'].append(f"📊 Цена у EMA {period} (поддержка)")
-                else:
-                    result['signals'].append(f"📊 Цена у EMA {period} (сопротивление)")
-        
-        return result
-
-    def analyze_ema_touch_multi_timeframe(self, dataframes: Dict[str, pd.DataFrame], current_price: float) -> Dict:
-        """
-        Анализ касаний EMA на всех таймфреймах с настройками из конфига
-        """
-        from config import EMA_TOUCH_SETTINGS, TIMEFRAME_WEIGHTS
-        
-        result = {'touches': [], 'signals': [], 'strength': 0}
-        
-        if not EMA_TOUCH_SETTINGS.get('enabled', True):
-            return result
-        
-        periods = EMA_TOUCH_SETTINGS.get('periods', [9, 14, 21, 28, 50, 100])
-        distance_threshold = EMA_TOUCH_SETTINGS.get('distance_threshold', 0.5)
-        max_signals = EMA_TOUCH_SETTINGS.get('max_signals', 3)
-        weights = EMA_TOUCH_SETTINGS.get('weights', {})
-        
-        # Словарь для перевода таймфреймов
-        tf_short = {
-            '1m': '1м',
-            '3m': '3м',
-            '5m': '5м',
-            'current': '15м',
-            '30m': '30м',
-            'hourly': '1ч',
-            'four_hourly': '4ч',
-            'daily': '1д',
-            'weekly': '1н',
-            'monthly': '1м'
-        }
-        
-        # Приоритет таймфреймов (от старших к младшим)
-        tf_order = ['monthly', 'weekly', 'daily', 'four_hourly', 'hourly', '30m', 'current', '5m', '3m', '1m']
-        
-        for tf_name in tf_order:
-            if tf_name not in dataframes or dataframes[tf_name] is None:
-                continue
-            
-            df = dataframes[tf_name]
-            if df.empty:
-                continue
-            
-            last = df.iloc[-1]
-            tf_short_name = tf_short.get(tf_name, tf_name)
-            weight = weights.get(tf_name, TIMEFRAME_WEIGHTS.get(tf_name, 5))
-            
-            for period in periods:
-                ema_col = f'ema_{period}'
-                if ema_col not in df.columns:
-                    continue
-                
-                ema_value = last[ema_col]
-                price = last['close']
-                distance = abs(price - ema_value) / price * 100
-                
-                if distance < distance_threshold:
-                    if price > ema_value:
-                        touch_type = "поддержка"
-                        direction_bias = "LONG"
-                    else:
-                        touch_type = "сопротивление"
-                        direction_bias = "SHORT"
-                    
-                    # Сила касания (чем больше период, тем сильнее)
-                    strength = int(weight * (period / 50))
-                    
-                    result['touches'].append({
-                        'tf': tf_short_name,
-                        'period': period,
-                        'type': touch_type,
-                        'distance': distance,
-                        'strength': strength,
-                        'price': price,
-                        'ema': ema_value
-                    })
-                    
-                    signal_text = f"📊 Цена у EMA {period} на {tf_short_name} ({touch_type}, {distance:.1f}%)"
-                    result['signals'].append(signal_text)
-                    result['strength'] += strength
-                    
-                    logger.info(f"    📊 {tf_name} EMA {period}: {touch_type} (дистанция {distance:.2f}%)")
-        
-        # Ограничиваем количество сигналов в причинах
-        if len(result['signals']) > max_signals:
-            result['signals'] = result['signals'][:max_signals]
-        
-        # Ограничиваем силу
-        if result['strength'] > 100:
-            result['strength'] = 100
-        
-        return result
-    
     def calculate_volume_spike(self, df: pd.DataFrame) -> Dict:
         """Поиск свечей с аномальным объемом"""
         from config import VOLUME_ANALYSIS_SETTINGS
@@ -2997,8 +2815,6 @@ class MultiTimeframeAnalyzer:
         Генерация торгового сигнала на основе всех индикаторов
         """
         logger.info(f"🔄 generate_signal начал работу для {symbol}")
-
-        global BREAKOUT_CONFIRMATION_SETTINGS
         
         if 'current' not in dataframes or dataframes['current'].empty:
             logger.warning(f"⚠️ Нет current данных для {symbol}")
@@ -3155,39 +2971,6 @@ class MultiTimeframeAnalyzer:
                         direction = 'SHORT 📉 (ловушка быков)'
                     logger.info(f"  ⚠️ {symbol} - Обнаружен потенциальный ложный пробой!")
         
-        # ===== ПОДТВЕРЖДЕНИЕ ПРОБОЕВ =====
-        if FEATURES['advanced']['patterns'] and BREAKOUT_CONFIRMATION_SETTINGS['enabled']:
-            logger.info(f"  🔍 {symbol} - Проверка подтвержденных пробоев")
-            
-            from config import BREAKOUT_CONFIRMATION_SETTINGS
-            
-            current_tf = TIMEFRAMES.get('current', '15m')
-            trend_analyzer = TrendLineAnalyzer()
-            trend_lines = trend_analyzer.find_trend_lines(df, touch_count=3)
-            
-            for line in trend_lines:
-                confirmed = self.breakout_tracker.check_breakout_confirmation(
-                    symbol, current_tf, df, line, last['close'],
-                    required_candles=BREAKOUT_CONFIRMATION_SETTINGS['required_candles'],
-                    required_percent=BREAKOUT_CONFIRMATION_SETTINGS['required_percent'],
-                    volume_confirmation=BREAKOUT_CONFIRMATION_SETTINGS['volume_confirmation'],
-                    confirmation_mode=BREAKOUT_CONFIRMATION_SETTINGS['confirmation_mode']
-                )
-                
-                if confirmed:
-                    reasons.append(f"✅ {confirmed['message']}")
-                    confidence += 30
-                    signal_type = 'confirmed_breakout'
-                    
-                    # Определяем направление
-                    if confirmed['direction'] == 'вверх':
-                        direction = 'LONG 📈 (подтвержденный пробой)'
-                    else:
-                        direction = 'SHORT 📉 (подтвержденный пробой)'
-                    
-                    logger.info(f"  ✅ {symbol} - Подтвержденный пробой! +30 confidence")
-                    break  # берем первый подтвержденный пробой
-
         # ===== АНАЛИЗ КОНВЕРГЕНЦИИ УРОВНЕЙ =====
         if FEATURES['advanced']['patterns']:
             logger.info(f"  🔍 {symbol} - Анализ конвергенции уровней")
@@ -3296,20 +3079,6 @@ class MultiTimeframeAnalyzer:
                     reasons.append(signal_text)
                 confidence += fvg_analysis['strength'] / 5
                 logger.info(f"  ✅ {symbol} - Найдено FVG: {len(fvg_analysis['signals'])} на разных ТФ")
-        
-        # ===== АНАЛИЗ КАСАНИЙ EMA =====
-        ema_touch = self.analyze_ema_touch(df, last)
-        for signal in ema_touch['signals']:
-            reasons.append(signal)
-            confidence += 5  # небольшой бонус
-        
-        # ===== АНАЛИЗ КАСАНИЙ EMA НА ВСЕХ ТАЙМФРЕЙМАХ =====
-        ema_touch_analysis = self.analyze_ema_touch_multi_timeframe(dataframes, last['close'])
-        if ema_touch_analysis['signals']:
-            for signal in ema_touch_analysis['signals']:
-                reasons.append(signal)
-            confidence += ema_touch_analysis['strength'] / 10
-            logger.info(f"  ✅ {symbol} - Найдено {len(ema_touch_analysis['signals'])} касаний EMA")        
         
         # ===== АНАЛИЗ ОБЪЕМОВ =====
         if VOLUME_ANALYSIS_SETTINGS['enabled']:
@@ -3420,7 +3189,6 @@ class MultiTimeframeAnalyzer:
                 base_direction = 'SHORT'
         
         direction = base_direction
-        logger.info(f"  🎯 [1] Направление после базового определения: {direction}")
         
         # ===== АНАЛИЗ FVG ДЛЯ КОРРЕКЦИИ УВЕРЕННОСТИ =====
         if fvg_analysis['has_fvg'] and 'zones' in fvg_analysis:
@@ -3456,7 +3224,6 @@ class MultiTimeframeAnalyzer:
             if direction == 'LONG' and fvg_above >= 3:
                 old_direction = direction
                 direction = 'SHORT 📉 (сильное сопротивление FVG)'
-                logger.info(f"  🎯 [2] Смена направления в FVG: {old_direction} → {direction}")
                 reasons.append(f"🔻 Смена направления: {old_direction} → SHORT (FVG сверху)")
                 confidence += 25
                 logger.info(f"  🔄 Смена направления из-за {fvg_above} FVG сверху")
@@ -3465,7 +3232,6 @@ class MultiTimeframeAnalyzer:
             elif direction == 'SHORT' and fvg_below >= 3:
                 old_direction = direction
                 direction = 'LONG 📈 (сильная поддержка FVG)'
-                logger.info(f"  🎯 [2] Смена направления в FVG: {old_direction} → {direction}")
                 reasons.append(f"🔺 Смена направления: {old_direction} → LONG (FVG снизу)")
                 confidence += 25
                 logger.info(f"  🔄 Смена направления из-за {fvg_below} FVG снизу")
@@ -3492,12 +3258,8 @@ class MultiTimeframeAnalyzer:
                 reasons.append(f"⚠️ {fvg_below} {zone_word} FVG снизу (поддержка)")
                 confidence -= fvg_below * 3
         
-        logger.info(f"  🎯 [4] Направление после FVG анализа: {direction}")
-
         logger.info(f"  📊 {symbol} - Направление: {direction}, Уверенность: {confidence}")
         
-        logger.info(f"  🎯 [5] Направление перед проверкой NEUTRAL: {direction}")
-
         if direction == 'NEUTRAL':
             logger.info(f"⏭️ NEUTRAL сигнал для {symbol}")
             return None
@@ -3543,7 +3305,6 @@ class MultiTimeframeAnalyzer:
             'exchange': exchange,
             'price': current_price,
             'direction': direction,
-            'atr': atr,
             'signal_type': signal_type,
             'signal_power': self._get_power_text(confidence),
             'confidence': round(confidence, 1),
@@ -3713,13 +3474,9 @@ class FastPumpScanner:
     
     async def handle_instant_signal(self, signal_type: str, symbol: str, price: float, movement: Dict):
         """
-        Обработка мгновенного сигнала от WebSocket с гибкими настройками
+        Обработка мгновенного сигнала от WebSocket с разными порогами
         """
         try:
-            from config import PUMP_MECHANISM_SETTINGS
-            
-            mode = PUMP_MECHANISM_SETTINGS.get('mode', 'new_only')
-            
             # Определяем, щиткоин или нет
             is_shitcoin = False
             try:
@@ -3730,37 +3487,19 @@ class FastPumpScanner:
             except:
                 pass
             
-            # ===== НОВЫЙ МЕХАНИЗМ (уже проверил в _check_instant_movement) =====
-            new_passed = True  # новый механизм уже проверил движение
+            # ✅ Берем пороги из настроек (не из self)
+            if is_shitcoin:
+                threshold = self.settings.get('shitcoin_instant_threshold', 1.5)
+                coin_type = "Щиткоин"
+            else:
+                threshold = self.settings.get('instant_threshold', 2.0)
+                coin_type = "Мейджор"
             
-            # ===== СТАРЫЙ МЕХАНИЗМ (проверяем порог) =====
-            old_passed = False
-            if mode in ['old_only', 'both']:
-                if is_shitcoin:
-                    threshold = self.settings.get('shitcoin_instant_threshold', 1.5)
-                else:
-                    threshold = self.settings.get('instant_threshold', 2.0)
+            # Проверяем по порогу
+            if abs(movement['change_percent']) >= threshold:
+                logger.info(f"⚡ {coin_type} {symbol}: {movement['change_percent']:+.1f}% за {movement['time_window']:.1f} сек")
                 
-                if abs(movement['change_percent']) >= threshold:
-                    old_passed = True
-            
-            # ===== ЛОГИКА ОТПРАВКИ =====
-            should_send = False
-            
-            if mode == 'new_only':
-                should_send = new_passed
-            elif mode == 'old_only':
-                should_send = old_passed
-            elif mode == 'both':
-                both_settings = PUMP_MECHANISM_SETTINGS.get('both_settings', {})
-                if both_settings.get('require_both', False):
-                    should_send = new_passed and old_passed  # нужны оба
-                else:
-                    should_send = new_passed or old_passed  # достаточно одного
-            
-            if should_send:
-                logger.info(f"⚡ {symbol}: {movement['change_percent']:+.1f}% за {movement['time_window']:.1f} сек")
-                
+                # Добавляем в очередь для обработки
                 await self.instant_signals_queue.put({
                     'symbol': symbol,
                     'price': price,
@@ -3768,9 +3507,6 @@ class FastPumpScanner:
                     'is_shitcoin': is_shitcoin,
                     'time': datetime.now()
                 })
-            else:
-                logger.debug(f"⏭️ {symbol}: движение {movement['change_percent']:.1f}% не прошло фильтр")
-                
         except Exception as e:
             logger.error(f"Ошибка обработки мгновенного сигнала: {e}")
     
@@ -4246,9 +3982,6 @@ class FastPumpScanner:
         """
         Форматирование памп-сигнала для отправки с ПРАВИЛЬНЫМ направлением
         """
-        
-        logger.info(f"  📊 format_pump_message START: направление до изменений = {signal.get('direction')}")
-
         coin = signal['symbol'].split('/')[0].replace('USDT', '')
         
         # Получаем данные о пампа
@@ -4270,34 +4003,24 @@ class FastPumpScanner:
                     has_breakout = True
                     break
 
-        logger.info(f"  📊 format_pump_message: has_breakout = {has_breakout}, pump_change = {pump_change}")
-        
         # ===== ПРАВИЛЬНАЯ ЛОГИКА НАПРАВЛЕНИЯ =====
-        
-        # Логируем исходное направление
-        logger.info(f"  📊 format_pump_message START: исходное направление = {signal.get('direction')}")
-        logger.info(f"  📊 format_pump_message: has_breakout = {has_breakout}, pump_change = {pump_change}")
 
         if pump_change > 0:  # PUMP
             if has_breakout:
-                old_dir = signal['direction']
                 signal_emoji = "🚀"
                 signal_text = f"PUMP +{pump_change:.1f}%"
                 signal['direction'] = 'LONG 📈 (пробой после пампа)'
                 signal['signal_type'] = 'PUMP_BREAKOUT'
-                logger.info(f"  📊 format_pump_message: СМЕНА! {old_dir} → {signal['direction']} (PUMP + пробой)")
                 # Добавляем причину (если еще нет)
                 if 'reasons' in signal:
                     has_pump_reason = any('Пробой уровня' in r or 'Коррекция' in r for r in signal['reasons'])
                     if not has_pump_reason:
                         signal['reasons'].insert(0, f"Пробой уровня после пампа +{pump_change:.1f}%")
             else:
-                old_dir = signal['direction']
                 signal_emoji = "🚨" if pump_change > 3.0 else "🚀"
                 signal_text = f"PUMP +{pump_change:.1f}%"
                 signal['direction'] = 'SHORT 📉 (коррекция)'
                 signal['signal_type'] = 'PUMP'
-                logger.info(f"  📊 format_pump_message: СМЕНА! {old_dir} → {signal['direction']} (PUMP без пробоя)")
                 if 'reasons' in signal:
                     has_pump_reason = any('Пробой уровня' in r or 'Коррекция' in r for r in signal['reasons'])
                     if not has_pump_reason:
@@ -4306,52 +4029,30 @@ class FastPumpScanner:
         else:  # DUMP
             # Получаем bearish_score из сигнала (нужно передать из generate_signal)
             bearish_score = signal.get('bearish_score', 0)
-            logger.info(f"  📊 format_pump_message: bearish_score = {bearish_score}")
             
             if has_breakout:
-                old_dir = signal['direction']
                 signal_emoji = "📉"
                 signal_text = f"DUMP {pump_change:.1f}%"
                 signal['direction'] = 'SHORT 📉 (пробой после дампа)'
                 signal['signal_type'] = 'DUMP_BREAKOUT'
-                
-                # ===== ПЕРЕСЧИТЫВАЕМ ЦЕЛИ ДЛЯ SHORT =====
-                current_price = signal['price']
-                atr = signal.get('atr', 0)
-                
-                if atr > 0:
-                    from config import ATR_SETTINGS
-                    signal['target_1'] = current_price - atr * ATR_SETTINGS['short_target_1_mult']
-                    signal['target_2'] = current_price - atr * ATR_SETTINGS['short_target_2_mult']
-                    signal['stop_loss'] = current_price + atr * ATR_SETTINGS['short_stop_loss_mult']
-                    logger.info(f"  📊 Пересчитаны цели для SHORT: t1={signal['target_1']:.6f}, t2={signal['target_2']:.6f}, sl={signal['stop_loss']:.6f}")
-                
-                logger.info(f"  📊 format_pump_message: СМЕНА! {old_dir} → {signal['direction']} (DUMP + пробой)")
-                
                 if 'reasons' in signal and not any('Отскок' in r for r in signal['reasons']):
                     signal['reasons'].insert(0, f"Пробой уровня после дампа {pump_change:.1f}%")
             else:
                 # Без пробоя - проверяем силу медвежьих сигналов
                 if bearish_score >= 50:
-                    old_dir = signal['direction']
                     signal_emoji = "📉"
                     signal_text = f"DUMP {pump_change:.1f}%"
                     signal['direction'] = 'SHORT 📉 (продолжение)'
                     signal['signal_type'] = 'DUMP'
-                    logger.info(f"  📊 format_pump_message: СМЕНА! {old_dir} → {signal['direction']} (DUMP, bearish_score={bearish_score})")
                     if 'reasons' in signal and not any('Отскок' in r for r in signal['reasons']):
                         signal['reasons'].insert(0, f"Продолжение дампа {pump_change:.1f}%")
                 else:
-                    old_dir = signal['direction']
                     signal_emoji = "📊" if pump_change < -1.5 else "📉"
                     signal_text = f"DUMP {pump_change:.1f}%"
                     signal['direction'] = 'LONG 📈 (отскок)'
                     signal['signal_type'] = 'DUMP'
-                    logger.info(f"  📊 format_pump_message: СМЕНА! {old_dir} → {signal['direction']} (DUMP, bearish_score={bearish_score})")
                     if 'reasons' in signal and not any('Отскок' in r for r in signal['reasons']):
                         signal['reasons'].insert(0, f"Отскок после дампа {pump_change:.1f}%")
-        
-        logger.info(f"  📊 format_pump_message END: финальное направление = {signal['direction']}")
         
         # Определяем силу сигнала по модулю движения
         signal_power = self._get_power_text(abs(pump_change))
@@ -4570,9 +4271,8 @@ class MultiExchangeScannerBot:
             self.analyzer.set_fibonacci(self.fibonacci)
             logger.info("✅ Анализатор Фибоначчи инициализирован")
         
-        # Volume Profile (импорт вынесен ДО условия)
-        from config import VOLUME_PROFILE_SETTINGS
         if FEATURES['advanced']['volume_profile'] and VOLUME_PROFILE_SETTINGS.get('enabled', False):
+            from config import VOLUME_PROFILE_SETTINGS
             self.volume_profile = VolumeProfileAnalyzer(VOLUME_PROFILE_SETTINGS)
             self.analyzer.set_volume_profile(self.volume_profile)
             logger.info("✅ Volume Profile анализатор инициализирован")
@@ -4700,7 +4400,6 @@ class MultiExchangeScannerBot:
     
     def format_message(self, signal: Dict, contract_info: Dict = None, pump_percent: float = None, df: pd.DataFrame = None) -> Tuple[str, InlineKeyboardMarkup]:
         # Определяем эмодзи и тип сигнала
-        logger.info(f"  📊 format_message: направление до изменений = {signal.get('direction')}")
         if signal.get('signal_type') in ['PUMP', 'DUMP'] or pump_percent:
             main_emoji = '🚀' if signal.get('signal_type') == 'PUMP' else '📉'
             coin = self.extract_coin(signal['symbol'])
@@ -4922,8 +4621,6 @@ class MultiExchangeScannerBot:
         
         return message, InlineKeyboardMarkup(keyboard) if keyboard else None
     
-        logger.info(f"  📊 format_message: направление до изменений = {signal.get('direction')}")
-
     # ... остальные методы (scan_exchange, scan_all, fast_pump_scan, send_signal и т.д.) остаются без изменений ...
     
     async def scan_exchange(self, name: str, fetcher: BaseExchangeFetcher) -> List[Dict]:
