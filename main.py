@@ -2867,75 +2867,77 @@ class MultiTimeframeAnalyzer:
                     logger.info(f"    🔍 {tf_name}: найдено {len(fvg_list)} FVG кандидатов")
                     
                     for fvg in fvg_list:
-                        # Проверяем, не закрыта ли зона
-                        if self._is_fvg_closed(df, fvg):
-                            logger.info(f"    ⏭️ {tf_name} FVG пропущен (закрыт)")
+                        try:
+                            # Проверяем, не закрыта ли зона
+                            if self._is_fvg_closed(df, fvg):
+                                logger.info(f"    ⏭️ {tf_name} FVG пропущен (закрыт)")
+                                continue
+                            
+                            # Проверяем, находится ли текущая цена в зоне FVG
+                            in_zone = (fvg['price_min'] <= current_price <= fvg['price_max'])
+                            
+                            # Рассчитываем расстояние до зоны
+                            if in_zone:
+                                distance_pct = 0
+                                distance_text = "в зоне"
+                                zone_type = "тест"
+                            elif current_price < fvg['price_min']:
+                                distance_pct = ((fvg['price_min'] - current_price) / current_price) * 100
+                                distance_text = f"выше на {distance_pct:.1f}%"
+                                zone_type = "сопротивление сверху"
+                            else:  # current_price > fvg['price_max']
+                                distance_pct = ((current_price - fvg['price_max']) / current_price) * 100
+                                distance_text = f"ниже на {distance_pct:.1f}%"
+                                zone_type = "поддержка снизу"
+                            
+                            # Логируем найденный FVG
+                            logger.info(f"    ✅ {tf_name} FVG: {fvg['price_min']:.6f}-{fvg['price_max']:.6f}, {distance_text}")
+                            
+                            # Форматируем цены зоны
+                            if fvg['price_min'] < 0.001:
+                                zone_str = f"{fvg['price_min']:.6f}-{fvg['price_max']:.6f}"
+                            elif fvg['price_min'] < 0.1:
+                                zone_str = f"{fvg['price_min']:.4f}-{fvg['price_max']:.4f}"
+                            else:
+                                zone_str = f"{fvg['price_min']:.2f}-{fvg['price_max']:.2f}"
+                            
+                            # Формируем сигнал
+                            size_pct = fvg.get('size', 0)
+                            tf_ru = tf_names_ru.get(tf_name, tf_name)
+                            direction = "бычий" if fvg['type'] == 'bullish' else "медвежий"
+                            
+                            signal_text = (f"FVG {tf_short[tf_name]}: {zone_str} "
+                                        f"(размер {size_pct:.2f}% {dir_emoji[fvg['type']]} {zone_type}, {distance_text})")
+                            
+                            result['has_fvg'] = True
+                            result['signals'].append(signal_text)
+                            
+                            # Сохраняем зону для графиков и анализа
+                            all_zones.append({
+                                'tf': tf_name,
+                                'tf_short': tf_short[tf_name],
+                                'tf_ru': tf_ru,
+                                'min': fvg['price_min'],
+                                'max': fvg['price_max'],
+                                'type': fvg['type'],
+                                'dir_emoji': dir_emoji[fvg['type']],
+                                'size': size_pct,
+                                'distance_pct': distance_pct,
+                                'in_zone': in_zone,
+                                'zone_type': zone_type,
+                                'distance_text': distance_text,
+                                'weight': tf_weights.get(tf_name, 1.0),
+                                'strength': fvg['strength']
+                            })
+                            
+                            # Увеличиваем силу с весом таймфрейма
+                            result['strength'] += fvg['strength'] * tf_weights.get(tf_name, 1.0)
+                            
+                        except Exception as e:
+                            logger.error(f"    ❌ Ошибка при обработке FVG для {tf_name}: {e}")
+                            import traceback
+                            traceback.print_exc()
                             continue
-                        
-                        # Проверяем, находится ли текущая цена в зоне FVG
-                        in_zone = (fvg['price_min'] <= current_price <= fvg['price_max'])
-                        
-                        # Рассчитываем расстояние до зоны
-                        if in_zone:
-                            distance_pct = 0
-                            distance_text = "в зоне"
-                            zone_type = "тест"
-                        elif current_price < fvg['price_min']:
-                            distance_pct = ((fvg['price_min'] - current_price) / current_price) * 100
-                            distance_text = f"выше на {distance_pct:.1f}%"
-                            zone_type = "сопротивление сверху"
-                        else:  # current_price > fvg['price_max']
-                            distance_pct = ((current_price - fvg['price_max']) / current_price) * 100
-                            distance_text = f"ниже на {distance_pct:.1f}%"
-                            zone_type = "поддержка снизу"
-                        
-                        # Логируем найденный FVG
-                        logger.info(f"    ✅ {tf_name} FVG: {fvg['price_min']:.6f}-{fvg['price_max']:.6f}, {distance_text}")
-                        
-                        # Форматируем цены зоны
-                        if fvg['price_min'] < 0.001:
-                            zone_str = f"{fvg['price_min']:.6f}-{fvg['price_max']:.6f}"
-                        elif fvg['price_min'] < 0.1:
-                            zone_str = f"{fvg['price_min']:.4f}-{fvg['price_max']:.4f}"
-                        else:
-                            zone_str = f"{fvg['price_min']:.2f}-{fvg['price_max']:.2f}"
-                        
-                        # Формируем сигнал
-                        size_pct = fvg.get('size', 0)
-                        tf_ru = tf_names_ru.get(tf_name, tf_name)
-                        direction = "бычий" if fvg['type'] == 'bullish' else "медвежий"
-                        
-                        signal_text = (f"FVG {tf_short[tf_name]}: {zone_str} "
-                                    f"(размер {size_pct:.2f}% {dir_emoji[fvg['type']]} {zone_type}, {distance_text})")
-                        
-                        result['has_fvg'] = True
-                        result['signals'].append(signal_text)
-                        
-                        # Сохраняем зону для графиков и анализа
-                        all_zones.append({
-                            'tf': tf_name,
-                            'tf_short': tf_short[tf_name],
-                            'tf_ru': tf_ru,
-                            'min': fvg['price_min'],
-                            'max': fvg['price_max'],
-                            'type': fvg['type'],
-                            'dir_emoji': dir_emoji[fvg['type']],
-                            'size': size_pct,
-                            'distance_pct': distance_pct,
-                            'in_zone': in_zone,
-                            'zone_type': zone_type,
-                            'distance_text': distance_text,
-                            'weight': tf_weights.get(tf_name, 1.0),
-                            'strength': fvg['strength']
-                        })
-                        
-                        # Увеличиваем силу с весом таймфрейма
-                        result['strength'] += fvg['strength'] * tf_weights.get(tf_name, 1.0)
-                        
-                except Exception as e:
-                    logger.error(f"    ❌ Ошибка при обработке {tf_name}: {e}")
-                    continue
-
             # После сбора всех зон
             logger.info(f"  📊 Всего найдено FVG: {len(all_zones)}")
             
