@@ -27,13 +27,46 @@ REF_LINKS = {
     'MEXC': os.getenv('MEXC_REF_LINK', 'https://promote.mexc.com/r/DPJr2UJJDC')
 }
 
+# ============== НАСТРОЙКИ БИРЖ ==============
+EXCHANGES = {
+    'bingx': {
+        'enabled': True,
+        'api_key': os.getenv('BINGX_API_KEY', ''),
+        'api_secret': os.getenv('BINGX_SECRET_KEY', ''),
+        'type': 'swap'
+    },
+    'bybit': {
+        'enabled': False,
+        'api_key': '',
+        'api_secret': '',
+        'type': 'linear'
+    },
+    'mexc': {
+        'enabled': False,
+        'api_key': '',
+        'api_secret': '',
+        'type': 'future'
+    }
+}
+
+# ============== НАСТРОЙКИ ПРОКСИ ==============
+
+PROXY_SETTINGS = {
+    'enabled': False,           # включить прокси принудительно
+    'auto_detect': False,        # автоматически включать при ошибках
+    'auto_detect_exchanges': ['bybit', 'mexc'],  # для каких бирж авто-детект
+    'http': 'http://your-proxy:port',
+    'https': 'https://your-proxy:port',
+    'auth': None,               # 'username:password' если нужна авторизация
+}
+
 # ============== НАСТРОЙКИ ПАМП-СКАНЕРА ==============
 
 PUMP_SCAN_SETTINGS = {
     'enabled': True,
-    'threshold': 4.0,                               # Порог % движения для REST API (было 3.5, 2.0)
-    'instant_threshold': 4.0,                       # Порог % движения для WebSocket (мейджоры) (было 2.0, 1.2)
-    'shitcoin_instant_threshold': 6.0,              # Порог % движения для WebSocket (щиткоины) (было 1.5, 0.8)
+    'threshold': 4.0,                               # Порог % движения для REST API (было 3.5, 2.0) 3.0
+    'instant_threshold': 4.0,                       # Порог % движения для WebSocket (мейджоры) (было 2.0, 1.2) 2.5
+    'shitcoin_instant_threshold': 6.0,              # Порог % движения для WebSocket (щиткоины) (было 1.5, 0.8) 2.0
     'timeframes': ['1m', '3m', '5m', '15m', '30m'], # Было ['1m', '3m', '5m']
     'min_volume_usdt': 1000,
     'max_pairs_to_scan': 600,                       # Было 600
@@ -60,6 +93,21 @@ PUMP_DUMP_FILTER = {
     # 'both' - все сигналы
     # 'pump_only' - только пампы (рост)
     # 'dump_only' - только дампы (падение)
+}
+
+# ============== НАСТРОЙКИ МЕХАНИЗМОВ ПАМП-СКАНЕРА ==============
+
+PUMP_MECHANISM_SETTINGS = {
+    'mode': 'new_only',  # 'new_only', 'old_only', 'both'
+    
+    # 'new_only' - только новый механизм (WEBSOCKET_ANALYSIS_SETTINGS)
+    # 'old_only' - только старый механизм (instant_threshold)
+    # 'both' - оба механизма (новый находит, старый фильтрует)
+    
+    # Для режима 'both' можно настроить дополнительную фильтрацию
+    'both_settings': {
+        'require_both': False,  # True: нужны оба механизма, False: любой
+    }
 }
 
 # ============== НАСТРОЙКИ WEBSOCKET АНАЛИЗА ==============
@@ -202,7 +250,7 @@ FEATURES = {
         'order_blocks': True,
         'fractals': True,
         'smart_money': True,
-        'volume_profile': False,      # Отключено до исправления
+        'volume_profile': True,      # Отключено до исправления
         'accumulation': True,         # Новый анализатор накопления
     },
     
@@ -249,7 +297,8 @@ INDICATOR_SETTINGS = {
     'macd_fast': 12,
     'macd_slow': 26,
     'macd_signal': 9,
-    'ema_periods': [9, 21, 50, 200],
+    'ema_periods': [9, 14, 21, 28, 50, 100, 200],  # ← добавили EMA 14, 28, 100
+    # EMA 200 оставляем опционально
     'bollinger_period': 20,
     'bollinger_std': 2,
     'atr_period': 14,
@@ -346,7 +395,7 @@ FIBONACCI_SETTINGS = {
 # ============== НАСТРОЙКИ VOLUME PROFILE ==============
 
 VOLUME_PROFILE_SETTINGS = {
-    'enabled': False,
+    'enabled': True,
     'lookback_bars': 100,
     'value_area_pct': 70,
     'min_hvn_strength': 2.0,
@@ -486,7 +535,7 @@ LEVEL_ANALYSIS_SETTINGS = {
         'fvg': True,             # FVG зоны
         'ema': True,             # EMA уровни (50, 200)
         'fibonacci': True,       # уровни Фибоначчи
-        'volume_profile': False,  # Volume Profile (если включено)
+        'volume_profile': True,  # Volume Profile (если включено)
     },
     
     # Настройки сбора уровней
@@ -498,12 +547,14 @@ LEVEL_ANALYSIS_SETTINGS = {
     },
     
     # Настройки пробоя
-    'breakout': {
-        'required_candles': 3,                # свечей для подтверждения
-        'min_breakout_percent': 1.0,          # мин размер пробоя (%)
-        'confirmation_percent': 0.5,          # закрепление после пробоя (%)
-        'retrace_threshold': 70,               # % возврата для ложного пробоя
-    },
+    #'breakout': {
+    #    'required_candles': 3,                # свечей для подтверждения
+    #    'min_breakout_percent': 1.0,          # мин размер пробоя (%) меньше 1% игнорируем
+    #    'confirmation_percent': 1.0,          # закрепление после пробоя (%) (было 0.5)
+    #    'retrace_threshold': 70,              # % возврата для ложного пробоя
+    #    'volume_confirmation': 2.0,           # объем x2 для подтверждения        
+    #    'confirmation_mode': 'any_two',       # Вариант 3: комбинированный 'any_two', 'all', 'any_one'
+    #},
     
     # Веса для разных типов уровней
     'weights': {
@@ -617,6 +668,21 @@ LEVEL_ANALYSIS_SETTINGS = {
     }
 }
 
+# ============== НАСТРОЙКИ ПОДТВЕРЖДЕНИЯ ПРОБОЕВ ==============
+
+BREAKOUT_CONFIRMATION_SETTINGS = {
+    'enabled': True,
+    'required_candles': 2,          # минимум 2 свечи
+    'required_percent': 0.8,        # закрепление на 0.8%
+    'volume_confirmation': 1.5,     # объем x1.5 для подтверждения
+    'confirmation_mode': 'any_two',  # 'any_two', 'all', 'any_one'
+    
+    # Пояснения:
+    # 'any_two' - нужно 2 из 3 условий (рекомендуется)
+    # 'all' - нужны все 3 условия (очень строго)
+    # 'any_one' - достаточно одного условия (быстро, но могут быть ложные)
+}
+
 # ============== НАСТРОЙКИ СНАЙПЕРСКИХ ТОЧЕК ВХОДА ==============
 
 SNIPER_ENTRY_SETTINGS = {
@@ -720,3 +786,101 @@ TIMEFRAMES = {
 }
 
 TIMEFRAMES = {k: v for k, v in TIMEFRAMES.items() if v is not None}
+
+# ============== НАСТРОЙКИ ДЕТЕКТОРА ЛОЖНЫХ ПРОБОЕВ ==============
+
+FAKEOUT_SETTINGS = {
+    'enabled': True,
+    'breakout_distance': 2.0,      # игнорировать микродвижения <2%
+    'retrace_threshold': 70,       # возврат на 70% = ложный
+    'confirmation_candles': 2,     # сколько свечей ждать для подтверждения
+}
+
+# ============== ВЕСА ДЛЯ МУЛЬТИТАЙМФРЕЙМА ==============
+
+TIMEFRAME_WEIGHTS = {
+    '1m': 0.5,
+    '3m': 0.6,
+    '5m': 0.7,
+    '15m': 1.0,
+    '30m': 1.2,
+    '1h': 1.5,
+    '4h': 2.0,
+    '1d': 2.5,
+    '1w': 3.0,
+    '1M': 3.5,
+}
+
+# ============== НАСТРОЙКИ АНАЛИЗА КАСАНИЙ EMA ==============
+
+EMA_TOUCH_SETTINGS = {
+    'enabled': True,
+    'periods': [9, 14, 21, 28, 50, 100],     # какие EMA анализировать
+    'distance_threshold': 0.5,                # % от цены для определения касания
+    'max_signals': 3,                         # максимум сигналов в причинах
+    'weights': {                              # веса для разных таймфреймов
+        'monthly': 30,
+        'weekly': 25,
+        'daily': 20,
+        'four_hourly': 15,
+        'hourly': 10,
+        'current': 5,
+        '30m': 4,
+        '5m': 3,
+        '3m': 2,
+        '1m': 1
+    }
+}
+
+# ============== МЛАДШИЕ ТАЙМФРЕЙМЫ ==============
+
+MINOR_TIMEFRAMES = {
+    '1m': '1m',
+    '3m': '3m',
+    '5m': '5m',
+    '15m': '15m',      # уже есть
+    '30m': '30m',
+}
+
+# В TIMEFRAMES добавьте все
+TIMEFRAMES = {
+    '1m': MINOR_TIMEFRAMES['1m'],
+    '3m': MINOR_TIMEFRAMES['3m'],
+    '5m': MINOR_TIMEFRAMES['5m'],
+    'current': FEATURES['timeframes']['current'],
+    '30m': MINOR_TIMEFRAMES['30m'],
+    'hourly': '1h',
+    'daily': '1d',
+    'weekly': '1w',
+    'monthly': '1M',
+}
+
+# ============== НАСТРОЙКИ МЛАДШИХ ТАЙМФРЕЙМОВ ==============
+
+MINOR_TF_SETTINGS = {
+    'enabled': True,  # вкл/выкл анализ младших ТФ (1м, 3м, 5м, 30м)
+    
+    # Какие таймфреймы анализировать
+    'timeframes': {
+        '1m': {'enabled': True, 'weight': 0.5, 'purpose': 'confirmation'},      # только подтверждение
+        '3m': {'enabled': True, 'weight': 0.6, 'purpose': 'confirmation'},
+        '5m': {'enabled': True, 'weight': 0.7, 'purpose': 'confirmation'},
+        '30m': {'enabled': True, 'weight': 1.2, 'purpose': 'analysis'},          # и анализ
+    },
+    
+    # Для чего использовать
+    'purposes': {
+        'confirmation': {      # только для подтверждения
+            'add_to_reasons': True,
+            'affect_confidence': True,
+            'change_direction': False,   # НЕ меняют направление!
+            'max_weight': 10
+        },
+        'analysis': {          # для полного анализа
+            'add_to_reasons': True,
+            'affect_confidence': True,
+            'change_direction': True,    # могут менять направление
+            'max_weight': 20
+        }
+    }
+}
