@@ -2848,7 +2848,7 @@ class MultiTimeframeAnalyzer:
                 'bearish': '📉'
             }
             
-            # Анализируем каждый таймфрейм
+            # ===== АНАЛИЗ КАЖДОГО ТАЙМФРЕЙМА =====
             for tf_name in tf_priority:
                 if tf_name not in dataframes or dataframes[tf_name] is None:
                     continue
@@ -2938,7 +2938,12 @@ class MultiTimeframeAnalyzer:
                             import traceback
                             traceback.print_exc()
                             continue
-            # После сбора всех зон
+                            
+                except Exception as e:
+                    logger.error(f"    ❌ Ошибка при обработке {tf_name}: {e}")
+                    continue
+            
+            # ===== ПОСЛЕ ОБРАБОТКИ ВСЕХ ТАЙМФРЕЙМОВ =====
             logger.info(f"  📊 Всего найдено FVG: {len(all_zones)}")
             
             # Добавляем расстояние для сортировки
@@ -2952,7 +2957,7 @@ class MultiTimeframeAnalyzer:
                 
                 logger.info(f"    FVG {zone['tf']}: {zone['min']:.6f}-{zone['max']:.6f}, расстояние {zone['sort_distance']*100:.1f}%")
             
-            # Фильтрация по расстоянию
+            # ===== ФИЛЬТРАЦИЯ ПО РАССТОЯНИЮ =====
             MAX_DISTANCE_PCT = 15.0
             DISTANCE_THRESHOLDS = {
                 'monthly': 50.0,
@@ -2975,7 +2980,7 @@ class MultiTimeframeAnalyzer:
 
             logger.info(f"  📊 Добавлено {len(filtered_zones)} FVG после фильтрации")
 
-            # Фильтрация для графика
+            # ===== ФИЛЬТРАЦИЯ ДЛЯ ГРАФИКА =====
             if filtered_zones:
                 filtered_zones.sort(key=lambda z: z['sort_distance'])
                 result['zones'] = filtered_zones[:2]
@@ -2985,7 +2990,7 @@ class MultiTimeframeAnalyzer:
             if result['strength'] > 100:
                 result['strength'] = 100
             
-            logger.info(f"  🔍 Анализ FVG начат")
+            logger.info(f"  ✅ Анализ FVG завершен")
             return result
             
         except Exception as e:
