@@ -5,9 +5,8 @@ import asyncio
 import json
 import logging
 import websockets
-import gzip
 from typing import Dict, List, Optional, Callable
-from datetime import datetime, timedelta  # ✅ ДОБАВЛЕН timedelta
+from datetime import datetime
 import random
 
 logger = logging.getLogger(__name__)
@@ -18,10 +17,9 @@ class BingXWebSocketManager:
     Поддерживает несколько потоков данных и автоматическое переподключение
     """
     
-    def __init__(self, api_key: str = None, secret_key: str = None, telegram_bot=None):
+    def __init__(self, api_key: str = None, secret_key: str = None):
         self.api_key = api_key
         self.secret_key = secret_key
-        self.telegram_bot = telegram_bot  # ✅ ДОБАВЛЕН telegram_bot
         self.ws_url = "wss://open-api-ws.bingx.com/market"  # WebSocket URL BingX
         self.connections = {}
         self.callbacks = {}
@@ -39,27 +37,25 @@ class BingXWebSocketManager:
         
         # Счетчики для защиты от спама
         self.signal_counters = {}  # {symbol: {'count': 0, 'minute': timestamp}}
-        
-        logger.info("✅ BingX WebSocket Manager инициализирован")
     
     async def connect_ticker_stream(self, symbols: List[str], callback: Callable):
         """
         Подключение к потоку тикеров для списка символов
         """
-        stream_name = f"ticker_{len(symbols)}"
+        stream_name = f"ticker_{'_'.join(symbols)}"
         
         # Формируем запрос на подписку
         subscribe_msg = {
             "id": random.randint(1, 10000),
             "reqType": "sub",
-            "dataType": f"{','.join([s.replace('/', '').replace(':USDT', '').upper() + '@ticker' for s in symbols[:50]])}"  # ограничиваем до 50 для безопасности
+            "dataType": f"{','.join([s.replace('/', '').replace(':USDT', '').upper() + '@ticker' for s in symbols])}"
         }
         
         # Запускаем WebSocket в отдельной задаче
-        asyncio.create_task(self._run_websocket(stream_name, subscribe_msg, symbols, callback))
+        asyncio.create_task(self._run_websocket(stream_name, subscribe_msg, callback))
         logger.info(f"✅ WebSocket подключен для {len(symbols)} символов")
     
-    async def _run_websocket(self, stream_name: str, subscribe_msg: Dict, symbols: List[str], callback: Callable):
+    async def _run_websocket(self, stream_name: str, subscribe_msg: Dict, callback: Callable):
         """
         Запуск WebSocket с автоматическим переподключением
         """
@@ -74,23 +70,17 @@ class BingXWebSocketManager:
                     await ws.send(json.dumps(subscribe_msg))
                     
                     # Получаем подтверждение
-                    try:
-                        response = await ws.recv()
-                        logger.info(f"📡 WebSocket {stream_name} подписка подтверждена: {response}")
-                    except asyncio.TimeoutError:
-                        logger.warning(f"⚠️ WebSocket {stream_name} нет подтверждения")
+                    response = await ws.recv()
+                    logger.info(f"📡 WebSocket {stream_name} подписка подтверждена")
                     
                     # Основной цикл получения сообщений
                     while self.running:
                         try:
                             message = await asyncio.wait_for(ws.recv(), timeout=60)
-                            await self._handle_message(message, symbols, callback)
+                            await self._handle_message(message, callback, stream_name)
                         except asyncio.TimeoutError:
                             # Отправляем ping для поддержания соединения
-                            try:
-                                await ws.send(json.dumps({"ping": int(datetime.now().timestamp() * 1000)}))
-                            except:
-                                pass
+                            await ws.send(json.dumps({"ping": int(datetime.now().timestamp() * 1000)}))
                             continue
                         except websockets.exceptions.ConnectionClosed:
                             logger.warning(f"⚠️ WebSocket {stream_name} соединение закрыто")
@@ -106,37 +96,26 @@ class BingXWebSocketManager:
         
         logger.error(f"❌ WebSocket {stream_name} не удалось подключиться после {self.max_reconnect_attempts} попыток")
     
-    async def _handle_message(self, message: str, symbols: List[str], callback: Callable):
+    async def _handle_message(self, message: str, callback: Callable, stream_name: str):
         """
         Обработка входящего сообщения
         """
         try:
-            # ✅ РАСПАКОВКА GZIP
-            if isinstance(message, bytes):
-                try:
-                    # Пробуем распаковать gzip
-                    decompressed = gzip.decompress(message)
-                    message = decompressed.decode('utf-8')
-                except:
-                    # Если не gzip, просто декодируем
-                    message = message.decode('utf-8', errors='ignore')
-            
             data = json.loads(message)
             
             # Проверяем, что это обновление цены
-            if 'data' in data and 'c' in data.get('data', {}):
-                await self._process_ticker(data, symbols, callback)
+            if 'dataType' in data and 'ticker' in data['dataType']:
+                await self._process_ticker(data, callback)
             elif 'ping' in data:
+                # Отвечаем на ping
                 return
             else:
                 logger.debug(f"Получено сообщение: {data}")
                 
         except json.JSONDecodeError:
-            logger.error(f"Ошибка декодирования JSON: {message[:200]}")
-        except Exception as e:
-            logger.error(f"Ошибка обработки сообщения: {e}")
+            logger.error(f"Ошибка декодирования JSON: {message}")
     
-    async def _process_ticker(self, data: Dict, symbols: List[str], callback: Callable):
+    async def _process_ticker(self, data: Dict, callback: Callable):
         """
         Обработка тикерных данных
         """
@@ -144,15 +123,8 @@ class BingXWebSocketManager:
             symbol_data = data.get('data', {})
             bingx_symbol = data.get('dataType', '').replace('@ticker', '')
             
-            if not bingx_symbol:
-                return
-            
             # Конвертируем символ обратно в наш формат
-            symbol = self._convert_symbol(bingx_symbol)
-            
-            # Проверяем, что символ в нашем списке
-            if symbol not in symbols:
-                return
+            symbol = f"{bingx_symbol[:3]}/{bingx_symbol[3:]}:USDT".upper()
             
             current_price = float(symbol_data.get('c', 0))  # последняя цена
             volume = float(symbol_data.get('v', 0))  # объем
@@ -175,61 +147,40 @@ class BingXWebSocketManager:
                 'time': datetime.now()
             })
             
-            # Оставляем только последние значения
-            max_history = self.settings.get('price_history_size', 100)
-            if len(self.price_history[symbol]) > max_history:
-                self.price_history[symbol] = self.price_history[symbol][-max_history:]
+            # Оставляем только последние 10 значений
+            if len(self.price_history[symbol]) > 10:
+                self.price_history[symbol].pop(0)
             
             # Проверяем на быстрое движение
             instant_signal = await self._check_instant_movement(symbol)
             if instant_signal:
-                logger.info(f"⚡ Обнаружено движение {symbol}: {instant_signal['change_percent']:.1f}% за {instant_signal['time_window']:.1f} сек")
                 await callback('instant', symbol, current_price, instant_signal)
             
         except Exception as e:
             logger.error(f"Ошибка обработки тикера: {e}")
     
-    def _convert_symbol(self, bingx_symbol: str) -> str:
-        """
-        Конвертация символа BingX в формат CCXT
-        BingX формат: "BTCUSDT" или "1000PEPEUSDT"
-        """
-        if bingx_symbol.endswith('USDT'):
-            coin = bingx_symbol[:-4]  # убираем USDT
-            # Для 1000PEPE, 1000SHIB и т.д.
-            if coin.startswith('1000'):
-                coin = coin[4:]  # убираем 1000
-            return f"{coin}/USDT:USDT"
-        return bingx_symbol
-    
     async def _check_instant_movement(self, symbol: str) -> Optional[Dict]:
         """
         Проверка на движение за разные временные окна
         """
-        if symbol not in self.price_history or len(self.price_history[symbol]) < 5:
+        if symbol not in self.price_history or len(self.price_history[symbol]) < 10:
             return None
         
         history = self.price_history[symbol]
         
         # Определяем тип монеты (мейджор или щиткоин)
-        coin = symbol.split('/')[0].upper()
-        # Топ-5 мейджоров
-        majors = ['BTC', 'ETH', 'BNB', 'SOL', 'XRP']
-        is_shitcoin = coin not in majors
-        
+        is_shitcoin = await self._is_shitcoin(symbol)
         coin_type = 'shitcoin' if is_shitcoin else 'major'
         
         # Проверяем разные временные окна
-        for window in self.settings.get('time_windows', [3, 5, 10, 30, 60]):
+        for window in self.settings['time_windows']:
             # Находим цену, которая была window секунд назад
             target_time = datetime.now() - timedelta(seconds=window)
             oldest_price = None
-            oldest_time = None
             
             for record in reversed(history):
                 if record['time'] <= target_time:
                     oldest_price = record['price']
-                    oldest_time = record['time']
                     break
             
             if not oldest_price:
@@ -238,13 +189,11 @@ class BingXWebSocketManager:
             # Считаем изменение
             current_price = history[-1]['price']
             change_percent = (current_price - oldest_price) / oldest_price * 100
-            time_diff = (history[-1]['time'] - oldest_time).total_seconds()
+            time_diff = (history[-1]['time'] - oldest_price['time']).total_seconds()
             
             # Получаем порог для этого окна
             threshold_key = f"{window}s"
-            thresholds = self.settings.get('thresholds', {})
-            coin_thresholds = thresholds.get(coin_type, {})
-            threshold = coin_thresholds.get(threshold_key, 2.0)
+            threshold = self.settings['thresholds'][coin_type].get(threshold_key, 2.0)
             
             # Проверяем, не превысили ли лимит сигналов
             if self._check_rate_limit(symbol):
@@ -255,7 +204,7 @@ class BingXWebSocketManager:
                 return {
                     'change_percent': change_percent,
                     'time_window': round(time_diff, 1),
-                    'start_price': oldest_price,
+                    'start_price': oldest_price['price'],
                     'end_price': current_price,
                     'is_shitcoin': is_shitcoin,
                     'threshold_used': threshold,
@@ -263,11 +212,9 @@ class BingXWebSocketManager:
                 }
         
         return None
-    
+
     def _check_rate_limit(self, symbol: str) -> bool:
-        """
-        Проверка лимита сигналов
-        """
+        """Проверка лимита сигналов"""
         current_minute = datetime.now().strftime('%Y%m%d%H%M')
         
         if symbol not in self.signal_counters:
@@ -282,11 +229,23 @@ class BingXWebSocketManager:
             counter['minute'] = current_minute
             return False
         
-        max_per_minute = self.settings.get('max_signals_per_minute', 5)
-        if counter['count'] >= max_per_minute:
+        if counter['count'] >= self.settings['max_signals_per_minute']:
             return True
         
         counter['count'] += 1
+        return False
+
+    async def _is_shitcoin(self, symbol: str) -> bool:
+        """Определение щиткоина по объему"""
+        try:
+            # Здесь нужно получить объем 24ч
+            # Можно использовать fetcher, если он доступен
+            if hasattr(self, 'fetcher'):
+                ticker = await self.fetcher.fetch_ticker(symbol)
+                volume = ticker.get('volume_24h', 0)
+                return volume < self.settings['min_volume_usdt']['shitcoin']
+        except:
+            pass
         return False
     
     def get_price(self, symbol: str) -> Optional[float]:
