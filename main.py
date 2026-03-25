@@ -2630,13 +2630,81 @@ class MultiTimeframeAnalyzer:
                     elif tf_name in ['weekly', 'monthly'] and last['ema_9'] < last['ema_200']:
                         alignment['signals'].append(f"{tf_names[tf_name]} ТРЕНД НИСХОДЯЩИЙ (ниже EMA 200)")
         
-        # Добавляем группировку младших ТФ в причины
+        # Добавляем группировку младших ТФ в причины (без дублирования с 1м)
+        # Определяем, какие ТФ входят в группу младших
+        minor_tfs_present = []
+        if '1m' in alignment['trends']:
+            minor_tfs_present.append('1м')
+        if '3m' in alignment['trends']:
+            minor_tfs_present.append('3м')
+        if '5m' in alignment['trends']:
+            minor_tfs_present.append('5м')
+        
+        # Проверяем, есть ли уже отдельная строка для 1м с EMA 200
+        has_1m_ema = False
+        for s in alignment['signals']:
+            if '1м ТРЕНД' in s and 'EMA 200' in s:
+                has_1m_ema = True
+                break
+        
         if minor_bullish > 0 or minor_bearish > 0:
-            if minor_bullish > minor_bearish:
-                minor_text = "1м, 3м, 5м тренд восходящий (подтверждение)"
-            else:
-                minor_text = "1м, 3м, 5м тренд нисходящий (подтверждение)"
-            alignment['signals'].append(minor_text)
+            # Формируем текст только для ТФ, которых нет в отдельной строке с EMA 200
+            tfs_to_show = []
+            for tf in minor_tfs_present:
+                if tf == '1м' and has_1m_ema:
+                    continue  # пропускаем 1м, если уже есть в EMA 200 строке
+                tfs_to_show.append(tf)
+            
+            if tfs_to_show:
+                tfs_str = ', '.join(tfs_to_show)
+                if minor_bullish > minor_bearish:
+                    alignment['signals'].append(f"{tfs_str} тренд восходящий (подтверждение)")
+                else:
+                    alignment['signals'].append(f"{tfs_str} тренд нисходящий (подтверждение)")
+        
+        # Собираем старшие ТФ с EMA 200 в одну группу
+        ema_signals = []
+        tf_names_display = {
+            'weekly': '1н',
+            'monthly': '1м',
+            'daily': '1д',
+            'four_hourly': '4ч',
+            'hourly': '1ч',
+            'current': '15м'
+        }
+        
+        for tf_name in ['weekly', 'monthly']:
+            if tf_name in alignment['trends']:
+                trend = alignment['trends'][tf_name]
+                df = dataframes.get(tf_name)
+                if df is not None and not df.empty:
+                    last = df.iloc[-1]
+                    if pd.notna(last.get('ema_9')) and pd.notna(last.get('ema_200')):
+                        if trend == 'ВОСХОДЯЩИЙ' and last['ema_9'] > last['ema_200']:
+                            ema_signals.append(tf_names_display.get(tf_name, tf_name))
+                        elif trend == 'НИСХОДЯЩИЙ' and last['ema_9'] < last['ema_200']:
+                            ema_signals.append(tf_names_display.get(tf_name, tf_name))
+        
+        # Добавляем также 1м если есть EMA 200
+        if '1m' in alignment['trends']:
+            df = dataframes.get('1m')
+            if df is not None and not df.empty:
+                last = df.iloc[-1]
+                if pd.notna(last.get('ema_9')) and pd.notna(last.get('ema_200')):
+                    trend = alignment['trends']['1m']
+                    if trend == 'ВОСХОДЯЩИЙ' and last['ema_9'] > last['ema_200']:
+                        ema_signals.append('1м')
+                    elif trend == 'НИСХОДЯЩИЙ' and last['ema_9'] < last['ema_200']:
+                        ema_signals.append('1м')
+        
+        if ema_signals:
+            tfs_str = ', '.join(ema_signals)
+            # Определяем направление по старшему ТФ (weekly или monthly)
+            main_trend = alignment.get('weekly_trend') or alignment.get('monthly_trend') or alignment.get('daily_trend')
+            if main_trend == 'ВОСХОДЯЩИЙ':
+                alignment['signals'].append(f"{tfs_str} ТРЕНД ВОСХОДЯЩИЙ (выше EMA 200)")
+            elif main_trend == 'НИСХОДЯЩИЙ':
+                alignment['signals'].append(f"{tfs_str} ТРЕНД НИСХОДЯЩИЙ (ниже EMA 200)")
         
         # Считаем согласованность (только для основных ТФ)
         if trends_list:
@@ -3416,19 +3484,50 @@ class MultiTimeframeAnalyzer:
             # Ищем совпадающие уровни
             confluence_zones = level_collector.find_confluence_levels(all_levels, last['close'], tolerance=0.5)
             
+            # Словарь для перевода таймфреймов
+            tf_display_map = {
+                'current': '15м',
+                'hourly': '1ч',
+                'four_hourly': '4ч',
+                'daily': '1д',
+                'weekly': '1н',
+                'monthly': '1м'
+            }
+            
             for zone in confluence_zones:
-                reasons.append(f"🎯 {zone['source']}: {zone['zone_type']} на {zone['price']:.4f} (сила {zone['strength']:.0f}%)")
+                # Форматируем таймфреймы для отображения
+                tfs_display = []
+                for tf in zone['timeframes']:
+                    tfs_display.append(tf_display_map.get(tf, tf))
+                tfs_str = ', '.join(tfs_display)
+                
+                # Форматируем цену уровня
+                level_price = zone['price']
+                if level_price < 0.0001:
+                    price_str = f"{level_price:.8f}".rstrip('0').rstrip('.')
+                elif level_price < 0.001:
+                    price_str = f"{level_price:.6f}".rstrip('0').rstrip('.')
+                elif level_price < 0.01:
+                    price_str = f"{level_price:.5f}".rstrip('0').rstrip('.')
+                elif level_price < 0.1:
+                    price_str = f"{level_price:.4f}".rstrip('0').rstrip('.')
+                elif level_price < 1:
+                    price_str = f"{level_price:.3f}".rstrip('0').rstrip('.')
+                else:
+                    price_str = f"{level_price:.2f}".rstrip('0').rstrip('.')
+                
+                reasons.append(f"Конвергенция на {tfs_str}: {zone['zone_type']} {price_str} (сила {zone['strength']:.0f}%)")
                 
                 if zone['direction'] == 'LONG' and direction != 'LONG':
                     # Сильный уровень поддержки снизу
                     confidence += zone['strength'] / 2
                     if zone['distance'] < 5:
-                        reasons.append(f"⚠️ Близкая сильная поддержка ({zone['distance']:.1f}%)")
+                        reasons.append(f"Близкая сильная поддержка ({zone['distance']:.1f}%)")
                 elif zone['direction'] == 'SHORT' and direction != 'SHORT':
                     # Сильный уровень сопротивления сверху
                     confidence += zone['strength'] / 2
                     if zone['distance'] < 5:
-                        reasons.append(f"⚠️ Близкое сильное сопротивление ({zone['distance']:.1f}%)")
+                        reasons.append(f"Близкое сильное сопротивление ({zone['distance']:.1f}%)")
 
         # ===== АНАЛИЗ КОНВЕРГЕНЦИИ И СИЛЫ УРОВНЕЙ =====
         if FEATURES['advanced']['patterns']:
@@ -3767,35 +3866,38 @@ class MultiTimeframeAnalyzer:
             df_current = dataframes['current']
             
             if 'LONG' in direction:
-                # Для LONG — ищем локальные минимумы
-                # Зона 1: минимум за 20 свечей
+                # Для LONG — ищем локальные минимумы (ниже цены)
                 zone1 = df_current['low'].tail(20).min()
-                # Зона 2: минимум за 50 свечей
                 zone2 = df_current['low'].tail(50).min()
                 entry_zones = [zone1, zone2]
+                zone_descriptions = ["локальный минимум", "локальный минимум"]
             else:
-                # Для SHORT — ищем локальные максимумы
-                # Зона 1: максимум за 20 свечей
+                # Для SHORT — ищем локальные максимумы (выше цены)
                 zone1 = df_current['high'].tail(20).max()
-                # Зона 2: максимум за 50 свечей
                 zone2 = df_current['high'].tail(50).max()
                 entry_zones = [zone1, zone2]
+                zone_descriptions = ["локальный максимум", "локальный максимум"]
         
-        # Форматируем зоны для отображения
+        # Форматируем зоны для отображения с описанием
         formatted_zones = []
-        for zone in entry_zones:
+        for i, zone in enumerate(entry_zones):
             if current_price < 0.0001:
-                formatted_zones.append(f"{zone:.8f}".rstrip('0').rstrip('.'))
+                zone_str = f"{zone:.8f}".rstrip('0').rstrip('.')
             elif current_price < 0.001:
-                formatted_zones.append(f"{zone:.6f}".rstrip('0').rstrip('.'))
+                zone_str = f"{zone:.6f}".rstrip('0').rstrip('.')
             elif current_price < 0.01:
-                formatted_zones.append(f"{zone:.5f}".rstrip('0').rstrip('.'))
+                zone_str = f"{zone:.5f}".rstrip('0').rstrip('.')
             elif current_price < 0.1:
-                formatted_zones.append(f"{zone:.4f}".rstrip('0').rstrip('.'))
+                zone_str = f"{zone:.4f}".rstrip('0').rstrip('.')
             elif current_price < 1:
-                formatted_zones.append(f"{zone:.3f}".rstrip('0').rstrip('.'))
+                zone_str = f"{zone:.3f}".rstrip('0').rstrip('.')
             else:
-                formatted_zones.append(f"{zone:.2f}".rstrip('0').rstrip('.'))
+                zone_str = f"{zone:.2f}".rstrip('0').rstrip('.')
+            
+            if i < len(zone_descriptions):
+                formatted_zones.append(f"{zone_str} ({zone_descriptions[i]})")
+            else:
+                formatted_zones.append(zone_str)
         
         # ===== ФОРМИРОВАНИЕ РЕЗУЛЬТАТА =====
         result = {
