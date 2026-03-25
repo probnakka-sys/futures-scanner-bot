@@ -75,7 +75,10 @@ from config import (
     BREAKOUT_CONFIRMATION_SETTINGS,
     MINOR_TF_SETTINGS,      
     EXCHANGES,              
-    PROXY_SETTINGS
+    PROXY_SETTINGS,
+    FIBONACCI_ADVANCED_SETTINGS,      # ← ДОБАВИТЬ
+    SIGNAL_FORMAT_SETTINGS,            # ← ДОБАВИТЬ
+    FIB_HISTORY_SETTINGS              # ← ДОБАВИТЬ
 )
 
 # from config import BREAKOUT_CONFIRMATION_SETTINGS
@@ -169,6 +172,111 @@ class CacheManager:
         """Очистка кэша"""
         self.cache.clear()
         logger.info("🧹 Кэш очищен")
+
+# ============== ИСТОРИЯ ПОДХОДОВ К УРОВНЯМ ФИБОНАЧЧИ ==============
+
+class FibHistoryTracker:
+    """
+    Хранит историю подходов к уровням Фибоначчи на разных таймфреймах
+    """
+    
+    def __init__(self):
+        self.history = {}  # key: f"{symbol}_{tf}_{level}"
+        self.ttl = FIB_HISTORY_SETTINGS.get('ttl_seconds', 2592000)
+        self.max_approaches = FIB_HISTORY_SETTINGS.get('max_approaches', 10)
+        logger.info("✅ FibHistoryTracker инициализирован")
+    
+    def _make_key(self, symbol: str, tf: str, level: float) -> str:
+        """Создание ключа для истории"""
+        return f"{symbol}_{tf}_{level:.3f}"
+    
+    def add_approach(self, symbol: str, tf: str, level: float, price: float):
+        """
+        Добавление подхода к уровню
+        """
+        key = self._make_key(symbol, tf, level)
+        now = datetime.now().timestamp()
+        
+        if key not in self.history:
+            self.history[key] = {
+                'symbol': symbol,
+                'tf': tf,
+                'level': level,
+                'price': price,
+                'approaches': 1,
+                'first_approach': now,
+                'last_approach': now,
+                'is_broken': False,
+                'broken_at': None
+            }
+            logger.debug(f"📊 Фибо {tf} {level:.3f} для {symbol}: первый подход")
+        else:
+            # Проверяем, не устарел ли уровень
+            if now - self.history[key]['last_approach'] > self.ttl:
+                # Устарел — сбрасываем
+                self.history[key]['approaches'] = 1
+                self.history[key]['first_approach'] = now
+                logger.debug(f"📊 Фибо {tf} {level:.3f} для {symbol}: сброс (устарел)")
+            else:
+                self.history[key]['approaches'] = min(self.history[key]['approaches'] + 1, self.max_approaches)
+                logger.debug(f"📊 Фибо {tf} {level:.3f} для {symbol}: подход #{self.history[key]['approaches']}")
+            
+            self.history[key]['last_approach'] = now
+            self.history[key]['price'] = price
+    
+    def get_approach_count(self, symbol: str, tf: str, level: float) -> int:
+        """
+        Получение количества подходов к уровню
+        """
+        key = self._make_key(symbol, tf, level)
+        if key not in self.history:
+            return 0
+        
+        # Проверяем на устаревание
+        now = datetime.now().timestamp()
+        if now - self.history[key]['last_approach'] > self.ttl:
+            del self.history[key]
+            return 0
+        
+        return self.history[key]['approaches']
+    
+    def mark_broken(self, symbol: str, tf: str, level: float, price: float):
+        """
+        Отметить уровень как пробитый
+        """
+        key = self._make_key(symbol, tf, level)
+        if key in self.history:
+            self.history[key]['is_broken'] = True
+            self.history[key]['broken_at'] = datetime.now().timestamp()
+            self.history[key]['broken_price'] = price
+            logger.debug(f"📊 Фибо {tf} {level:.3f} для {symbol}: ПРОБИТ")
+    
+    def get_strength_text(self, approaches: int) -> str:
+        """
+        Получить текстовое описание силы уровня по количеству подходов
+        """
+        if approaches == 0:
+            return ""
+        elif approaches == 1:
+            return "1-й подход (экстремально сильный)"
+        elif approaches == 2:
+            return "2-й подход (очень сильный)"
+        elif approaches == 3:
+            return "3-й подход (сильный)"
+        else:
+            return f"{approaches}-й подход (ослаблен)"
+    
+    def cleanup(self):
+        """Очистка устаревших записей"""
+        now = datetime.now().timestamp()
+        to_delete = []
+        for key, data in self.history.items():
+            if now - data['last_approach'] > self.ttl:
+                to_delete.append(key)
+        for key in to_delete:
+            del self.history[key]
+        if to_delete:
+            logger.info(f"🧹 FibHistoryTracker: удалено {len(to_delete)} устаревших записей")
 
 # ============== АНАЛИЗАТОР НАКОПЛЕНИЯ ==============
 
@@ -2372,6 +2480,9 @@ class MultiTimeframeAnalyzer:
         self.accumulation = None
         self.imbalance = ImbalanceAnalyzer(IMBALANCE_SETTINGS) if FEATURES['advanced']['imbalance'] else None
         self.breakout_tracker = BreakoutTracker()
+        # Инициализация истории Фибоначчи
+        self.fib_history = FibHistoryTracker()
+        logger.info("✅ FibHistoryTracker добавлен в MultiTimeframeAnalyzer")
 
         # Словарь для перевода таймфреймов
         self.tf_translation = {
