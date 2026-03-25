@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
 import os
@@ -2429,103 +2429,104 @@ class MultiTimeframeAnalyzer:
         
         return df
     
-        def analyze_timeframe_alignment(self, dataframes: Dict[str, pd.DataFrame]) -> Dict:
-            """Анализ согласованности трендов на разных таймфреймах"""
-            alignment = {
-                'trend_alignment': 0,
-                'signals': [],
-                'trends': {},
-                'current_trend': None,
-                'hourly_trend': None,
-                'four_hourly_trend': None,
-                'daily_trend': None,
-                'weekly_trend': None,
-                'monthly_trend': None,
-            }
+    def analyze_timeframe_alignment(self, dataframes: Dict[str, pd.DataFrame]) -> Dict:
+        ""    def analyze_timeframe_alignment(self, dataframes: Dict[str, pd.DataFrame]) -> Dict:
+        """Анализ согласованности трендов на разных таймфреймах"""
+        alignment = {
+            'trend_alignment': 0,
+            'signals': [],
+            'trends': {},
+            'current_trend': None,
+            'hourly_trend': None,
+            'four_hourly_trend': None,
+            'daily_trend': None,
+            'weekly_trend': None,
+            'monthly_trend': None,
+        }
+        
+        # Словарь для перевода
+        tf_names = {
+            '1m': '1м',
+            '3m': '3м',
+            '5m': '5м',
+            'current': '15м',
+            '30m': '30м',
+            'hourly': '1ч',
+            'four_hourly': '4ч',
+            'daily': '1д',
+            'weekly': '1н',
+            'monthly': '1м'
+        }
+        
+        # Собираем все таймфреймы в правильном порядке
+        tf_order = ['1m', '3m', '5m', 'current', '30m', 'hourly', 'four_hourly', 'daily', 'weekly', 'monthly']
+        
+        trends_list = []
+        minor_bullish = 0
+        minor_bearish = 0
+        
+        for tf_name in tf_order:
+            if tf_name not in dataframes or dataframes[tf_name] is None or dataframes[tf_name].empty:
+                continue
             
-            # Словарь для перевода
-            tf_names = {
-                '1m': '1м',
-                '3m': '3м',
-                '5m': '5м',
-                'current': '15м',
-                '30m': '30м',
-                'hourly': '1ч',
-                'four_hourly': '4ч',
-                'daily': '1д',
-                'weekly': '1н',
-                'monthly': '1м'
-            }
+            df = dataframes[tf_name]
+            last = df.iloc[-1]
             
-            # Собираем все таймфреймы в правильном порядке
-            tf_order = ['1m', '3m', '5m', 'current', '30m', 'hourly', 'four_hourly', 'daily', 'weekly', 'monthly']
-            
-            trends_list = []
-            minor_bullish = 0
-            minor_bearish = 0
-            
-            for tf_name in tf_order:
-                if tf_name not in dataframes or dataframes[tf_name] is None or dataframes[tf_name].empty:
-                    continue
+            # Определяем тренд по EMA 9 и 21
+            if pd.notna(last.get('ema_9')) and pd.notna(last.get('ema_21')):
+                trend = 'ВОСХОДЯЩИЙ' if last['ema_9'] > last['ema_21'] else 'НИСХОДЯЩИЙ'
+                alignment['trends'][tf_name] = trend
                 
-                df = dataframes[tf_name]
-                last = df.iloc[-1]
+                # Сохраняем в отдельные поля для совместимости
+                if tf_name == 'current':
+                    alignment['current_trend'] = trend
+                elif tf_name == 'hourly':
+                    alignment['hourly_trend'] = trend
+                elif tf_name == 'four_hourly':
+                    alignment['four_hourly_trend'] = trend
+                elif tf_name == 'daily':
+                    alignment['daily_trend'] = trend
+                elif tf_name == 'weekly':
+                    alignment['weekly_trend'] = trend
+                elif tf_name == 'monthly':
+                    alignment['monthly_trend'] = trend
                 
-                # Определяем тренд по EMA 9 и 21
-                if pd.notna(last.get('ema_9')) and pd.notna(last.get('ema_21')):
-                    trend = 'ВОСХОДЯЩИЙ' if last['ema_9'] > last['ema_21'] else 'НИСХОДЯЩИЙ'
-                    alignment['trends'][tf_name] = trend
-                    
-                    # Сохраняем в отдельные поля для совместимости
-                    if tf_name == 'current':
-                        alignment['current_trend'] = trend
-                    elif tf_name == 'hourly':
-                        alignment['hourly_trend'] = trend
-                    elif tf_name == 'four_hourly':
-                        alignment['four_hourly_trend'] = trend
-                    elif tf_name == 'daily':
-                        alignment['daily_trend'] = trend
-                    elif tf_name == 'weekly':
-                        alignment['weekly_trend'] = trend
-                    elif tf_name == 'monthly':
-                        alignment['monthly_trend'] = trend
-                    
-                    # Для младших ТФ (1м, 3м, 5м) — считаем для группировки
-                    if tf_name in ['1m', '3m', '5m']:
-                        if trend == 'ВОСХОДЯЩИЙ':
-                            minor_bullish += 1
-                        else:
-                            minor_bearish += 1
-                    
-                    # Для остальных ТФ — добавляем в согласованность
-                    elif tf_name not in ['1m', '3m', '5m']:
-                        trends_list.append(trend)
-                        
-                        # Добавляем сигнал для сильных трендов
-                        if tf_name in ['weekly', 'monthly'] and last['ema_9'] > last['ema_200']:
-                            alignment['signals'].append(f"{tf_names[tf_name]} ТРЕНД ВОСХОДЯЩИЙ (выше EMA 200)")
-                        elif tf_name in ['weekly', 'monthly'] and last['ema_9'] < last['ema_200']:
-                            alignment['signals'].append(f"{tf_names[tf_name]} ТРЕНД НИСХОДЯЩИЙ (ниже EMA 200)")
-            
-            # Добавляем группировку младших ТФ в причины
-            if minor_bullish > 0 or minor_bearish > 0:
-                if minor_bullish > minor_bearish:
-                    minor_text = "1м, 3м, 5м тренд восходящий (подтверждение)"
-                else:
-                    minor_text = "1м, 3м, 5м тренд нисходящий (подтверждение)"
-                alignment['signals'].append(minor_text)
-            
-            # Считаем согласованность (только для основных ТФ)
-            if trends_list:
-                bullish = trends_list.count('ВОСХОДЯЩИЙ')
-                bearish = trends_list.count('НИСХОДЯЩИЙ')
-                alignment['trend_alignment'] = (max(bullish, bearish) / len(trends_list)) * 100
+                # Для младших ТФ (1м, 3м, 5м) — считаем для группировки
+                if tf_name in ['1m', '3m', '5m']:
+                    if trend == 'ВОСХОДЯЩИЙ':
+                        minor_bullish += 1
+                    else:
+                        minor_bearish += 1
                 
-                if alignment['trend_alignment'] >= 80 and len(trends_list) >= 3:
-                    direction = "бычий" if bullish > bearish else "медвежий"
-                    alignment['signals'].append(f"Тренды согласованы: {alignment['trend_alignment']:.0f}% ({direction}, {len(trends_list)} ТФ)")
+                # Для остальных ТФ — добавляем в согласованность
+                elif tf_name not in ['1m', '3m', '5m']:
+                    trends_list.append(trend)
+                    
+                    # Добавляем сигнал для сильных трендов
+                    if tf_name in ['weekly', 'monthly'] and last['ema_9'] > last['ema_200']:
+                        alignment['signals'].append(f"{tf_names[tf_name]} ТРЕНД ВОСХОДЯЩИЙ (выше EMA 200)")
+                    elif tf_name in ['weekly', 'monthly'] and last['ema_9'] < last['ema_200']:
+                        alignment['signals'].append(f"{tf_names[tf_name]} ТРЕНД НИСХОДЯЩИЙ (ниже EMA 200)")
+        
+        # Добавляем группировку младших ТФ в причины
+        if minor_bullish > 0 or minor_bearish > 0:
+            if minor_bullish > minor_bearish:
+                minor_text = "1м, 3м, 5м тренд восходящий (подтверждение)"
+            else:
+                minor_text = "1м, 3м, 5м тренд нисходящий (подтверждение)"
+            alignment['signals'].append(minor_text)
+        
+        # Считаем согласованность (только для основных ТФ)
+        if trends_list:
+            bullish = trends_list.count('ВОСХОДЯЩИЙ')
+            bearish = trends_list.count('НИСХОДЯЩИЙ')
+            alignment['trend_alignment'] = (max(bullish, bearish) / len(trends_list)) * 100
             
-            return alignment
+            if alignment['trend_alignment'] >= 80 and len(trends_list) >= 3:
+                direction = "бычий" if bullish > bearish else "медвежий"
+                alignment['signals'].append(f"Тренды согласованы: {alignment['trend_alignment']:.0f}% ({direction}, {len(trends_list)} ТФ)")
+        
+        return alignment
     
     def analyze_fvg_multi_timeframe(self, dataframes: Dict[str, pd.DataFrame], current_price: float) -> Dict:
         """
@@ -3630,7 +3631,7 @@ class MultiTimeframeAnalyzer:
                 targets[key] = round(targets[key], 2)
         
         logger.info(f"  📈 {symbol} - ATR: {atr}, Цели: {targets}")
-        
+
         # ===== РАСЧЕТ ЗОН ДОП.ВХОДА =====
         entry_zones = []
         current_tf = TIMEFRAMES.get('current', '15m')
@@ -3669,7 +3670,7 @@ class MultiTimeframeAnalyzer:
                 formatted_zones.append(f"{zone:.3f}".rstrip('0').rstrip('.'))
             else:
                 formatted_zones.append(f"{zone:.2f}".rstrip('0').rstrip('.'))
-
+        
         # ===== ФОРМИРОВАНИЕ РЕЗУЛЬТАТА =====
         result = {
             'symbol': symbol,
@@ -3689,7 +3690,7 @@ class MultiTimeframeAnalyzer:
             'alignment': alignment,
             'bearish_score': bearish_score,  # ← ДОБАВИТЬ
             'bullish_score': bullish_score,  # ← ДОБАВИТЬ (опционально)
-            'entry_zones': formatted_zones,  # ← ДОБАВИТЬ
+            'entry_zones': formatted_zones,
             **targets
         }
         
@@ -5046,6 +5047,8 @@ class MultiExchangeScannerBot:
             keyboard.append(row2)
         
         return message, InlineKeyboardMarkup(keyboard) if keyboard else None
+    
+        logger.info(f"  📊 format_message: направление до изменений = {signal.get('direction')}")
 
     # ... остальные методы (scan_exchange, scan_all, fast_pump_scan, send_signal и т.д.) остаются без изменений ...
     
