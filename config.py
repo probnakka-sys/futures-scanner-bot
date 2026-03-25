@@ -81,7 +81,7 @@ PUMP_SCAN_SETTINGS = {
     
     # Новые настройки для WebSocket
     'websocket_top_pairs': 200,                   # Сколько пар в WebSocket
-    'shitcoin_volume_threshold': 1500_000,        # Объем < 0.5M$ = щиткоин
+    'shitcoin_volume_threshold': 2000_000,        # Объем < 0.5M$ = щиткоин
     'websocket_reconnect_delay': 5,               # Задержка перед переподключением
 }
 
@@ -922,4 +922,30 @@ FIB_HISTORY_SETTINGS = {
     'enabled': True,
     'max_approaches': 10,
     'ttl_seconds': 2592000,
+}
+
+# ============== НАСТРОЙКИ СОГЛАСОВАННОСТИ ТАЙМФРЕЙМОВ ==============
+
+TF_ALIGNMENT_SETTINGS = {
+    'enabled': True,                       # Вкл/выкл проверку согласованности ТФ
+    
+    # Пороги для отправки сигналов
+    'send_on_perfect': True,               # Отправлять при полной согласованности (все ТФ)
+    'send_on_warning': True,               # Отправлять с предупреждением (противоречие младших ТФ)
+    'send_on_rejected': False,             # Отправлять даже при отклонении (для тестирования)
+    
+    # Влияние на уверенность
+    'perfect_bonus': 20,                   # Бонус уверенности за полную согласованность
+    'warning_penalty': 15,                 # Штраф за противоречие младших ТФ
+    
+    # Уровни противоречий
+    'reject_on_major_mismatch': True,      # Отклонять при противоречии старших ТФ (1н, 1д)
+    'reject_on_medium_mismatch': True,     # Отклонять при противоречии средних ТФ (4ч, 1ч)
+    'warn_on_minor_mismatch': True,        # Предупреждать при противоречии младших ТФ (30м, 15м)
+    
+    # Таймфреймы для анализа
+    'major_tfs': ['weekly', 'daily'],           # Старшие ТФ
+    'medium_tfs': ['four_hourly', 'hourly'],    # Средние ТФ
+    'minor_tfs': ['30m', 'current'],            # Младшие ТФ (current = 15м)
+    'ultra_minor_tfs': ['5m', '3m', '1m'],      # Сверхмладшие (только информация)
 }
