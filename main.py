@@ -4491,6 +4491,18 @@ class FastPumpScanner:
         else:
             return f"{num:.0f}"
     
+    def format_tf_name(self, tf: str) -> str:
+        """Преобразование названия таймфрейма в читаемый формат"""
+        tf_map = SIGNAL_FORMAT_SETTINGS.get('tf_names', {
+            'current': '15м',
+            'hourly': '1ч',
+            'four_hourly': '4ч',
+            'daily': '1д',
+            'weekly': '1н',
+            'monthly': '1м'
+        })
+        return tf_map.get(tf, tf)
+    
     def format_pump_message(self, signal: Dict, contract_info: Dict = None) -> Tuple[str, InlineKeyboardMarkup]:
         """
         Форматирование памп-сигнала для отправки с ПРАВИЛЬНЫМ направлением
@@ -4958,7 +4970,7 @@ class MultiExchangeScannerBot:
     # ============== ОСНОВНОЙ МЕТОД ФОРМАТИРОВАНИЯ ==============
     
     def format_message(self, signal: Dict, contract_info: Dict = None, pump_percent: float = None, df: pd.DataFrame = None) -> Tuple[str, InlineKeyboardMarkup]:
-        """Форматирование сигнала с новыми элементами"""
+        """Форматирование сигнала с новым форматом"""
         
         # Определяем эмодзи
         if signal.get('signal_type') in ['PUMP', 'DUMP'] or pump_percent:
@@ -5036,13 +5048,18 @@ class MultiExchangeScannerBot:
         mexc_link = REF_LINKS.get('MEXC', '#')
         line3 = f"💲 Trade: <a href='{bingx_link}'>BingX</a> | <a href='{bybit_link}'>Bybit</a> | <a href='{mexc_link}'>MEXC</a>"
         
-        # Строка 4: направление
-        line4 = f"📊 Направление: {signal['direction']}"
+        # Пустая строка после бирж
+        lines = [line1, line2, line3, ""]
         
-        # Строка 5: таймфрейм
-        line5 = f"🕓 Таймфрейм: {TIMEFRAMES.get('current', '15m')}"
+        # Направление
+        lines.append(f"📊 Направление: {signal['direction']}")
         
-        # Форматирование цены
+        # Таймфрейм (переводим)
+        current_tf = TIMEFRAMES.get('current', '15m')
+        tf_display = self.format_tf_name('current')
+        lines.append(f"🕓 Таймфрейм: {tf_display}")
+        
+        # Цена
         price = signal['price']
         if price < 0.00001:
             price_formatted = f"{price:.8f}".rstrip('0').rstrip('.')
@@ -5059,19 +5076,41 @@ class MultiExchangeScannerBot:
         else:
             price_formatted = f"{price:.2f}".rstrip('0').rstrip('.')
         
-        # Строка 6: цена текущая
-        line6 = f"💰 Цена текущая: {price_formatted}"
+        lines.append(f"💰 Цена текущая: {price_formatted}")
         
-        # Строки: зоны доп.входа
+        # Зоны доп.входа
         entry_zones = signal.get('entry_zones', [])
-        zones_lines = []
         if entry_zones:
-            zones_lines.append("🟣 Зоны доп.входа:")
+            lines.append("🟣 Зоны доп.входа:")
             for zone in entry_zones:
-                zones_lines.append(f"     ▪️ {zone}")
+                lines.append(f"     ▪️ {zone}")
         
-        # Строка: цели и стоп
-        targets_line = ""
+        # Потенциал для накопления
+        potential_line = ""
+        if signal.get('signal_type') == 'accumulation' and signal.get('accumulation', {}).get('potential'):
+            potential = signal['accumulation']['potential']
+            if potential.get('has_potential'):
+                direction_emoji = "📈" if potential['target_pct'] > 0 else "📉"
+                if potential['target_price'] < 0.001:
+                    target_str = f"{potential['target_price']:.6f}".rstrip('0').rstrip('.')
+                else:
+                    target_str = f"{potential['target_price']:.4f}".rstrip('0').rstrip('.')
+                potential_line = f"{direction_emoji} Потенциал: {potential['target_pct']:+.2f}% до {target_str} ({potential['target_level']})"
+                lines.append(potential_line)
+        
+        # Рост для пампов
+        pump_line = ""
+        if pump_percent and signal.get('pump_dump') and len(signal['pump_dump']) > 0:
+            pump_data = signal['pump_dump'][0]
+            start_price = pump_data.get('start_price', signal['price'] / (1 + pump_percent/100))
+            if start_price < 0.001:
+                start_formatted = f"{start_price:.8f}".rstrip('0').rstrip('.')
+            else:
+                start_formatted = f"{start_price:.4f}"
+            pump_line = f"📈 Рост: {start_formatted} → {price_formatted} за {pump_data.get('time_window', 0):.0f}с"
+            lines.append(pump_line)
+        
+        # Цели
         if signal.get('target_1') and signal.get('target_2') and signal.get('stop_loss'):
             def format_target(p):
                 if p < 0.00001:
@@ -5092,52 +5131,26 @@ class MultiExchangeScannerBot:
             t1 = format_target(signal['target_1'])
             t2 = format_target(signal['target_2'])
             sl = format_target(signal['stop_loss'])
-            targets_line = f"🎯 Цели: {t1} | {t2} | SL {sl}"
+            lines.append(f"🎯 Цели: {t1} | {t2} | SL {sl}")
         
-        # Строка: потенциал для накопления
-        potential_line = ""
-        if signal.get('signal_type') == 'accumulation' and signal.get('accumulation', {}).get('potential'):
-            potential = signal['accumulation']['potential']
-            if potential.get('has_potential'):
-                direction_emoji = "📈" if potential['target_pct'] > 0 else "📉"
-                if potential['target_price'] < 0.001:
-                    target_str = f"{potential['target_price']:.6f}".rstrip('0').rstrip('.')
-                else:
-                    target_str = f"{potential['target_price']:.4f}".rstrip('0').rstrip('.')
-                potential_line = f"{direction_emoji} Потенциал: {potential['target_pct']:+.2f}% до {target_str} ({potential['target_level']})"
+        # Пустая строка перед причинами
+        lines.append("")
         
-        # Строка: рост для пампов
-        pump_line = ""
-        if pump_percent and signal.get('pump_dump') and len(signal['pump_dump']) > 0:
-            pump_data = signal['pump_dump'][0]
-            start_price = pump_data.get('start_price', signal['price'] / (1 + pump_percent/100))
-            if start_price < 0.001:
-                start_formatted = f"{start_price:.8f}".rstrip('0').rstrip('.')
-            else:
-                start_formatted = f"{start_price:.4f}"
-            pump_line = f"📈 Рост: {start_formatted} → {price_formatted} за {pump_data.get('time_window', 0):.0f}с"
+        # Причины
+        lines.append("💡 Причины:")
         
-        # Строка: причины
-        reasons_line = "💡 Причины:"
+        # Очистка и группировка причин
         clean_reasons = []
-        for reason in signal.get('reasons', [])[:8]:
+        for reason in signal.get('reasons', [])[:10]:
             clean_reason = reason
-            for emoji in ["📊 ", "✅ ", "🔄 ", "💰 ", "📈 ", "📉 ", "⚡️ ", "🔥 ", "🟢 ", "🔴 ", "⚪️ ", "⚪ ", "📦 ", "📐 ", "⚠️ "]:
+            # Убираем эмодзи
+            for emoji in ["📊 ", "✅ ", "🔄 ", "💰 ", "📈 ", "📉 ", "⚡️ ", "🔥 ", "🟢 ", "🔴 ", "⚪️ ", "⚪ ", "📦 ", "📐 ", "⚠️ ", "🎯 "]:
                 clean_reason = clean_reason.replace(emoji, "")
+            # Заменяем VWAP на понятное
             clean_reason = clean_reason.replace("Цена выше VWAP", "Цена выше справедливой стоимости (VWAP)")
             clean_reason = clean_reason.replace("Цена ниже VWAP", "Цена ниже справедливой стоимости (VWAP)")
             clean_reasons.append(f"     {clean_reason}")
         
-        # Собираем сообщение
-        lines = [line1, line2, line3, line4, line5, line6]
-        lines.extend(zones_lines)
-        if potential_line:
-            lines.append(potential_line)
-        if pump_line:
-            lines.append(pump_line)
-        if targets_line:
-            lines.append(targets_line)
-        lines.append(reasons_line)
         lines.extend(clean_reasons)
         
         message = "\n".join(lines)
