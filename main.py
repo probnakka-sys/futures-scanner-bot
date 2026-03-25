@@ -79,6 +79,7 @@ from config import (
     FIBONACCI_ADVANCED_SETTINGS,      # ← ДОБАВИТЬ
     SIGNAL_FORMAT_SETTINGS,            # ← ДОБАВИТЬ
     FIB_HISTORY_SETTINGS,              # ← ДОБАВИТЬ
+    TF_ALIGNMENT_SETTINGS,      # ← ДОБАВИТЬ
 )
 
 # from config import BREAKOUT_CONFIRMATION_SETTINGS
@@ -2718,6 +2719,143 @@ class MultiTimeframeAnalyzer:
         
         return alignment
     
+    def check_tf_alignment(self, dataframes: Dict[str, pd.DataFrame]) -> Dict:
+        """
+        Проверка согласованности таймфреймов для принятия решения о сигнале
+        Возвращает:
+            - status: 'perfect', 'warning', 'rejected'
+            - direction: 'LONG', 'SHORT', None
+            - reasons: список причин
+            - confidence_modifier: модификатор уверенности
+        """
+        result = {
+            'status': 'rejected',  # perfect, warning, rejected
+            'direction': None,
+            'reasons': [],
+            'confidence_modifier': 0,
+            'major_direction': None,
+            'medium_direction': None,
+            'minor_direction': None,
+        }
+        
+        settings = TF_ALIGNMENT_SETTINGS
+        if not settings.get('enabled', True):
+            result['status'] = 'perfect'
+            return result
+        
+        # Получаем тренды из ранее проанализированных данных
+        # Используем уже существующий метод analyze_timeframe_alignment
+        alignment = self.analyze_timeframe_alignment(dataframes)
+        
+        # 1. Анализируем старшие ТФ (1н, 1д)
+        major_tfs = settings.get('major_tfs', ['weekly', 'daily'])
+        major_directions = []
+        for tf in major_tfs:
+            trend = alignment.get(f'{tf}_trend')
+            if trend:
+                major_directions.append(trend)
+        
+        if major_directions:
+            bullish = major_directions.count('ВОСХОДЯЩИЙ')
+            bearish = major_directions.count('НИСХОДЯЩИЙ')
+            if bullish > bearish:
+                result['major_direction'] = 'LONG'
+            elif bearish > bullish:
+                result['major_direction'] = 'SHORT'
+            else:
+                result['major_direction'] = None
+        
+        # 2. Анализируем средние ТФ (4ч, 1ч)
+        medium_tfs = settings.get('medium_tfs', ['four_hourly', 'hourly'])
+        medium_directions = []
+        for tf in medium_tfs:
+            trend = alignment.get(f'{tf}_trend')
+            if trend:
+                medium_directions.append(trend)
+        
+        if medium_directions:
+            bullish = medium_directions.count('ВОСХОДЯЩИЙ')
+            bearish = medium_directions.count('НИСХОДЯЩИЙ')
+            if bullish > bearish:
+                result['medium_direction'] = 'LONG'
+            elif bearish > bullish:
+                result['medium_direction'] = 'SHORT'
+            else:
+                result['medium_direction'] = None
+        
+        # 3. Анализируем младшие ТФ (30м, 15м)
+        minor_tfs = settings.get('minor_tfs', ['30m', 'current'])
+        minor_directions = []
+        for tf in minor_tfs:
+            trend = alignment.get(f'{tf}_trend')
+            if trend:
+                minor_directions.append(trend)
+        
+        if minor_directions:
+            bullish = minor_directions.count('ВОСХОДЯЩИЙ')
+            bearish = minor_directions.count('НИСХОДЯЩИЙ')
+            if bullish > bearish:
+                result['minor_direction'] = 'LONG'
+            elif bearish > bullish:
+                result['minor_direction'] = 'SHORT'
+            else:
+                result['minor_direction'] = None
+        
+        # 4. Определяем общее направление по старшим ТФ
+        if result['major_direction']:
+            result['direction'] = result['major_direction']
+        else:
+            # Если старшие ТФ не определились, используем средние
+            result['direction'] = result['medium_direction']
+        
+        # 5. Проверяем противоречия
+        # 5.1. Противоречие старших ТФ между собой
+        if result['major_direction'] is None and len(major_directions) >= 2:
+            result['reasons'].append("❌ Старшие ТФ (1н, 1д) противоречат друг другу")
+            result['status'] = 'rejected'
+        
+        # 5.2. Противоречие средних ТФ со старшими
+        elif (result['major_direction'] and result['medium_direction'] and 
+              result['major_direction'] != result['medium_direction']):
+            if settings.get('reject_on_medium_mismatch', True):
+                result['status'] = 'rejected'
+                result['reasons'].append(f"❌ Средние ТФ (4ч, 1ч) противоречат старшим ({result['major_direction']} vs {result['medium_direction']})")
+            else:
+                result['status'] = 'warning'
+                result['confidence_modifier'] = -settings.get('warning_penalty', 15)
+                result['reasons'].append(f"⚠️ Средние ТФ (4ч, 1ч) противоречат старшим — возможна коррекция")
+        
+        # 5.3. Противоречие младших ТФ со старшими
+        elif (result['major_direction'] and result['minor_direction'] and 
+              result['major_direction'] != result['minor_direction']):
+            if settings.get('warn_on_minor_mismatch', True):
+                result['status'] = 'warning'
+                result['confidence_modifier'] = -settings.get('warning_penalty', 15)
+                result['reasons'].append(f"⚠️ Младшие ТФ (30м, 15м) противоречат старшим — возможна коррекция")
+            else:
+                result['status'] = 'perfect'
+        
+        # 5.4. Все согласованы
+        elif (result['major_direction'] and result['medium_direction'] and result['minor_direction'] and
+              result['major_direction'] == result['medium_direction'] == result['minor_direction']):
+            result['status'] = 'perfect'
+            result['confidence_modifier'] = settings.get('perfect_bonus', 20)
+            result['reasons'].append(f"✅ Все ТФ согласованы ({result['direction']}) — идеальный вход")
+        
+        # 5.5. Старшие и средние согласованы, младших нет
+        elif (result['major_direction'] and result['medium_direction'] and 
+              result['major_direction'] == result['medium_direction']):
+            result['status'] = 'perfect'
+            result['confidence_modifier'] = settings.get('perfect_bonus', 20) // 2
+            result['reasons'].append(f"✅ Старшие и средние ТФ согласованы ({result['direction']})")
+        
+        # 5.6. Только старшие определены
+        elif result['major_direction']:
+            result['status'] = 'warning'
+            result['reasons'].append(f"📊 Направление определено старшими ТФ ({result['direction']})")
+        
+        return result
+    
     def analyze_fvg_multi_timeframe(self, dataframes: Dict[str, pd.DataFrame], current_price: float) -> Dict:
         """
         Анализ FVG на всех таймфреймах с фильтрацией по расстоянию
@@ -3298,6 +3436,34 @@ class MultiTimeframeAnalyzer:
         alignment = self.analyze_timeframe_alignment(dataframes)
         logger.info(f"  📊 {symbol} - Согласованность трендов: {alignment['trend_alignment']}%")
         
+        # ===== ПРОВЕРКА СОГЛАСОВАННОСТИ ТАЙМФРЕЙМОВ =====
+        tf_alignment = self.check_tf_alignment(dataframes)
+        
+        # Добавляем причины от согласованности
+        for reason in tf_alignment['reasons']:
+            reasons.append(reason)
+        
+        # Корректируем уверенность
+        confidence += tf_alignment['confidence_modifier']
+        
+        # Определяем направление, если оно еще не определено
+        if direction == 'NEUTRAL' and tf_alignment['direction']:
+            direction = tf_alignment['direction']
+        
+        # Проверяем, нужно ли отправлять сигнал
+        send_signal = False
+        if tf_alignment['status'] == 'perfect' and TF_ALIGNMENT_SETTINGS.get('send_on_perfect', True):
+            send_signal = True
+        elif tf_alignment['status'] == 'warning' and TF_ALIGNMENT_SETTINGS.get('send_on_warning', True):
+            send_signal = True
+        elif tf_alignment['status'] == 'rejected' and TF_ALIGNMENT_SETTINGS.get('send_on_rejected', False):
+            send_signal = True
+            reasons.append(f"🔧 СИГНАЛ ОТКЛОНЕН, но отправлен в тестовом режиме")
+        
+        if not send_signal:
+            logger.info(f"⏭️ {symbol} - сигнал отклонен по согласованности ТФ (status={tf_alignment['status']})")
+            return None
+
         confidence = 50
         reasons = []
         direction = 'NEUTRAL'
@@ -5108,6 +5274,16 @@ class MultiExchangeScannerBot:
             coin = self.extract_coin(signal['symbol'])
             pump_text = ""
         
+        # Определяем направление для отображения (с учетом предупреждений)
+        display_direction = signal['direction']
+        
+        # Если есть предупреждение о противоречии, добавляем в направление
+        if '⚠️' in str(signal.get('reasons', [])):
+            if 'LONG' in display_direction and 'коррекция' in str(signal.get('reasons', [])):
+                display_direction = "LONG (возможна коррекция)"
+            elif 'SHORT' in display_direction and 'коррекция' in str(signal.get('reasons', [])):
+                display_direction = "SHORT (возможна коррекция)"
+
         # Строка 1: название и сила
         line1 = f"{main_emoji} <code>{coin}</code>{pump_text} {signal['signal_power']}"
         
@@ -5166,7 +5342,7 @@ class MultiExchangeScannerBot:
         lines = [line1, line2, line3, ""]
         
         # Направление
-        lines.append(f"📊 Направление: {signal['direction']}")
+        lines.append(f"📊 Направление: {display_direction}")
         
         # Таймфрейм (переводим)
         current_tf = TIMEFRAMES.get('current', '15m')
