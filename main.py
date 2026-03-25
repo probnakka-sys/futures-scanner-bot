@@ -5056,7 +5056,7 @@ class MultiExchangeScannerBot:
         
         # Таймфрейм (переводим)
         current_tf = TIMEFRAMES.get('current', '15m')
-        tf_display = self.format_tf_name('current')
+        tf_display = '15м'
         lines.append(f"🕓 Таймфрейм: {tf_display}")
         
         # Цена
