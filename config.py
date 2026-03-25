@@ -884,3 +884,42 @@ MINOR_TF_SETTINGS = {
         }
     }
 }
+
+# ============== НАСТРОЙКИ ФИБОНАЧЧИ (РАСШИРЕННЫЕ) ==============
+
+FIBONACCI_ADVANCED_SETTINGS = {
+    'enabled': True,
+    'retracement_levels': [0.0, 0.236, 0.382, 0.5, 0.618, 0.786, 0.86, 1.0],
+    'extension_levels': [1.272, 1.618, 2.0, 2.618],
+    'lookback_candles': 3,
+    'min_distance_pct': 0.5,
+    'weight_multiplier': 1.5,
+    'history_ttl_days': 30,
+    'convergence_tf_min': 2,
+    'convergence_tf_list': ['15m', '30m', '1h', '4h', '1d', '1w'],
+    'show_approach_count': True,
+    'approach_threshold': 0.5,
+}
+
+# ============== НАСТРОЙКИ ФОРМАТИРОВАНИЯ СИГНАЛОВ ==============
+
+SIGNAL_FORMAT_SETTINGS = {
+    'empty_lines': True,
+    'group_trends': True,
+    'tf_names': {
+        'current': '15м',
+        'hourly': '1ч',
+        'four_hourly': '4ч',
+        'daily': '1д',
+        'weekly': '1н',
+        'monthly': '1м'
+    }
+}
+
+# ============== НАСТРОЙКИ ИСТОРИИ ФИБОНАЧЧИ ==============
+
+FIB_HISTORY_SETTINGS = {
+    'enabled': True,
+    'max_approaches': 10,
+    'ttl_seconds': 2592000,
+}
