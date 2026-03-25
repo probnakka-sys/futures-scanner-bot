@@ -3365,7 +3365,11 @@ class MultiTimeframeAnalyzer:
                         
                         # Добавляем в результат для отображения
                         if 'sniper_entry' not in locals():
+                        # Проверяем, что signal является словарем
+                        if isinstance(signal, dict):
                             signal['sniper_entry'] = sniper
+                        else:
+                            logger.warning(f"⚠️ signal не является словарем, тип: {type(signal)}")
                         logger.info(f"  🎯 {symbol} - Найдена снайперская точка входа: {sniper['type']} по {sniper['entry_price']:.4f}")
 
          # ===== АНАЛИЗ НАКОПЛЕНИЯ ПОСЛЕ ПРОБОЯ =====
