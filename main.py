@@ -2429,8 +2429,7 @@ class MultiTimeframeAnalyzer:
         
         return df
     
-    def analyze_timeframe_alignment(self, dataframes: Dict[str, pd.DataFrame]) -> Dict:
-        ""    def analyze_timeframe_alignment(self, dataframes: Dict[str, pd.DataFrame]) -> Dict:
+    def analyze_timeframe_alignment(self, dataframes: Dict[str, pd.DataFrame]) -> Dict:        
         """Анализ согласованности трендов на разных таймфреймах"""
         alignment = {
             'trend_alignment': 0,
