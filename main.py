@@ -78,7 +78,7 @@ from config import (
     PROXY_SETTINGS,
     FIBONACCI_ADVANCED_SETTINGS,      # ← ДОБАВИТЬ
     SIGNAL_FORMAT_SETTINGS,            # ← ДОБАВИТЬ
-    FIB_HISTORY_SETTINGS              # ← ДОБАВИТЬ
+    FIB_HISTORY_SETTINGS,              # ← ДОБАВИТЬ
 )
 
 # from config import BREAKOUT_CONFIRMATION_SETTINGS
