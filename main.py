@@ -4491,7 +4491,7 @@ class FastPumpScanner:
         else:
             return f"{num:.0f}"
     
-    def format_tf_name(self, tf: str) -> str:
+    def format_tf_name(self, tf: str) -> str:   # ← 4 пробела отступ
         """Преобразование названия таймфрейма в читаемый формат"""
         tf_map = SIGNAL_FORMAT_SETTINGS.get('tf_names', {
             'current': '15м',
