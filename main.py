@@ -1483,11 +1483,23 @@ class LevelCollector:
             
             current_ema = df[ema_col].iloc[-1]
             
-            # Считаем касания EMA
+            # Считаем касания EMA с защитой от выхода за границы
             touches = 0
-            for i in range(len(df)-50, len(df)):
-                if abs(df['close'].iloc[i] - df[ema_col].iloc[i]) / df[ema_col].iloc[i] < 0.003:
-                    touches += 1
+            df_len = len(df)
+            start_idx = max(0, df_len - 50)  # последние 50 свечей
+            
+            for i in range(start_idx, df_len):
+                try:
+                    close_price = df['close'].iloc[i]
+                    ema_value = df[ema_col].iloc[i]
+                    
+                    if pd.isna(close_price) or pd.isna(ema_value) or ema_value == 0:
+                        continue
+                    
+                    if abs(close_price - ema_value) / ema_value < 0.003:
+                        touches += 1
+                except IndexError:
+                    continue
             
             strength = self.calculate_level_strength(f'ema_{period}', tf, touches, size=0)
             
