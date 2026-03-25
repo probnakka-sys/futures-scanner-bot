@@ -3435,6 +3435,12 @@ class MultiTimeframeAnalyzer:
         
         alignment = self.analyze_timeframe_alignment(dataframes)
         logger.info(f"  📊 {symbol} - Согласованность трендов: {alignment['trend_alignment']}%")
+
+        # ===== ОБЪЯВЛЯЕМ ПЕРЕМЕННЫЕ =====
+        confidence = 50
+        reasons = []
+        direction = 'NEUTRAL'
+        signal_type = 'regular'
         
         # ===== ПРОВЕРКА СОГЛАСОВАННОСТИ ТАЙМФРЕЙМОВ =====
         tf_alignment = self.check_tf_alignment(dataframes)
@@ -3463,12 +3469,7 @@ class MultiTimeframeAnalyzer:
         if not send_signal:
             logger.info(f"⏭️ {symbol} - сигнал отклонен по согласованности ТФ (status={tf_alignment['status']})")
             return None
-
-        confidence = 50
-        reasons = []
-        direction = 'NEUTRAL'
-        signal_type = 'regular'
-        
+              
         # ===== RSI =====
         if pd.notna(last['rsi']):
             if last['rsi'] < INDICATOR_SETTINGS['rsi_oversold']:
