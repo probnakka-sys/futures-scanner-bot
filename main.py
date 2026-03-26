@@ -2765,6 +2765,7 @@ class MultiTimeframeAnalyzer:
             trend = alignment.get(f'{tf}_trend')
             if trend:  # только если есть данные
                 available_tfs += 1
+                available_tfs_list.append(tf)  # ← ДОБАВЛЕНО
                 if trend == 'ВОСХОДЯЩИЙ':
                     tf_directions.append('LONG')
                 elif trend == 'НИСХОДЯЩИЙ':
@@ -2773,7 +2774,7 @@ class MultiTimeframeAnalyzer:
                     tf_directions.append(None)
             else:
                 tf_directions.append(None)
-                
+
         logger.info(f"  🔍 Доступные ТФ для согласованности: {available_tfs_list}")
 
         # Если нет данных ни для одного ТФ — возвращаем
