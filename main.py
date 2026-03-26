@@ -2818,13 +2818,13 @@ class MultiTimeframeAnalyzer:
         # Добавляем причину о согласованности
         if settings.get('show_percentage', True):
             if result['percentage'] >= 100:
-                result['reasons'].append(f"✅ Идеальная согласованность ТФ: {result['percentage']}% ({aligned_count}/{total_tfs})")
+                result['reasons'].append(f"✅ Идеальная согласованность ТФ: {result['percentage']}% ({aligned_count}/{available_tfs})")
             elif result['percentage'] >= 66:
-                result['reasons'].append(f"📊 Хорошая согласованность ТФ: {result['percentage']}% ({aligned_count}/{total_tfs})")
+                result['reasons'].append(f"📊 Хорошая согласованность ТФ: {result['percentage']}% ({aligned_count}/{available_tfs})")
             elif result['percentage'] >= 33:
-                result['reasons'].append(f"⚠️ Средняя согласованность ТФ: {result['percentage']}% ({aligned_count}/{total_tfs})")
+                result['reasons'].append(f"⚠️ Средняя согласованность ТФ: {result['percentage']}% ({aligned_count}/{available_tfs})")
             else:
-                result['reasons'].append(f"⚠️ Низкая согласованность ТФ: {result['percentage']}% ({aligned_count}/{total_tfs})")
+                result['reasons'].append(f"⚠️ Низкая согласованность ТФ: {result['percentage']}% ({aligned_count}/{available_tfs})")
         
         # Определяем статус на основе режима
         threshold = settings.get('thresholds', {}).get(mode, 0)
