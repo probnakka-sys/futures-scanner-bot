@@ -5241,7 +5241,7 @@ class MultiExchangeScannerBot:
     
     # ============== ОСНОВНОЙ МЕТОД ФОРМАТИРОВАНИЯ ==============
     
-    def  clean_reasons.append(f"     {clean_reason}")(self, signal: Dict, contract_info: Dict = None, pump_percent: float = None, df: pd.DataFrame = None) -> Tuple[str, InlineKeyboardMarkup]:
+    def format_message(self, signal: Dict, contract_info: Dict = None, pump_percent: float = None, df: pd.DataFrame = None) -> Tuple[str, InlineKeyboardMarkup]:
         """Форматирование сигнала с новым форматом"""
         
         # Определяем эмодзи
@@ -5461,9 +5461,7 @@ class MultiExchangeScannerBot:
             keyboard.append(row2)
         
         return message, InlineKeyboardMarkup(keyboard) if keyboard else None
-    
-        logger.info(f"  📊 format_message: направление до изменений = {signal.get('direction')}")
-
+            
     # ... остальные методы (scan_exchange, scan_all, fast_pump_scan, send_signal и т.д.) остаются без изменений ...
     
     async def scan_exchange(self, name: str, fetcher: BaseExchangeFetcher) -> List[Dict]:
