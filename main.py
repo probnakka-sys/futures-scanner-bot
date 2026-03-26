@@ -2772,7 +2772,9 @@ class MultiTimeframeAnalyzer:
                     tf_directions.append(None)
             else:
                 tf_directions.append(None)
-        
+                
+        logger.info(f"  🔍 Доступные ТФ для согласованности: {available_tfs_list}")
+
         # Если нет данных ни для одного ТФ — возвращаем
         if available_tfs == 0:
             result['status'] = 'perfect'
