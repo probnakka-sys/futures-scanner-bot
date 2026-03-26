@@ -2839,7 +2839,7 @@ class MultiTimeframeAnalyzer:
         
         if mode == 'info' and settings.get('send_all_in_info_mode', True):
             result['status'] = 'perfect' if result['percentage'] >= 100 else 'warning'
-            result['reasons'].append(f"ℹ️ Режим INFO: сигнал отправлен для анализа")
+            # result['reasons'].append(f"ℹ️ Режим INFO: сигнал отправлен для анализа")
         elif result['percentage'] >= threshold:
             if result['percentage'] >= 100:
                 result['status'] = 'perfect'
@@ -4877,7 +4877,9 @@ class FastPumpScanner:
                 logger.info(f"  📊 format_pump_message: СМЕНА! {old_dir} → {signal['direction']} (DUMP + пробой)")
                 
                 if 'reasons' in signal and not any('Отскок' in r for r in signal['reasons']):
-                    signal['reasons'].insert(0, f"Пробой уровня после дампа {pump_change:.1f}%")
+                    reason_text = f"Пробой уровня после дампа {pump_change:.1f}%"
+                    if reason_text not in signal['reasons']:
+                        signal['reasons'].insert(0, reason_text)
             else:
                 # Без пробоя - проверяем силу медвежьих сигналов
                 if bearish_score >= 50:
