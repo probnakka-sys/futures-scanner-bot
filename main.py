@@ -2559,6 +2559,7 @@ class MultiTimeframeAnalyzer:
             'trend_alignment': 0,
             'signals': [],
             'trends': {},
+            'trend_strength': {},
             'current_trend': None,
             'hourly_trend': None,
             'four_hourly_trend': None,
