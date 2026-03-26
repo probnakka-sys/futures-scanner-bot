@@ -918,41 +918,70 @@ FIB_HISTORY_SETTINGS = {
 TF_ALIGNMENT_SETTINGS = {
     'enabled': True,
     
-    # Режимы для разных типов сигналов:
-    # 'strict' - сигнал только при полном совпадении (все 6 ТФ)
-    # 'normal' - сигнал при совпадении старших и средних (4 из 6)
-    # 'loose' - сигнал при совпадении старших (2 из 6)
-    # 'info' - все сигналы приходят, показываем процент согласованности
-    # 'off' - проверка выключена
-    
+    # Режимы: 'strict', 'normal', 'loose', 'info', 'off'
     'regular_mode': 'info',        # для обычных LONG/SHORT
-    'pump_mode': 'info',           # для памп-дамп
     'accumulation_mode': 'normal', # для накопления
+    'pump_mode': 'info',           # для памп-дамп
     
-    # Пороги для режимов (в процентах от 6 ТФ)
+    # === НАСТРОЙКИ ТФ ДЛЯ КАЖДОГО ТИПА ===
+    'regular_tfs': {
+        'major': ['weekly', 'daily', 'four_hourly', 'hourly'],  # 4 ТФ
+        'minor': ['30m', 'current'],                            # 2 ТФ
+        'ultra_minor': [],                                       # не используем
+    },
+    'accumulation_tfs': {
+        'major': ['weekly', 'daily', 'four_hourly', 'hourly'],  # 4 ТФ
+        'minor': ['30m', 'current'],                            # 2 ТФ
+        'ultra_minor': [],
+    },
+    'pump_tfs': {
+        'major': ['weekly', 'daily', 'four_hourly', 'hourly'],  # 4 ТФ (для определения тренд/коррекция)
+        'minor': ['30m', 'current'],                            # 2 ТФ
+        'ultra_minor': ['5m', '3m', '1m'],                      # 3 ТФ (для подтверждения импульса)
+    },
+    
+    # Пороги для режимов (в процентах от доступных ТФ)
     'thresholds': {
-        'strict': 100,    # 6/6 ТФ
-        'normal': 66,     # 4/6 ТФ
-        'loose': 33,      # 2/6 ТФ
-        'info': 0,        # все сигналы
-        'off': -1,        # проверка выключена
+        'strict': 100,
+        'normal': 66,
+        'loose': 33,
+        'info': 0,
+        'off': -1,
     },
     
     # Показывать процент согласованности в сигнале
     'show_percentage': True,
     
-    # Влияние на уверенность (в зависимости от процента согласованности)
-    'bonus_perfect': 20,      # 100% согласованности
-    'bonus_high': 10,         # 66-99%
-    'penalty_low': -5,        # 33-65%
-    'penalty_very_low': -15,  # 0-32%
+    # Влияние на уверенность
+    'bonus_perfect': 20,
+    'bonus_high': 10,
+    'penalty_low': -5,
+    'penalty_very_low': -15,
     
-    # Отправлять ли сигналы с низкой согласованностью в режиме info
+    # Режим INFO: отправлять все сигналы
     'send_all_in_info_mode': True,
+}
+
+# ============== НАСТРОЙКИ ОЦЕНКИ СИЛЫ ТРЕНДА ==============
+
+TREND_STRENGTH_SETTINGS = {
+    'enabled': True,                     # Вкл/выкл расширенную оценку
     
-    # Таймфреймы для анализа (всего 6 основных)
-    'major_tfs': ['weekly', 'daily'],           # 2 ТФ
-    'medium_tfs': ['four_hourly', 'hourly'],    # 2 ТФ
-    'minor_tfs': ['30m', 'current'],            # 2 ТФ (current = 15м)
-    'total_tfs': 6,
+    # Используемые индикаторы
+    'use_ema_50': True,                  # Использовать EMA 50 для силы тренда
+    'use_volume': True,                  # Использовать объем для подтверждения
+    'use_rsi': True,                     # Использовать RSI для оценки перекупленности
+    
+    # Веса для разных факторов (влияние на уверенность)
+    'weights': {
+        'strong_trend': 15,              # Сильный тренд (EMA 9 > 21 > 50)
+        'weak_trend': 5,                 # Слабый тренд (EMA 9 > 21, но 21 < 50)
+        'volume_confirmation': 10,       # Объем подтверждает тренд
+        'rsi_extreme': 10,               # RSI в экстремальной зоне (<30 или >70)
+    },
+    
+    # Пороги
+    'volume_ratio_threshold': 1.5,       # Отношение объема к среднему для подтверждения
+    'rsi_oversold': 30,                  # RSI перепродан
+    'rsi_overbought': 70,                # RSI перекуплен
 }
