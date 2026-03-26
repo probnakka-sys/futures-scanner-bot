@@ -2756,13 +2756,14 @@ class MultiTimeframeAnalyzer:
         all_tfs = settings.get('major_tfs', ['weekly', 'daily'])
         all_tfs += settings.get('medium_tfs', ['four_hourly', 'hourly'])
         all_tfs += settings.get('minor_tfs', ['30m', 'current'])
-        total_tfs = len(all_tfs)
         
-        # Определяем направление каждого ТФ
+        # Определяем направление каждого ТФ (только для ТФ с данными)
         tf_directions = []
+        available_tfs = 0
         for tf in all_tfs:
             trend = alignment.get(f'{tf}_trend')
-            if trend:
+            if trend:  # только если есть данные
+                available_tfs += 1
                 if trend == 'ВОСХОДЯЩИЙ':
                     tf_directions.append('LONG')
                 elif trend == 'НИСХОДЯЩИЙ':
@@ -2771,6 +2772,12 @@ class MultiTimeframeAnalyzer:
                     tf_directions.append(None)
             else:
                 tf_directions.append(None)
+        
+        # Если нет данных ни для одного ТФ — возвращаем
+        if available_tfs == 0:
+            result['status'] = 'perfect'
+            result['percentage'] = 100
+            return result
         
         # Определяем основное направление по старшим ТФ
         major_tfs = settings.get('major_tfs', ['weekly', 'daily'])
@@ -2787,7 +2794,7 @@ class MultiTimeframeAnalyzer:
             elif bearish > bullish:
                 result['direction'] = 'SHORT'
         
-        # Считаем количество согласованных ТФ
+        # Считаем количество согласованных ТФ (только из доступных)
         aligned_count = 0
         if result['direction']:
             for d in tf_directions:
@@ -2795,8 +2802,8 @@ class MultiTimeframeAnalyzer:
                     aligned_count += 1
         
         result['aligned_count'] = aligned_count
-        result['total_count'] = total_tfs
-        result['percentage'] = round((aligned_count / total_tfs) * 100)
+        result['total_count'] = available_tfs   # ← используем доступные ТФ
+        result['percentage'] = round((aligned_count / available_tfs) * 100) if available_tfs > 0 else 0
         
         # Определяем бонус/штраф к уверенности
         if result['percentage'] >= 100:
