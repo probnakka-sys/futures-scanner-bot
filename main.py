@@ -82,6 +82,8 @@ from config import (
     TF_ALIGNMENT_SETTINGS,      
     DYNAMIC_TARGET_SETTINGS,
     ACCUMULATION_SIGNAL_SETTINGS,
+    ENTRY_ZONES_SETTINGS,
+    SIGNAL_TYPE_SETTINGS,
 )
 
 # from config import BREAKOUT_CONFIRMATION_SETTINGS
@@ -4196,31 +4198,59 @@ class MultiTimeframeAnalyzer:
         logger.info(f"  📈 {symbol} - ATR: {atr}, Цели: {targets}")
 
         # ===== РАСЧЕТ ЗОН ДОП.ВХОДА =====
+        from config import ENTRY_ZONES_SETTINGS
+        
         entry_zones = []
         zone_descriptions = []
-        current_tf = TIMEFRAMES.get('current', '15m')
         
-        # Получаем данные текущего ТФ для расчета зон
-        if 'current' in dataframes and dataframes['current'] is not None:
-            df_current = dataframes['current']
-            
+        # Выбираем настройки в зависимости от типа сигнала
+        if signal_type == 'accumulation':
+            zone_settings = ENTRY_ZONES_SETTINGS['accumulation']
+        elif signal_type in ['PUMP', 'DUMP', 'pump']:
+            zone_settings = ENTRY_ZONES_SETTINGS['pump']
+        else:
+            zone_settings = ENTRY_ZONES_SETTINGS['regular']
+        
+        lookback = ENTRY_ZONES_SETTINGS['lookback']
+        
+        # Зона 1
+        tf1 = zone_settings.get('zone_1_tf')
+        if tf1 and tf1 in dataframes and dataframes[tf1] is not None:
+            df1 = dataframes[tf1]
             if 'LONG' in direction:
-                # Для LONG — ищем локальные минимумы (ниже цены)
-                zone1 = df_current['low'].tail(20).min()
-                zone2 = df_current['low'].tail(50).min()
-                # Убеждаемся, что уровни разные
-                if abs(zone1 - zone2) / current_price < 0.001:
-                    zone2 = df_current['low'].tail(100).min()
-                entry_zones = [zone1, zone2]
-                zone_descriptions = ["локальный минимум", "локальный минимум"]
+                zone1 = df1['low'].tail(lookback['zone_1']).min()
+                desc1 = f"минимум {tf1}"
             else:
-                # Для SHORT — ищем локальные максимумы (выше цены)
-                zone1 = df_current['high'].tail(20).max()
-                zone2 = df_current['high'].tail(50).max()
-                if abs(zone1 - zone2) / current_price < 0.001:
-                    zone2 = df_current['high'].tail(100).max()
-                entry_zones = [zone1, zone2]
-                zone_descriptions = ["локальный максимум", "локальный максимум"]
+                zone1 = df1['high'].tail(lookback['zone_1']).max()
+                desc1 = f"максимум {tf1}"
+            entry_zones.append(zone1)
+            zone_descriptions.append(desc1)
+        
+        # Зона 2
+        tf2 = zone_settings.get('zone_2_tf')
+        if tf2 and tf2 in dataframes and dataframes[tf2] is not None:
+            df2 = dataframes[tf2]
+            if 'LONG' in direction:
+                zone2 = df2['low'].tail(lookback['zone_2']).min()
+                desc2 = f"минимум {tf2}"
+            else:
+                zone2 = df2['high'].tail(lookback['zone_2']).max()
+                desc2 = f"максимум {tf2}"
+            entry_zones.append(zone2)
+            zone_descriptions.append(desc2)
+        
+        # Зона 3 (опционально)
+        tf3 = zone_settings.get('zone_3_tf')
+        if tf3 and tf3 in dataframes and dataframes[tf3] is not None:
+            df3 = dataframes[tf3]
+            if 'LONG' in direction:
+                zone3 = df3['low'].tail(lookback['zone_3']).min()
+                desc3 = f"минимум {tf3}"
+            else:
+                zone3 = df3['high'].tail(lookback['zone_3']).max()
+                desc3 = f"максимум {tf3}"
+            entry_zones.append(zone3)
+            zone_descriptions.append(desc3)
         
         # Форматируем зоны для отображения с описанием
         formatted_zones = []
@@ -5173,6 +5203,12 @@ class FastPumpScanner:
             else:
                 line8 = f"📉 Падение: {start_formatted} → {price_formatted} за {pump_time:.0f}с"
         
+        # Собираем строки сообщения
+        lines = [line1, line2, line3, line4, line5, line6, line7]
+        
+        if line8:
+            lines.append(line8)
+
         # Зоны доп.входа (добавить сюда)
         entry_zones = signal.get('entry_zones', [])
         if entry_zones:
