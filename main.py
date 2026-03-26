@@ -5163,8 +5163,13 @@ class FastPumpScanner:
                 funding_emoji = "🟢" if funding > 0 else "🔴" if funding < 0 else "⚪"
                 line2 += f" / {funding_emoji} {funding:.3f}%"
         
-        exchange_link = REF_LINKS.get(signal['exchange'], '#')
-        line3 = f"💲 Trade: <a href='{exchange_link}'>{signal['exchange']}</a>"
+        # exchange_link = REF_LINKS.get(signal['exchange'], '#')
+        # line3 = f"💲 Trade: <a href='{exchange_link}'>{signal['exchange']}</a>"
+        # Строка 3: биржи (3 штуки)
+        bingx_link = REF_LINKS.get('BingX', '#')
+        bybit_link = REF_LINKS.get('Bybit', '#')
+        mexc_link = REF_LINKS.get('MEXC', '#')
+        line3 = f"💲 Trade: <a href='{bingx_link}'>BingX</a> | <a href='{bybit_link}'>Bybit</a> | <a href='{mexc_link}'>MEXC</a>"
         
         line4 = ""
         line5 = f"📊 Направление: {signal['direction']}"
@@ -5211,6 +5216,7 @@ class FastPumpScanner:
 
         # Зоны доп.входа (добавить сюда)
         entry_zones = signal.get('entry_zones', [])
+        logger.info(f"  🔍 Зоны доп.входа в памп-сигнале: {entry_zones}")
         if entry_zones:
             lines.append("🟣 Зоны доп.входа:")
             for zone in entry_zones:
