@@ -2752,10 +2752,14 @@ class MultiTimeframeAnalyzer:
         # Получаем тренды из ранее проанализированных данных
         alignment = self.analyze_timeframe_alignment(dataframes)
         
-        # Собираем все ТФ для анализа
-        all_tfs = settings.get('major_tfs', ['weekly', 'daily'])
-        all_tfs += settings.get('medium_tfs', ['four_hourly', 'hourly'])
-        all_tfs += settings.get('minor_tfs', ['30m', 'current'])
+        # Собираем все ТФ для анализа (убираем дубликаты)
+        all_tfs = list(set(
+            settings.get('major_tfs', ['weekly', 'daily']) +
+            settings.get('medium_tfs', ['four_hourly', 'hourly']) +
+            settings.get('minor_tfs', ['30m', 'current'])
+        ))
+        
+        logger.info(f"  🔍 Все ТФ для анализа (уникальные): {all_tfs}")
         
         # Определяем направление каждого ТФ (только для ТФ с данными)
         tf_directions = []
