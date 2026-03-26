@@ -1018,15 +1018,71 @@ DYNAMIC_TARGET_SETTINGS = {
     'higher_tf': 'hourly',                   # Какой ТФ использовать: 'hourly' или 'daily'
 }
 
-# ============== НАСТРОЙКИ ДЛЯ СИГНАЛОВ НАКОПЛЕНИЯ ==============
+# ============== НАСТРОЙКИ ЗОН ДОП.ВХОДА ==============
 
-ACCUMULATION_SIGNAL_SETTINGS = {
+ENTRY_ZONES_SETTINGS = {
     'enabled': True,
-    'leverage': 15,                      # Плечо 15x вместо 50x
-    'stop_multiplier': 3.5,              # Стоп 3.5x ATR (было 1.8)
-    'target_1_multiplier': 5.0,          # Цель 1: 5x ATR
-    'target_2_multiplier': 10.0,         # Цель 2: 10x ATR
-    'min_potential_pct': 5.0,            # Минимальный потенциал для сигнала (5%)
-    'use_higher_tf_atr': True,           # Использовать ATR старшего ТФ
-    'higher_tf': 'hourly',               # ТФ для ATR
+    
+    # Для обычных сигналов
+    'regular': {
+        'zone_1_tf': 'current',      # 15м
+        'zone_2_tf': 'hourly',       # 1ч
+        'zone_3_tf': None,           # опционально
+    },
+    
+    # Для памп-дамп сигналов
+    'pump': {
+        'zone_1_tf': 'current',      # 15м
+        'zone_2_tf': '5m',           # 5м (быстрые уровни)
+        'zone_3_tf': '1m',           # 1м (сверхбыстрые)
+    },
+    
+    # Для накопления
+    'accumulation': {
+        'zone_1_tf': 'hourly',       # 1ч
+        'zone_2_tf': 'four_hourly',  # 4ч
+        'zone_3_tf': 'daily',        # 1д
+    },
+    
+    # Периоды для поиска уровней (количество свечей)
+    'lookback': {
+        'zone_1': 20,                # 20 свечей
+        'zone_2': 50,                # 50 свечей
+        'zone_3': 100,               # 100 свечей
+    },
+}
+
+# ============== НАСТРОЙКИ ДЛЯ РАЗНЫХ ТИПОВ СИГНАЛОВ ==============
+
+SIGNAL_TYPE_SETTINGS = {
+    # Обычные сигналы (LONG/SHORT)
+    'regular': {
+        'leverage': 50,                      # Плечо по умолчанию
+        'stop_multiplier': 1.8,              # Стоп
+        'target_1_multiplier': 2.5,          # Цель 1
+        'target_2_multiplier': 5.0,          # Цель 2
+        'use_higher_tf_atr': False,          # Использовать ATR старшего ТФ
+        'higher_tf': 'hourly',
+    },
+    
+    # Памп-дамп сигналы
+    'pump': {
+        'leverage': 50,
+        'stop_multiplier': 2.0,              # Стоп чуть шире для пампа
+        'target_1_multiplier': 2.5,
+        'target_2_multiplier': 5.0,
+        'use_higher_tf_atr': False,
+        'higher_tf': 'hourly',
+    },
+    
+    # Сигналы накопления
+    'accumulation': {
+        'leverage': 15,
+        'stop_multiplier': 3.5,
+        'target_1_multiplier': 5.0,
+        'target_2_multiplier': 10.0,
+        'min_potential_pct': 5.0,
+        'use_higher_tf_atr': True,
+        'higher_tf': 'hourly',
+    },
 }
