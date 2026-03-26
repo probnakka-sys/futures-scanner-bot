@@ -775,18 +775,6 @@ PERFORMANCE_SETTINGS = {
     'cache_ttl': 60,
 }
 
-# ============== ТАЙМФРЕЙМЫ ==============
-
-TIMEFRAMES = {
-    'current': FEATURES['timeframes']['current'],
-    'hourly': '1h' if FEATURES['timeframes']['hourly'] else None,
-    'daily': '1d' if FEATURES['timeframes']['daily'] else None,
-    'weekly': '1w' if FEATURES['timeframes']['weekly'] else None,
-    'monthly': '1M' if FEATURES['timeframes']['monthly'] else None,
-}
-
-TIMEFRAMES = {k: v for k, v in TIMEFRAMES.items() if v is not None}
-
 # ============== НАСТРОЙКИ ДЕТЕКТОРА ЛОЖНЫХ ПРОБОЕВ ==============
 
 FAKEOUT_SETTINGS = {
@@ -838,7 +826,7 @@ MINOR_TIMEFRAMES = {
     '1m': '1m',
     '3m': '3m',
     '5m': '5m',
-    '15m': '15m',      # уже есть
+    '15m': '15m',      
     '30m': '30m',
 }
 
@@ -850,6 +838,7 @@ TIMEFRAMES = {
     'current': FEATURES['timeframes']['current'],
     '30m': MINOR_TIMEFRAMES['30m'],
     'hourly': '1h',
+    'four_hourly': '4h',
     'daily': '1d',
     'weekly': '1w',
     'monthly': '1M',
