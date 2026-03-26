@@ -2587,6 +2587,9 @@ class MultiTimeframeAnalyzer:
         trends_list = []
         minor_bullish = 0
         minor_bearish = 0
+
+        from config import TREND_STRENGTH_SETTINGS
+        strength_settings = TREND_STRENGTH_SETTINGS
         
         for tf_name in tf_order:
             if tf_name not in dataframes or dataframes[tf_name] is None or dataframes[tf_name].empty:
