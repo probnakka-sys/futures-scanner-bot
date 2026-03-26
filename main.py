@@ -2760,6 +2760,7 @@ class MultiTimeframeAnalyzer:
         # Определяем направление каждого ТФ (только для ТФ с данными)
         tf_directions = []
         available_tfs = 0
+        available_tfs_list = []
         for tf in all_tfs:
             trend = alignment.get(f'{tf}_trend')
             if trend:  # только если есть данные
