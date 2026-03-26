@@ -985,3 +985,35 @@ TREND_STRENGTH_SETTINGS = {
     'rsi_oversold': 30,                  # RSI перепродан
     'rsi_overbought': 70,                # RSI перекуплен
 }
+
+# ============== НАСТРОЙКИ ДИНАМИЧЕСКИХ ЦЕЛЕЙ И СТОПОВ ==============
+
+DYNAMIC_TARGET_SETTINGS = {
+    'enabled': True,                         # Вкл/выкл динамические цели
+    
+    # Для идеального сетапа (все ТФ согласованы)
+    'perfect_setup': {
+        'target_1_mult': 4.0,                # Цель 1: 4x ATR
+        'target_2_mult': 8.0,                # Цель 2: 8x ATR
+        'stop_mult': 2.5,                    # Стоп: 2.5x ATR
+    },
+    
+    # Базовые настройки (обычный сигнал)
+    'default': {
+        'target_1_mult': 2.5,                # Цель 1: 2.5x ATR
+        'target_2_mult': 5.0,                # Цель 2: 5x ATR
+        'stop_mult': 1.8,                    # Стоп: 1.8x ATR
+    },
+    
+    # Для сильного тренда (недельный тренд + EMA 200)
+    'strong_trend': {
+        'enabled': True,                     # Вкл/выкл расширенный стоп для сильного тренда
+        'target_1_mult': 4.0,                # Цель 1: 4x ATR
+        'target_2_mult': 8.0,                # Цель 2: 8x ATR
+        'stop_mult': 3.5,                    # Стоп: 3.5x ATR (шире)
+    },
+    
+    # Использовать ATR старшего ТФ
+    'use_higher_tf_atr': True,               # Для стопа использовать ATR часового/дневного ТФ
+    'higher_tf': 'hourly',                   # Какой ТФ использовать: 'hourly' или 'daily'
+}
