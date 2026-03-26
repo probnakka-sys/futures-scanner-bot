@@ -3778,7 +3778,11 @@ class MultiTimeframeAnalyzer:
                 else:
                     price_str = f"{level_price:.2f}".rstrip('0').rstrip('.')
                 
-                reasons.append(f"Конвергенция на {tfs_str}: {zone['zone_type']} {price_str} (сила {zone['strength']:.0f}%)")
+                reason_text = f"Конвергенция на {tfs_str}: {zone['zone_type']} {price_str} (сила {zone['strength']:.0f}%)"
+                
+                # Проверяем, нет ли уже такой причины
+                if reason_text not in reasons:
+                    reasons.append(reason_text)
                 
                 if zone['direction'] == 'LONG' and direction != 'LONG':
                     # Сильный уровень поддержки снизу
