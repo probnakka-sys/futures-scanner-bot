@@ -4151,8 +4151,13 @@ class MultiTimeframeAnalyzer:
                     atr = df_higher['atr'].iloc[-1]
                     reasons.append(f"📊 Стоп рассчитан по ATR {higher_tf} ТФ")
         
-        # Расчет целей
-        if 'LONG' in direction:
+        logger.info(f"  🔍 DIRECTION ПЕРЕД РАСЧЕТОМ ЦЕЛЕЙ: '{direction}'")
+        logger.info(f"  🔍 'LONG' in direction: {'LONG' in direction}")
+        logger.info(f"  🔍 'SHORT' in direction: {'SHORT' in direction}")
+
+        # Расчет целей (более надежное определение направления)
+        is_long = 'LONG' in direction and 'SHORT' not in direction
+        if is_long:
             target_1 = current_price + atr * target_1_mult
             target_2 = current_price + atr * target_2_mult
             stop_loss = current_price - atr * stop_mult
