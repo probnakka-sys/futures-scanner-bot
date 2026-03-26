@@ -76,10 +76,11 @@ from config import (
     MINOR_TF_SETTINGS,      
     EXCHANGES,              
     PROXY_SETTINGS,
-    FIBONACCI_ADVANCED_SETTINGS,      # ← ДОБАВИТЬ
-    SIGNAL_FORMAT_SETTINGS,            # ← ДОБАВИТЬ
-    FIB_HISTORY_SETTINGS,              # ← ДОБАВИТЬ
-    TF_ALIGNMENT_SETTINGS,      # ← ДОБАВИТЬ
+    FIBONACCI_ADVANCED_SETTINGS,      
+    SIGNAL_FORMAT_SETTINGS,            
+    FIB_HISTORY_SETTINGS,              
+    TF_ALIGNMENT_SETTINGS,      
+    DYNAMIC_TARGET_SETTINGS,
 )
 
 # from config import BREAKOUT_CONFIRMATION_SETTINGS
@@ -4084,19 +4085,69 @@ class MultiTimeframeAnalyzer:
         
         logger.info(f"  🎯 НАПРАВЛЕНИЕ ПЕРЕД РАСЧЕТОМ ЦЕЛЕЙ: {direction}")
 
-        # ===== РАСЧЕТ ЦЕЛЕЙ ПО ATR =====
+        # ===== РАСЧЕТ ЦЕЛЕЙ ПО ATR С ДИНАМИЧЕСКИМИ НАСТРОЙКАМИ =====
+        from config import DYNAMIC_TARGET_SETTINGS
+        
         atr = last['atr'] if pd.notna(last['atr']) else (last['high'] - last['low']) * 0.3
         current_price = last['close']
-        targets = {}
         
-        if 'LONG' in direction:
-            targets['target_1'] = current_price + atr * ATR_SETTINGS['long_target_1_mult']
-            targets['target_2'] = current_price + atr * ATR_SETTINGS['long_target_2_mult']
-            targets['stop_loss'] = current_price - atr * ATR_SETTINGS['long_stop_loss_mult']
+        # Проверяем, идеальный ли сетап (все ТФ согласованы)
+        is_perfect_setup = False
+        if tf_alignment.get('percentage', 0) >= 100:
+            is_perfect_setup = True
+            reasons.append(f"🚀 ИДЕАЛЬНЫЙ СЕТАП: все доступные ТФ согласованы")
+        
+        # Проверяем, сильный ли тренд (недельный тренд + EMA 200)
+        is_strong_trend = False
+        if DYNAMIC_TARGET_SETTINGS.get('strong_trend', {}).get('enabled', True):
+            weekly_trend = alignment.get('weekly_trend')
+            if weekly_trend:
+                # Проверяем, есть ли сигнал о EMA 200
+                has_ema_200 = any('EMA 200' in s for s in alignment.get('signals', []))
+                if has_ema_200:
+                    is_strong_trend = True
+                    reasons.append(f"📈 Сильный недельный тренд (выше/ниже EMA 200)")
+        
+        # Выбираем множители
+        if is_perfect_setup:
+            target_1_mult = DYNAMIC_TARGET_SETTINGS['perfect_setup']['target_1_mult']
+            target_2_mult = DYNAMIC_TARGET_SETTINGS['perfect_setup']['target_2_mult']
+            stop_mult = DYNAMIC_TARGET_SETTINGS['perfect_setup']['stop_mult']
+            reasons.append(f"🎯 Увеличенные цели для идеального сетапа (x{target_1_mult:.1f}, x{target_2_mult:.1f} ATR)")
+        elif is_strong_trend:
+            target_1_mult = DYNAMIC_TARGET_SETTINGS['strong_trend']['target_1_mult']
+            target_2_mult = DYNAMIC_TARGET_SETTINGS['strong_trend']['target_2_mult']
+            stop_mult = DYNAMIC_TARGET_SETTINGS['strong_trend']['stop_mult']
+            reasons.append(f"📈 Широкий стоп для сильного тренда (x{stop_mult:.1f} ATR)")
         else:
-            targets['target_1'] = current_price - atr * ATR_SETTINGS['short_target_1_mult']
-            targets['target_2'] = current_price - atr * ATR_SETTINGS['short_target_2_mult']
-            targets['stop_loss'] = current_price + atr * ATR_SETTINGS['short_stop_loss_mult']
+            target_1_mult = DYNAMIC_TARGET_SETTINGS['default']['target_1_mult']
+            target_2_mult = DYNAMIC_TARGET_SETTINGS['default']['target_2_mult']
+            stop_mult = DYNAMIC_TARGET_SETTINGS['default']['stop_mult']
+        
+        # Используем ATR старшего ТФ если нужно
+        if DYNAMIC_TARGET_SETTINGS.get('use_higher_tf_atr', True):
+            higher_tf = DYNAMIC_TARGET_SETTINGS.get('higher_tf', 'hourly')
+            if higher_tf in dataframes and dataframes[higher_tf] is not None:
+                df_higher = dataframes[higher_tf]
+                if 'atr' in df_higher.columns and pd.notna(df_higher['atr'].iloc[-1]):
+                    atr = df_higher['atr'].iloc[-1]
+                    reasons.append(f"📊 Стоп рассчитан по ATR {higher_tf} ТФ")
+        
+        # Расчет целей
+        if 'LONG' in direction:
+            target_1 = current_price + atr * target_1_mult
+            target_2 = current_price + atr * target_2_mult
+            stop_loss = current_price - atr * stop_mult
+        else:
+            target_1 = current_price - atr * target_1_mult
+            target_2 = current_price - atr * target_2_mult
+            stop_loss = current_price + atr * stop_mult
+        
+        targets = {
+            'target_1': target_1,
+            'target_2': target_2,
+            'stop_loss': stop_loss,
+        }
         
         logger.info(f"  🎯 НАПРАВЛЕНИЕ ПОСЛЕ РАСЧЕТА ЦЕЛЕЙ: {direction}")
 
