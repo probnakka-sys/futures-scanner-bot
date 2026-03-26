@@ -2719,140 +2719,121 @@ class MultiTimeframeAnalyzer:
         
         return alignment
     
-    def check_tf_alignment(self, dataframes: Dict[str, pd.DataFrame]) -> Dict:
+    def check_tf_alignment(self, dataframes: Dict[str, pd.DataFrame], signal_type: str = 'regular') -> Dict:
         """
         Проверка согласованности таймфреймов для принятия решения о сигнале
-        Возвращает:
-            - status: 'perfect', 'warning', 'rejected'
-            - direction: 'LONG', 'SHORT', None
-            - reasons: список причин
-            - confidence_modifier: модификатор уверенности
+        signal_type: 'regular', 'pump', 'accumulation'
         """
         result = {
-            'status': 'rejected',  # perfect, warning, rejected
+            'status': 'rejected',
             'direction': None,
             'reasons': [],
             'confidence_modifier': 0,
-            'major_direction': None,
-            'medium_direction': None,
-            'minor_direction': None,
+            'percentage': 0,
+            'aligned_count': 0,
+            'total_count': 0,
         }
         
         settings = TF_ALIGNMENT_SETTINGS
         if not settings.get('enabled', True):
             result['status'] = 'perfect'
+            result['percentage'] = 100
+            return result
+        
+        # Выбираем режим в зависимости от типа сигнала
+        mode = settings.get(f'{signal_type}_mode', 'info')
+        
+        # Если режим 'off' — выключаем проверку
+        if mode == 'off':
+            result['status'] = 'perfect'
+            result['percentage'] = 100
             return result
         
         # Получаем тренды из ранее проанализированных данных
-        # Используем уже существующий метод analyze_timeframe_alignment
         alignment = self.analyze_timeframe_alignment(dataframes)
         
-        # 1. Анализируем старшие ТФ (1н, 1д)
+        # Собираем все ТФ для анализа
+        all_tfs = settings.get('major_tfs', ['weekly', 'daily'])
+        all_tfs += settings.get('medium_tfs', ['four_hourly', 'hourly'])
+        all_tfs += settings.get('minor_tfs', ['30m', 'current'])
+        total_tfs = len(all_tfs)
+        
+        # Определяем направление каждого ТФ
+        tf_directions = []
+        for tf in all_tfs:
+            trend = alignment.get(f'{tf}_trend')
+            if trend:
+                if trend == 'ВОСХОДЯЩИЙ':
+                    tf_directions.append('LONG')
+                elif trend == 'НИСХОДЯЩИЙ':
+                    tf_directions.append('SHORT')
+                else:
+                    tf_directions.append(None)
+            else:
+                tf_directions.append(None)
+        
+        # Определяем основное направление по старшим ТФ
         major_tfs = settings.get('major_tfs', ['weekly', 'daily'])
         major_directions = []
-        for tf in major_tfs:
-            trend = alignment.get(f'{tf}_trend')
-            if trend:
-                major_directions.append(trend)
+        for i, tf in enumerate(all_tfs):
+            if tf in major_tfs and tf_directions[i]:
+                major_directions.append(tf_directions[i])
         
         if major_directions:
-            bullish = major_directions.count('ВОСХОДЯЩИЙ')
-            bearish = major_directions.count('НИСХОДЯЩИЙ')
+            bullish = major_directions.count('LONG')
+            bearish = major_directions.count('SHORT')
             if bullish > bearish:
-                result['major_direction'] = 'LONG'
+                result['direction'] = 'LONG'
             elif bearish > bullish:
-                result['major_direction'] = 'SHORT'
-            else:
-                result['major_direction'] = None
+                result['direction'] = 'SHORT'
         
-        # 2. Анализируем средние ТФ (4ч, 1ч)
-        medium_tfs = settings.get('medium_tfs', ['four_hourly', 'hourly'])
-        medium_directions = []
-        for tf in medium_tfs:
-            trend = alignment.get(f'{tf}_trend')
-            if trend:
-                medium_directions.append(trend)
+        # Считаем количество согласованных ТФ
+        aligned_count = 0
+        if result['direction']:
+            for d in tf_directions:
+                if d == result['direction']:
+                    aligned_count += 1
         
-        if medium_directions:
-            bullish = medium_directions.count('ВОСХОДЯЩИЙ')
-            bearish = medium_directions.count('НИСХОДЯЩИЙ')
-            if bullish > bearish:
-                result['medium_direction'] = 'LONG'
-            elif bearish > bullish:
-                result['medium_direction'] = 'SHORT'
-            else:
-                result['medium_direction'] = None
+        result['aligned_count'] = aligned_count
+        result['total_count'] = total_tfs
+        result['percentage'] = round((aligned_count / total_tfs) * 100)
         
-        # 3. Анализируем младшие ТФ (30м, 15м)
-        minor_tfs = settings.get('minor_tfs', ['30m', 'current'])
-        minor_directions = []
-        for tf in minor_tfs:
-            trend = alignment.get(f'{tf}_trend')
-            if trend:
-                minor_directions.append(trend)
-        
-        if minor_directions:
-            bullish = minor_directions.count('ВОСХОДЯЩИЙ')
-            bearish = minor_directions.count('НИСХОДЯЩИЙ')
-            if bullish > bearish:
-                result['minor_direction'] = 'LONG'
-            elif bearish > bullish:
-                result['minor_direction'] = 'SHORT'
-            else:
-                result['minor_direction'] = None
-        
-        # 4. Определяем общее направление по старшим ТФ
-        if result['major_direction']:
-            result['direction'] = result['major_direction']
+        # Определяем бонус/штраф к уверенности
+        if result['percentage'] >= 100:
+            result['confidence_modifier'] = settings.get('bonus_perfect', 20)
+        elif result['percentage'] >= 66:
+            result['confidence_modifier'] = settings.get('bonus_high', 10)
+        elif result['percentage'] >= 33:
+            result['confidence_modifier'] = settings.get('penalty_low', -5)
         else:
-            # Если старшие ТФ не определились, используем средние
-            result['direction'] = result['medium_direction']
+            result['confidence_modifier'] = settings.get('penalty_very_low', -15)
         
-        # 5. Проверяем противоречия
-        # 5.1. Противоречие старших ТФ между собой
-        if result['major_direction'] is None and len(major_directions) >= 2:
-            result['reasons'].append("❌ Старшие ТФ (1н, 1д) противоречат друг другу")
-            result['status'] = 'rejected'
-        
-        # 5.2. Противоречие средних ТФ со старшими
-        elif (result['major_direction'] and result['medium_direction'] and 
-              result['major_direction'] != result['medium_direction']):
-            if settings.get('reject_on_medium_mismatch', True):
-                result['status'] = 'rejected'
-                result['reasons'].append(f"❌ Средние ТФ (4ч, 1ч) противоречат старшим ({result['major_direction']} vs {result['medium_direction']})")
+        # Добавляем причину о согласованности
+        if settings.get('show_percentage', True):
+            if result['percentage'] >= 100:
+                result['reasons'].append(f"✅ Идеальная согласованность ТФ: {result['percentage']}% ({aligned_count}/{total_tfs})")
+            elif result['percentage'] >= 66:
+                result['reasons'].append(f"📊 Хорошая согласованность ТФ: {result['percentage']}% ({aligned_count}/{total_tfs})")
+            elif result['percentage'] >= 33:
+                result['reasons'].append(f"⚠️ Средняя согласованность ТФ: {result['percentage']}% ({aligned_count}/{total_tfs})")
             else:
-                result['status'] = 'warning'
-                result['confidence_modifier'] = -settings.get('warning_penalty', 15)
-                result['reasons'].append(f"⚠️ Средние ТФ (4ч, 1ч) противоречат старшим — возможна коррекция")
+                result['reasons'].append(f"⚠️ Низкая согласованность ТФ: {result['percentage']}% ({aligned_count}/{total_tfs})")
         
-        # 5.3. Противоречие младших ТФ со старшими
-        elif (result['major_direction'] and result['minor_direction'] and 
-              result['major_direction'] != result['minor_direction']):
-            if settings.get('warn_on_minor_mismatch', True):
-                result['status'] = 'warning'
-                result['confidence_modifier'] = -settings.get('warning_penalty', 15)
-                result['reasons'].append(f"⚠️ Младшие ТФ (30м, 15м) противоречат старшим — возможна коррекция")
-            else:
+        # Определяем статус на основе режима
+        threshold = settings.get('thresholds', {}).get(mode, 0)
+        
+        if mode == 'info' and settings.get('send_all_in_info_mode', True):
+            result['status'] = 'perfect' if result['percentage'] >= 100 else 'warning'
+            result['reasons'].append(f"ℹ️ Режим INFO: сигнал отправлен для анализа")
+        elif result['percentage'] >= threshold:
+            if result['percentage'] >= 100:
                 result['status'] = 'perfect'
-        
-        # 5.4. Все согласованы
-        elif (result['major_direction'] and result['medium_direction'] and result['minor_direction'] and
-              result['major_direction'] == result['medium_direction'] == result['minor_direction']):
-            result['status'] = 'perfect'
-            result['confidence_modifier'] = settings.get('perfect_bonus', 20)
-            result['reasons'].append(f"✅ Все ТФ согласованы ({result['direction']}) — идеальный вход")
-        
-        # 5.5. Старшие и средние согласованы, младших нет
-        elif (result['major_direction'] and result['medium_direction'] and 
-              result['major_direction'] == result['medium_direction']):
-            result['status'] = 'perfect'
-            result['confidence_modifier'] = settings.get('perfect_bonus', 20) // 2
-            result['reasons'].append(f"✅ Старшие и средние ТФ согласованы ({result['direction']})")
-        
-        # 5.6. Только старшие определены
-        elif result['major_direction']:
-            result['status'] = 'warning'
-            result['reasons'].append(f"📊 Направление определено старшими ТФ ({result['direction']})")
+            else:
+                result['status'] = 'warning'
+        else:
+            result['status'] = 'rejected'
+            if mode != 'info':
+                result['reasons'].append(f"❌ Сигнал отклонен (согласованность {result['percentage']}% < {threshold}%)")
         
         return result
     
@@ -3443,7 +3424,14 @@ class MultiTimeframeAnalyzer:
         signal_type = 'regular'
         
         # ===== ПРОВЕРКА СОГЛАСОВАННОСТИ ТАЙМФРЕЙМОВ =====
-        tf_alignment = self.check_tf_alignment(dataframes)
+        # Определяем тип сигнала для выбора режима
+        tf_signal_type = 'regular'
+        if signal_type == 'accumulation':
+            tf_signal_type = 'accumulation'
+        elif signal_type == 'pump' or signal_type in ['PUMP', 'DUMP']:
+            tf_signal_type = 'pump'
+        
+        tf_alignment = self.check_tf_alignment(dataframes, tf_signal_type)
         
         # Добавляем причины от согласованности
         for reason in tf_alignment['reasons']:
@@ -4086,6 +4074,9 @@ class MultiTimeframeAnalyzer:
             'bearish_score': bearish_score,  # ← ДОБАВИТЬ
             'bullish_score': bullish_score,  # ← ДОБАВИТЬ (опционально)
             'entry_zones': formatted_zones,
+            'tf_alignment_percentage': tf_alignment['percentage'],
+            'tf_aligned_count': tf_alignment['aligned_count'],
+            'tf_total_count': tf_alignment['total_count'],
             **targets
         }
         
@@ -5250,7 +5241,7 @@ class MultiExchangeScannerBot:
     
     # ============== ОСНОВНОЙ МЕТОД ФОРМАТИРОВАНИЯ ==============
     
-    def format_message(self, signal: Dict, contract_info: Dict = None, pump_percent: float = None, df: pd.DataFrame = None) -> Tuple[str, InlineKeyboardMarkup]:
+    def  clean_reasons.append(f"     {clean_reason}")(self, signal: Dict, contract_info: Dict = None, pump_percent: float = None, df: pd.DataFrame = None) -> Tuple[str, InlineKeyboardMarkup]:
         """Форматирование сигнала с новым форматом"""
         
         # Определяем эмодзи
@@ -5430,6 +5421,11 @@ class MultiExchangeScannerBot:
         # Причины
         lines.append("💡 Причины:")
         
+        # Добавляем процент согласованности в начало причин
+        if signal.get('tf_alignment_percentage'):
+            alignment_text = f"📊 Согласованность ТФ: {signal['tf_alignment_percentage']}% ({signal.get('tf_aligned_count', 0)}/{signal.get('tf_total_count', 6)})"
+            lines.append(f"     {alignment_text}")
+
         # Очистка и группировка причин
         clean_reasons = []
         for reason in signal.get('reasons', [])[:10]:
