@@ -81,6 +81,7 @@ from config import (
     FIB_HISTORY_SETTINGS,              
     TF_ALIGNMENT_SETTINGS,      
     DYNAMIC_TARGET_SETTINGS,
+    ACCUMULATION_SIGNAL_SETTINGS,
 )
 
 # from config import BREAKOUT_CONFIRMATION_SETTINGS
@@ -2909,16 +2910,16 @@ class MultiTimeframeAnalyzer:
         else:
             result['confidence_modifier'] = settings.get('penalty_very_low', -15)
         
-        # Добавляем причину о согласованности
+        # Добавляем причину о согласованности (только одну строку)
         if settings.get('show_percentage', True):
             if result['percentage'] >= 100:
-                result['reasons'].append(f"✅ Идеальная согласованность ТФ: {result['percentage']}% ({aligned_count}/{available_tfs})")
+                result['reasons'].append(f"📊 Согласованность ТФ: {result['percentage']}% ({aligned_count}/{available_tfs}) — идеально")
             elif result['percentage'] >= 66:
-                result['reasons'].append(f"📊 Хорошая согласованность ТФ: {result['percentage']}% ({aligned_count}/{available_tfs})")
+                result['reasons'].append(f"📊 Согласованность ТФ: {result['percentage']}% ({aligned_count}/{available_tfs}) — хорошо")
             elif result['percentage'] >= 33:
-                result['reasons'].append(f"⚠️ Средняя согласованность ТФ: {result['percentage']}% ({aligned_count}/{available_tfs})")
+                result['reasons'].append(f"📊 Согласованность ТФ: {result['percentage']}% ({aligned_count}/{available_tfs}) — средняя")
             else:
-                result['reasons'].append(f"⚠️ Низкая согласованность ТФ: {result['percentage']}% ({aligned_count}/{available_tfs})")
+                result['reasons'].append(f"📊 Согласованность ТФ: {result['percentage']}% ({aligned_count}/{available_tfs}) — низкая")
         
         # Определяем статус на основе режима
         threshold = settings.get('thresholds', {}).get(mode, 0)
@@ -4109,7 +4110,24 @@ class MultiTimeframeAnalyzer:
                     reasons.append(f"📈 Сильный недельный тренд (выше/ниже EMA 200)")
         
         # Выбираем множители
-        if is_perfect_setup:
+        from config import ACCUMULATION_SIGNAL_SETTINGS
+        
+        # Для накопления — специальные настройки
+        if signal_type == 'accumulation':
+            target_1_mult = ACCUMULATION_SIGNAL_SETTINGS['target_1_multiplier']
+            target_2_mult = ACCUMULATION_SIGNAL_SETTINGS['target_2_multiplier']
+            stop_mult = ACCUMULATION_SIGNAL_SETTINGS['stop_multiplier']
+            reasons.append(f"📦 Накопление: увеличенные цели (x{target_1_mult:.1f}, x{target_2_mult:.1f} ATR)")
+
+        # Для памп-дамп не используем увеличенные цели
+        if signal_type in ['PUMP', 'DUMP', 'pump']:
+            target_1_mult = DYNAMIC_TARGET_SETTINGS['default']['target_1_mult']
+            target_2_mult = DYNAMIC_TARGET_SETTINGS['default']['target_2_mult']
+            stop_mult = DYNAMIC_TARGET_SETTINGS['default']['stop_mult']
+            if is_strong_trend:
+                stop_mult = DYNAMIC_TARGET_SETTINGS['strong_trend']['stop_mult']
+            reasons.append(f"📊 Цели для памп-сигнала (стандартные)")
+        elif is_perfect_setup:
             target_1_mult = DYNAMIC_TARGET_SETTINGS['perfect_setup']['target_1_mult']
             target_2_mult = DYNAMIC_TARGET_SETTINGS['perfect_setup']['target_2_mult']
             stop_mult = DYNAMIC_TARGET_SETTINGS['perfect_setup']['stop_mult']
@@ -4170,6 +4188,7 @@ class MultiTimeframeAnalyzer:
 
         # ===== РАСЧЕТ ЗОН ДОП.ВХОДА =====
         entry_zones = []
+        zone_descriptions = []
         current_tf = TIMEFRAMES.get('current', '15m')
         
         # Получаем данные текущего ТФ для расчета зон
@@ -4180,12 +4199,17 @@ class MultiTimeframeAnalyzer:
                 # Для LONG — ищем локальные минимумы (ниже цены)
                 zone1 = df_current['low'].tail(20).min()
                 zone2 = df_current['low'].tail(50).min()
+                # Убеждаемся, что уровни разные
+                if abs(zone1 - zone2) / current_price < 0.001:
+                    zone2 = df_current['low'].tail(100).min()
                 entry_zones = [zone1, zone2]
                 zone_descriptions = ["локальный минимум", "локальный минимум"]
             else:
                 # Для SHORT — ищем локальные максимумы (выше цены)
                 zone1 = df_current['high'].tail(20).max()
                 zone2 = df_current['high'].tail(50).max()
+                if abs(zone1 - zone2) / current_price < 0.001:
+                    zone2 = df_current['high'].tail(100).max()
                 entry_zones = [zone1, zone2]
                 zone_descriptions = ["локальный максимум", "локальный максимум"]
         
