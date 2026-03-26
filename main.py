@@ -5173,6 +5173,13 @@ class FastPumpScanner:
             else:
                 line8 = f"📉 Падение: {start_formatted} → {price_formatted} за {pump_time:.0f}с"
         
+        # Зоны доп.входа (добавить сюда)
+        entry_zones = signal.get('entry_zones', [])
+        if entry_zones:
+            lines.append("🟣 Зоны доп.входа:")
+            for zone in entry_zones:
+                lines.append(f"     ▪️ {zone}")
+
         # Форматирование целей
         if signal.get('target_1') and signal.get('target_2') and signal.get('stop_loss'):
             def format_target(price):
