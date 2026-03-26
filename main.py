@@ -2600,6 +2600,48 @@ class MultiTimeframeAnalyzer:
                 trend = 'ВОСХОДЯЩИЙ' if last['ema_9'] > last['ema_21'] else 'НИСХОДЯЩИЙ'
                 alignment['trends'][tf_name] = trend
                 
+                # ===== ОЦЕНКА СИЛЫ ТРЕНДА =====
+                strength_score = 0
+                strength_desc = []
+                
+                if strength_settings.get('enabled', True):
+                    # 1. Оценка по EMA 50
+                    if strength_settings.get('use_ema_50', True) and pd.notna(last.get('ema_50')):
+                        if trend == 'ВОСХОДЯЩИЙ':
+                            if last['ema_9'] > last['ema_21'] > last['ema_50']:
+                                strength_score += strength_settings['weights']['strong_trend']
+                                strength_desc.append("сильный")
+                            elif last['ema_9'] > last['ema_21'] and last['ema_21'] < last['ema_50']:
+                                strength_score += strength_settings['weights']['weak_trend']
+                                strength_desc.append("слабый")
+                        else:  # НИСХОДЯЩИЙ
+                            if last['ema_9'] < last['ema_21'] < last['ema_50']:
+                                strength_score += strength_settings['weights']['strong_trend']
+                                strength_desc.append("сильный")
+                            elif last['ema_9'] < last['ema_21'] and last['ema_21'] > last['ema_50']:
+                                strength_score += strength_settings['weights']['weak_trend']
+                                strength_desc.append("слабый")
+                    
+                    # 2. Оценка по объему
+                    if strength_settings.get('use_volume', True) and pd.notna(last.get('volume_ratio')):
+                        if last['volume_ratio'] > strength_settings['volume_ratio_threshold']:
+                            strength_score += strength_settings['weights']['volume_confirmation']
+                            strength_desc.append(f"объем x{last['volume_ratio']:.1f}")
+                    
+                    # 3. Оценка по RSI
+                    if strength_settings.get('use_rsi', True) and pd.notna(last.get('rsi')):
+                        if trend == 'ВОСХОДЯЩИЙ' and last['rsi'] < strength_settings['rsi_oversold']:
+                            strength_score += strength_settings['weights']['rsi_extreme']
+                            strength_desc.append(f"RSI перепродан ({last['rsi']:.1f})")
+                        elif trend == 'НИСХОДЯЩИЙ' and last['rsi'] > strength_settings['rsi_overbought']:
+                            strength_score += strength_settings['weights']['rsi_extreme']
+                            strength_desc.append(f"RSI перекуплен ({last['rsi']:.1f})")
+                
+                alignment['trend_strength'][tf_name] = {
+                    'score': strength_score,
+                    'desc': ', '.join(strength_desc) if strength_desc else 'обычный'
+                }
+
                 # Сохраняем в отдельные поля для совместимости
                 if tf_name == 'current':
                     alignment['current_trend'] = trend
@@ -2625,11 +2667,15 @@ class MultiTimeframeAnalyzer:
                 elif tf_name not in ['1m', '3m', '5m']:
                     trends_list.append(trend)
                     
-                    # Добавляем сигнал для сильных трендов
-                    if tf_name in ['weekly', 'monthly'] and last['ema_9'] > last['ema_200']:
-                        alignment['signals'].append(f"{tf_names[tf_name]} ТРЕНД ВОСХОДЯЩИЙ (выше EMA 200)")
-                    elif tf_name in ['weekly', 'monthly'] and last['ema_9'] < last['ema_200']:
-                        alignment['signals'].append(f"{tf_names[tf_name]} ТРЕНД НИСХОДЯЩИЙ (ниже EMA 200)")
+                # Добавляем сигнал для сильных трендов с указанием силы
+                if tf_name in ['weekly', 'monthly']:
+                    strength = alignment['trend_strength'].get(tf_name, {})
+                    strength_text = f" ({strength.get('desc', '')})" if strength.get('desc') and strength.get('desc') != 'обычный' else ""
+                    
+                    if last['ema_9'] > last['ema_200']:
+                        alignment['signals'].append(f"{tf_names[tf_name]} ТРЕНД ВОСХОДЯЩИЙ (выше EMA 200){strength_text}")
+                    elif last['ema_9'] < last['ema_200']:
+                        alignment['signals'].append(f"{tf_names[tf_name]} ТРЕНД НИСХОДЯЩИЙ (ниже EMA 200){strength_text}")
         
         # Добавляем группировку младших ТФ в причины (без дублирования с 1м)
         # Определяем, какие ТФ входят в группу младших
@@ -2732,6 +2778,7 @@ class MultiTimeframeAnalyzer:
             'percentage': 0,
             'aligned_count': 0,
             'total_count': 0,
+            'trend_type': None,           # 'trend' или 'correction' для пампов
         }
         
         settings = TF_ALIGNMENT_SETTINGS
@@ -2740,8 +2787,9 @@ class MultiTimeframeAnalyzer:
             result['percentage'] = 100
             return result
         
-        # Выбираем режим в зависимости от типа сигнала
+        # Выбираем режим и ТФ в зависимости от типа сигнала
         mode = settings.get(f'{signal_type}_mode', 'info')
+        tfs_config = settings.get(f'{signal_type}_tfs', settings.get('regular_tfs'))
         
         # Если режим 'off' — выключаем проверку
         if mode == 'off':
@@ -2752,14 +2800,11 @@ class MultiTimeframeAnalyzer:
         # Получаем тренды из ранее проанализированных данных
         alignment = self.analyze_timeframe_alignment(dataframes)
         
-        # Собираем все ТФ для анализа (убираем дубликаты)
-        all_tfs = list(set(
-            settings.get('major_tfs', ['weekly', 'daily']) +
-            settings.get('medium_tfs', ['four_hourly', 'hourly']) +
-            settings.get('minor_tfs', ['30m', 'current'])
-        ))
+        # Собираем все ТФ для анализа
+        all_tfs = tfs_config.get('major', []) + tfs_config.get('minor', []) + tfs_config.get('ultra_minor', [])
+        all_tfs = list(set(all_tfs))  # убираем дубликаты
         
-        logger.info(f"  🔍 Все ТФ для анализа (уникальные): {all_tfs}")
+        logger.info(f"  🔍 Все ТФ для анализа ({signal_type}): {all_tfs}")
         
         # Определяем направление каждого ТФ (только для ТФ с данными)
         tf_directions = []
@@ -2767,9 +2812,9 @@ class MultiTimeframeAnalyzer:
         available_tfs_list = []
         for tf in all_tfs:
             trend = alignment.get(f'{tf}_trend')
-            if trend:  # только если есть данные
+            if trend:
                 available_tfs += 1
-                available_tfs_list.append(tf)  # ← ДОБАВЛЕНО
+                available_tfs_list.append(tf)
                 if trend == 'ВОСХОДЯЩИЙ':
                     tf_directions.append('LONG')
                 elif trend == 'НИСХОДЯЩИЙ':
@@ -2779,30 +2824,66 @@ class MultiTimeframeAnalyzer:
             else:
                 tf_directions.append(None)
 
-        logger.info(f"  🔍 Доступные ТФ для согласованности: {available_tfs_list}")
-
+        logger.info(f"  🔍 Доступные ТФ для согласованности ({signal_type}): {available_tfs_list}")
+        
         # Если нет данных ни для одного ТФ — возвращаем
         if available_tfs == 0:
             result['status'] = 'perfect'
             result['percentage'] = 100
             return result
         
-        # Определяем основное направление по старшим ТФ
-        major_tfs = settings.get('major_tfs', ['weekly', 'daily'])
+        # Определяем направление по старшим ТФ (для пампов это важно)
+        major_tfs = tfs_config.get('major', [])
         major_directions = []
         for i, tf in enumerate(all_tfs):
             if tf in major_tfs and tf_directions[i]:
                 major_directions.append(tf_directions[i])
         
+        major_direction = None
         if major_directions:
             bullish = major_directions.count('LONG')
             bearish = major_directions.count('SHORT')
             if bullish > bearish:
-                result['direction'] = 'LONG'
+                major_direction = 'LONG'
             elif bearish > bullish:
-                result['direction'] = 'SHORT'
+                major_direction = 'SHORT'
         
-        # Считаем количество согласованных ТФ (только из доступных)
+        # Определяем направление по младшим ТФ (для пампов это импульс)
+        minor_tfs = tfs_config.get('minor', []) + tfs_config.get('ultra_minor', [])
+        minor_directions = []
+        for i, tf in enumerate(all_tfs):
+            if tf in minor_tfs and tf_directions[i]:
+                minor_directions.append(tf_directions[i])
+        
+        minor_direction = None
+        if minor_directions:
+            bullish = minor_directions.count('LONG')
+            bearish = minor_directions.count('SHORT')
+            if bullish > bearish:
+                minor_direction = 'LONG'
+            elif bearish > bullish:
+                minor_direction = 'SHORT'
+        
+        # Для памп-дамп определяем тип движения
+        if signal_type == 'pump':
+            if major_direction and minor_direction and major_direction == minor_direction:
+                result['trend_type'] = 'trend'  # памп по тренду
+                result['reasons'].append(f"✅ Памп по тренду (старшие ТФ {major_direction})")
+            elif major_direction and minor_direction and major_direction != minor_direction:
+                result['trend_type'] = 'correction'  # памп против тренда
+                result['reasons'].append(f"⚠️ Памп против тренда (старшие {major_direction}, импульс {minor_direction})")
+            elif minor_direction and not major_direction:
+                result['trend_type'] = 'impulse'  # импульс без тренда
+                result['reasons'].append(f"📊 Импульс без явного тренда")
+        
+        # Для обычных сигналов и накопления — используем старшие ТФ для направления
+        if signal_type != 'pump':
+            result['direction'] = major_direction
+        else:
+            # Для пампов направление определяется младшими ТФ (импульс)
+            result['direction'] = minor_direction
+        
+        # Считаем количество согласованных ТФ с направлением
         aligned_count = 0
         if result['direction']:
             for d in tf_directions:
@@ -2810,7 +2891,7 @@ class MultiTimeframeAnalyzer:
                     aligned_count += 1
         
         result['aligned_count'] = aligned_count
-        result['total_count'] = available_tfs   # ← используем доступные ТФ
+        result['total_count'] = available_tfs
         result['percentage'] = round((aligned_count / available_tfs) * 100) if available_tfs > 0 else 0
         
         # Определяем бонус/штраф к уверенности
@@ -2839,12 +2920,8 @@ class MultiTimeframeAnalyzer:
         
         if mode == 'info' and settings.get('send_all_in_info_mode', True):
             result['status'] = 'perfect' if result['percentage'] >= 100 else 'warning'
-            # result['reasons'].append(f"ℹ️ Режим INFO: сигнал отправлен для анализа")
         elif result['percentage'] >= threshold:
-            if result['percentage'] >= 100:
-                result['status'] = 'perfect'
-            else:
-                result['status'] = 'warning'
+            result['status'] = 'perfect' if result['percentage'] >= 100 else 'warning'
         else:
             result['status'] = 'rejected'
             if mode != 'info':
@@ -3443,7 +3520,7 @@ class MultiTimeframeAnalyzer:
         tf_signal_type = 'regular'
         if signal_type == 'accumulation':
             tf_signal_type = 'accumulation'
-        elif signal_type == 'pump' or signal_type in ['PUMP', 'DUMP']:
+        elif signal_type in ['PUMP', 'DUMP', 'pump']:
             tf_signal_type = 'pump'
         
         tf_alignment = self.check_tf_alignment(dataframes, tf_signal_type)
@@ -3454,6 +3531,15 @@ class MultiTimeframeAnalyzer:
         
         # Корректируем уверенность
         confidence += tf_alignment['confidence_modifier']
+        
+        # Для памп-дамп добавляем тип движения в причины
+        if tf_signal_type == 'pump' and tf_alignment.get('trend_type'):
+            if tf_alignment['trend_type'] == 'trend':
+                reasons.append(f"📈 Памп по тренду — высокая вероятность продолжения")
+            elif tf_alignment['trend_type'] == 'correction':
+                reasons.append(f"🔄 Памп против тренда — ожидаем коррекцию")
+            elif tf_alignment['trend_type'] == 'impulse':
+                reasons.append(f"⚡ Импульс без явного тренда")
         
         # Определяем направление, если оно еще не определено
         if direction == 'NEUTRAL' and tf_alignment['direction']:
