@@ -4252,6 +4252,7 @@ class MultiTimeframeAnalyzer:
                     logger.error(f"❌ Ошибка в детекторе стоп-хантов для {symbol}: {e}")
 
             # ===== ВХОД ПОСЛЕ ВЫБИВА СТОПОВ =====
+            stop_hunt_signal = False  # ← флаг, что сигнал уже сформирован
             if stop_hunt and POST_STOP_HUNT_SETTINGS.get('enabled', True):
                 # Стоп-хант уже обнаружен, формируем сигнал на разворот
                 logger.info(f"  🎯 {symbol} - Формирую сигнал на вход после стоп-ханта")
@@ -4287,33 +4288,37 @@ class MultiTimeframeAnalyzer:
                         confidence -= 5
 
             # ===== НОВАЯ ЛОГИКА СМЕНЫ НАПРАВЛЕНИЯ =====
-    
-            # Если мы в LONG, но сверху 3+ зон FVG - сильное сопротивление
-            if direction == 'LONG' and fvg_above >= 3:
-                old_direction = direction
-                direction = 'SHORT 📉 (сильное сопротивление FVG)'
-                logger.info(f"  🎯 [2] Смена направления в FVG: {old_direction} → {direction}")
-                reasons.append(f"🔻 Смена направления: {old_direction} → SHORT (FVG сверху)")
-                confidence += 25
-                logger.info(f"  🔄 Смена направления из-за {fvg_above} FVG сверху")
-            
-            # Если мы в SHORT, но снизу 3+ зон FVG - сильная поддержка
-            elif direction == 'SHORT' and fvg_below >= 3:
-                old_direction = direction
-                direction = 'LONG 📈 (сильная поддержка FVG)'
-                logger.info(f"  🎯 [2] Смена направления в FVG: {old_direction} → {direction}")
-                reasons.append(f"🔺 Смена направления: {old_direction} → LONG (FVG снизу)")
-                confidence += 25
-                logger.info(f"  🔄 Смена направления из-за {fvg_below} FVG снизу")
-            
-            # Если цена в зоне FVG - это сильный уровень
-            if fvg_in_zone > 0:
-                if direction == 'LONG':
-                    reasons.append(f"✅ Подтверждение LONG - цена в зоне FVG")
-                    confidence += 15
-                else:
-                    reasons.append(f"✅ Подтверждение SHORT - цена в зоне FVG")
-                    confidence += 15
+            # Если уже есть стоп-хант сигнал — не меняем направление
+            if not stop_hunt_signal:
+                
+                # Если мы в LONG, но сверху 3+ зон FVG - сильное сопротивление
+                if direction == 'LONG' and fvg_above >= 3:
+                    old_direction = direction
+                    direction = 'SHORT 📉 (сильное сопротивление FVG)'
+                    logger.info(f"  🎯 [2] Смена направления в FVG: {old_direction} → {direction}")
+                    reasons.append(f"🔻 Смена направления: {old_direction} → SHORT (FVG сверху)")
+                    confidence += 25
+                    logger.info(f"  🔄 Смена направления из-за {fvg_above} FVG сверху")
+                
+                # Если мы в SHORT, но снизу 3+ зон FVG - сильная поддержка
+                elif direction == 'SHORT' and fvg_below >= 3:
+                    old_direction = direction
+                    direction = 'LONG 📈 (сильная поддержка FVG)'
+                    logger.info(f"  🎯 [2] Смена направления в FVG: {old_direction} → {direction}")
+                    reasons.append(f"🔺 Смена направления: {old_direction} → LONG (FVG снизу)")
+                    confidence += 25
+                    logger.info(f"  🔄 Смена направления из-за {fvg_below} FVG снизу")
+                
+                # Если цена в зоне FVG - это сильный уровень
+                if fvg_in_zone > 0:
+                    if direction == 'LONG':
+                        reasons.append(f"✅ Подтверждение LONG - цена в зоне FVG")
+                        confidence += 15
+                    else:
+                        reasons.append(f"✅ Подтверждение SHORT - цена в зоне FVG")
+                        confidence += 15
+            else:
+                logger.info(f"  🎯 {symbol} - Направление задано стоп-хантом, пропускаем FVG смену")
             
             # ===== КОНЕЦ НОВОГО БЛОКА =====                                                    
 
