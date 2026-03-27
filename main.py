@@ -508,7 +508,10 @@ class AccumulationAnalyzer:
         return levels
     
     def analyze(self, df: pd.DataFrame) -> Dict:
-        """Полный анализ накопления"""
+        """
+        Полный анализ накопления
+        Накопление = наличие ХОТЯ БЫ ОДНОГО признака
+        """
         result = {
             'has_accumulation': False,
             'signals': [],
@@ -516,6 +519,7 @@ class AccumulationAnalyzer:
             'direction': None
         }
         
+        # 1. A/D дивергенция
         ad_div = self.detect_ad_divergence(df)
         if ad_div.get('accumulation'):
             result['has_accumulation'] = True
@@ -525,25 +529,37 @@ class AccumulationAnalyzer:
                 result['direction'] = 'SHORT'
             else:
                 result['direction'] = 'LONG'
+            logger.info(f"  ✅ Накопление: A/D дивергенция (сила {result['strength']:.0f}%)")
         
+        # 2. Аномальный объем в консолидации
         volume_spike = self.detect_volume_spikes_in_range(df)
         if volume_spike.get('accumulation'):
             result['has_accumulation'] = True
             result['signals'].append(volume_spike['description'])
             result['strength'] = max(result['strength'], volume_spike.get('strength', 0))
+            logger.info(f"  ✅ Накопление: аномальный объем (сила {result['strength']:.0f}%)")
         
+        # 3. Тихая аккумуляция
         silent = self.detect_silent_accumulation(df)
         if silent.get('accumulation'):
             result['has_accumulation'] = True
             result['signals'].append(silent['description'])
             result['strength'] = max(result['strength'], silent.get('strength', 0))
+            logger.info(f"  ✅ Накопление: тихая аккумуляция (сила {result['strength']:.0f}%)")
         
+        # Если есть накопление, но направление не определено — определяем по VWAP
         if result['has_accumulation'] and not result['direction']:
             if 'vwap' in df.columns:
                 if df['close'].iloc[-1] > df['vwap'].iloc[-1]:
                     result['direction'] = 'LONG'
                 else:
                     result['direction'] = 'SHORT'
+        
+        # Логируем результат
+        if result['has_accumulation']:
+            logger.info(f"  📦 НАКОПЛЕНИЕ ОБНАРУЖЕНО: {len(result['signals'])} признаков, сила {result['strength']:.0f}%")
+        else:
+            logger.info(f"  ⚠️ Накопление НЕ обнаружено (0 признаков)")
         
         return result
 
@@ -4060,7 +4076,8 @@ class MultiTimeframeAnalyzer:
                 for signal in accumulation_analysis['signals']:
                     reasons.append(f"📦 {signal}")
                 confidence += accumulation_analysis.get('strength', 0) / 5
-                signal_type = 'accumulation'
+                signal_type = 'accumulation'  # ← это уже есть
+                logger.info(f"  ✅ {symbol} - Накопление: {len(accumulation_analysis['signals'])} признаков")
                 
                 # Расчет потенциала
                 potential = self.accumulation.calculate_potential(df, dataframes)
@@ -4073,7 +4090,12 @@ class MultiTimeframeAnalyzer:
                 if accumulation_analysis.get('direction'):
                     direction = accumulation_analysis['direction']
                 logger.info(f"  ✅ {symbol} - Накопление: найдено {len(accumulation_analysis['signals'])} сигналов")
-        
+            else:
+                logger.info(f"  ⚠️ {symbol} - Накопление НЕ обнаружено")
+                # Если накопления нет, но ранее был установлен signal_type = 'accumulation' — сбрасываем
+                if signal_type == 'accumulation':
+                    signal_type = 'regular'
+
         # ===== АНАЛИЗ ТРЕНДОВЫХ ЛИНИЙ =====
         trendline_breakout = False
         trendline_warnings = []
@@ -6357,8 +6379,10 @@ class MultiExchangeScannerBot:
                     
         except Exception as e:
             logger.error(f"❌ Ошибка сканирования {name}: {e}")
-        
-        logger.info(f"🎯 {name}: найдено {len(signals)} сигналов")
+
+        # ✅ ВСТАВИТЬ ЗДЕСЬ, ПОСЛЕ ЦИКЛА, ПЕРЕД return
+        accumulation_count = sum(1 for s in signals if s.get('signal_type') == 'accumulation')
+        logger.info(f"🎯 {name}: найдено {len(signals)} сигналов (накопление: {accumulation_count})")        
         return signals
     
     async def scan_all(self) -> List[Dict]:
