@@ -2941,6 +2941,7 @@ class MultiTimeframeAnalyzer:
         """
         Анализ FVG на всех таймфреймах с фильтрацией по расстоянию
         """
+
         result = {'has_fvg': False, 'signals': [], 'strength': 0, 'zones': []}
         all_zones = []
         
@@ -3002,75 +3003,82 @@ class MultiTimeframeAnalyzer:
             # Создаем временный SMC анализатор для этого ТФ
             smc_temp = SmartMoneyAnalyzer(SMC_SETTINGS)
             fvg_list = smc_temp.find_fair_value_gaps(df)
-            
-            logger.info(f"    🔍 {tf_name}: найдено {len(fvg_list)} FVG кандидатов")
-            
-            for fvg in fvg_list:
-                # Проверяем, не закрыта ли зона
-                if self._is_fvg_closed(df, fvg):
-                    logger.info(f"    ⏭️ {tf_name} FVG пропущен (закрыт)")
-                    continue
-                
-                # Проверяем, находится ли текущая цена в зоне FVG
-                in_zone = (fvg['price_min'] <= current_price <= fvg['price_max'])
-                
-                # Рассчитываем расстояние до зоны
-                if in_zone:
-                    distance_pct = 0
-                    distance_text = "в зоне"
-                    zone_type = "тест"
-                elif current_price < fvg['price_min']:
-                    distance_pct = ((fvg['price_min'] - current_price) / current_price) * 100
-                    distance_text = f"выше на {distance_pct:.1f}%"
-                    zone_type = "сопротивление сверху"
-                else:  # current_price > fvg['price_max']
-                    distance_pct = ((current_price - fvg['price_max']) / current_price) * 100
-                    distance_text = f"ниже на {distance_pct:.1f}%"
-                    zone_type = "поддержка снизу"
-                
-                # Логируем найденный FVG
-                logger.info(f"    ✅ {tf_name} FVG: {fvg['price_min']:.6f}-{fvg['price_max']:.6f}, {distance_text}")
-                
-                # Форматируем цены зоны
-                if fvg['price_min'] < 0.001:
-                    zone_str = f"{fvg['price_min']:.6f}-{fvg['price_max']:.6f}"
-                elif fvg['price_min'] < 0.1:
-                    zone_str = f"{fvg['price_min']:.4f}-{fvg['price_max']:.4f}"
-                else:
-                    zone_str = f"{fvg['price_min']:.2f}-{fvg['price_max']:.2f}"
-                
-                # Формируем сигнал
-                size_pct = fvg.get('size', 0)
-                tf_ru = tf_names_ru.get(tf_name, tf_name)
-                direction = "бычий" if fvg['type'] == 'bullish' else "медвежий"
-                
-                signal_text = (f"FVG {tf_short[tf_name]}: {zone_str} "
-                            f"(размер {size_pct:.2f}% {dir_emoji[fvg['type']]} {zone_type}, {distance_text})")
-                
-                result['has_fvg'] = True
-                result['signals'].append(signal_text)
-                
-                # Сохраняем зону для графиков и анализа
-                all_zones.append({
-                    'tf': tf_name,
-                    'tf_short': tf_short[tf_name],
-                    'tf_ru': tf_ru,
-                    'min': fvg['price_min'],
-                    'max': fvg['price_max'],
-                    'type': fvg['type'],
-                    'dir_emoji': dir_emoji[fvg['type']],
-                    'size': size_pct,
-                    'distance_pct': distance_pct,
-                    'in_zone': in_zone,
-                    'zone_type': zone_type,
-                    'distance_text': distance_text,
-                    'weight': tf_weights.get(tf_name, 1.0),
-                    'strength': fvg['strength']
-                })
-                
-                # Увеличиваем силу с весом таймфрейма
-                result['strength'] += fvg['strength'] * tf_weights.get(tf_name, 1.0)
 
+            logger.info(f"    🔍 {tf_name}: найдено {len(fvg_list)} FVG кандидатов")
+
+            for fvg in fvg_list:
+                try:
+                    # Проверяем, не закрыта ли зона
+                    if self._is_fvg_closed(df, fvg):
+                        logger.info(f"    ⏭️ {tf_name} FVG пропущен (закрыт)")
+                        continue
+                    
+                    # Проверяем, находится ли текущая цена в зоне FVG
+                    in_zone = (fvg['price_min'] <= current_price <= fvg['price_max'])
+                    
+                    # Рассчитываем расстояние до зоны
+                    if in_zone:
+                        distance_pct = 0
+                        distance_text = "в зоне"
+                        zone_type = "тест"
+                    elif current_price < fvg['price_min']:
+                        distance_pct = ((fvg['price_min'] - current_price) / current_price) * 100
+                        distance_text = f"выше на {distance_pct:.1f}%"
+                        zone_type = "сопротивление сверху"
+                    else:  # current_price > fvg['price_max']
+                        distance_pct = ((current_price - fvg['price_max']) / current_price) * 100
+                        distance_text = f"ниже на {distance_pct:.1f}%"
+                        zone_type = "поддержка снизу"
+                    
+                    # Логируем найденный FVG
+                    logger.info(f"    ✅ {tf_name} FVG: {fvg['price_min']:.6f}-{fvg['price_max']:.6f}, {distance_text}")
+                    
+                    # Форматируем цены зоны
+                    if fvg['price_min'] < 0.001:
+                        zone_str = f"{fvg['price_min']:.6f}-{fvg['price_max']:.6f}"
+                    elif fvg['price_min'] < 0.1:
+                        zone_str = f"{fvg['price_min']:.4f}-{fvg['price_max']:.4f}"
+                    else:
+                        zone_str = f"{fvg['price_min']:.2f}-{fvg['price_max']:.2f}"
+                    
+                    # Формируем сигнал
+                    size_pct = fvg.get('size', 0)
+                    tf_ru = tf_names_ru.get(tf_name, tf_name)
+                    direction = "бычий" if fvg['type'] == 'bullish' else "медвежий"
+                    
+                    signal_text = (f"FVG {tf_short[tf_name]}: {zone_str} "
+                                f"(размер {size_pct:.2f}% {dir_emoji[fvg['type']]} {zone_type}, {distance_text})")
+                    
+                    result['has_fvg'] = True
+                    result['signals'].append(signal_text)
+                    
+                    # Сохраняем зону для графиков и анализа
+                    all_zones.append({
+                        'tf': tf_name,
+                        'tf_short': tf_short[tf_name],
+                        'tf_ru': tf_ru,
+                        'min': fvg['price_min'],
+                        'max': fvg['price_max'],
+                        'type': fvg['type'],
+                        'dir_emoji': dir_emoji[fvg['type']],
+                        'size': size_pct,
+                        'distance_pct': distance_pct,
+                        'in_zone': in_zone,
+                        'zone_type': zone_type,
+                        'distance_text': distance_text,
+                        'weight': tf_weights.get(tf_name, 1.0),
+                        'strength': fvg['strength']
+                    })
+                    
+                    # Увеличиваем силу с весом таймфрейма
+                    result['strength'] += fvg['strength'] * tf_weights.get(tf_name, 1.0)
+                    
+                except Exception as e:
+                    logger.error(f"    ❌ Ошибка при обработке FVG для {tf_name}: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    continue
+        
         # ===== ВСТАВЬТЕ ЭТОТ БЛОК ЗДЕСЬ =====
         # После сбора всех зон, перед фильтрацией
         logger.info(f"  📊 Всего найдено FVG: {len(all_zones)}")
@@ -3145,36 +3153,38 @@ class MultiTimeframeAnalyzer:
         return result
 
     def _is_fvg_closed(self, df: pd.DataFrame, fvg: Dict) -> bool:
-        """
-        Проверка, закрыта ли зона FVG (БОЛЕЕ МЯГКАЯ ВЕРСИЯ)
-        FVG считается закрытым, только если цена ПОЛНОСТЬЮ прошла через зону
-        и закрепилась с другой стороны на 2+ свечах
-        """
-        last_idx = len(df) - 1
-        start_idx = max(0, last_idx - 100)  # увеличили до 100 свечей
-        
-        close_count = 0
-        for i in range(start_idx, last_idx):
-            candle = df.iloc[i]
+        try:
+            # Защита от некорректных данных
+            if not fvg or 'price_min' not in fvg or 'price_max' not in fvg:
+                return True
             
-            if fvg['type'] == 'bullish':
-                # Бычий FVG закрывается при падении НИЖЕ зоны
-                if candle['close'] < fvg['price_min']:
-                    close_count += 1
-                    if close_count >= 2:  # нужно 2 подтверждения
-                        return True
+            last_idx = len(df) - 1
+            start_idx = max(0, last_idx - 100)
+            
+            close_count = 0
+            for i in range(start_idx, last_idx):
+                candle = df.iloc[i]
+                
+                if fvg['type'] == 'bullish':
+                    if candle['close'] < fvg['price_min']:
+                        close_count += 1
+                        if close_count >= 2:
+                            return True
+                    else:
+                        close_count = 0
                 else:
-                    close_count = 0  # сбрасываем, если вышли из зоны
-            else:
-                # Медвежий FVG закрывается при росте ВЫШЕ зоны
-                if candle['close'] > fvg['price_max']:
-                    close_count += 1
-                    if close_count >= 2:
-                        return True
-                else:
-                    close_count = 0
-        
-        return False
+                    if candle['close'] > fvg['price_max']:
+                        close_count += 1
+                        if close_count >= 2:
+                            return True
+                    else:
+                        close_count = 0
+            
+            return False
+            
+        except Exception as e:
+            logger.error(f"Ошибка в _is_fvg_closed: {e}")
+            return True
 
     def analyze_ema_touch(self, df: pd.DataFrame, last: pd.Series) -> Dict:
         """Анализ касаний цены EMA уровней"""
@@ -3877,13 +3887,21 @@ class MultiTimeframeAnalyzer:
         # ===== FVG МУЛЬТИТАЙМФРЕЙМОВЫЙ АНАЛИЗ =====
         fvg_analysis = {'has_fvg': False, 'signals': [], 'zones': []}
         if FEATURES['advanced']['smart_money']:
-            logger.info(f"  🔍 {symbol} - Анализ FVG на всех таймфреймах")
-            fvg_analysis = self.analyze_fvg_multi_timeframe(dataframes, last['close'])
-            if fvg_analysis['has_fvg']:
-                for signal_text in fvg_analysis['signals']:
-                    reasons.append(signal_text)
-                confidence += fvg_analysis['strength'] / 5
-                logger.info(f"  ✅ {symbol} - Найдено FVG: {len(fvg_analysis['signals'])} на разных ТФ")
+            try:
+                logger.info(f"  🔍 {symbol} - Анализ FVG на всех таймфреймах")
+                fvg_analysis = self.analyze_fvg_multi_timeframe(dataframes, last['close'])
+                logger.info(f"  📊 FVG анализ вернул: has_fvg={fvg_analysis.get('has_fvg', False)}, zones={len(fvg_analysis.get('zones', []))}")
+                if fvg_analysis['has_fvg']:
+                    for signal_text in fvg_analysis['signals']:
+                        reasons.append(signal_text)
+                    confidence += fvg_analysis['strength'] / 5
+                    logger.info(f"  ✅ {symbol} - Найдено FVG: {len(fvg_analysis['signals'])} на разных ТФ")
+            except Exception as e:
+                logger.error(f"❌ Ошибка в FVG анализе для {symbol}: {e}")
+                import traceback
+                traceback.print_exc()
+                # Продолжаем выполнение с пустым fvg_analysis
+                fvg_analysis = {'has_fvg': False, 'signals': [], 'zones': []}
         
         # ===== АНАЛИЗ КАСАНИЙ EMA =====
         ema_touch = self.analyze_ema_touch(df, last)
