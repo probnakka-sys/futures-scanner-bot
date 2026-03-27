@@ -318,7 +318,7 @@ ACCUMULATION_SETTINGS = {
     'ad_threshold': 2.0,            # Порог для A/D дивергенции
     'volume_spike_threshold': 2.0,  # Аномальный объем x2
     'range_width_threshold': 5.0,   # Макс. ширина диапазона для консолидации
-    'min_signals': 2,               # Минимум сигналов для подтверждения
+    'min_signals': 1,               # ✅ ИЗМЕНЕНО: минимум 1 сигнал (было 2)
     'lookback_period': 50,          # Период для анализа
 }
 
