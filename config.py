@@ -205,6 +205,13 @@ ATR_SETTINGS = {
     'short_target_1_mult': 2.5,
     'short_target_2_mult': 5.0,
     'short_stop_loss_mult': 1.8,
+# ✅ ДОБАВИТЬ: увеличенные настройки для идеального сетапа (100% согласованность)
+    'ideal_long_target_1_mult': 4.0,   # 4x ATR
+    'ideal_long_target_2_mult': 8.0,   # 8x ATR
+    'ideal_long_stop_loss_mult': 2.5,   # чуть шире стоп
+    'ideal_short_target_1_mult': 4.0,
+    'ideal_short_target_2_mult': 8.0,
+    'ideal_short_stop_loss_mult': 2.5,
 }
 
 # ============== ПЕРЕКЛЮЧАТЕЛИ ФУНКЦИЙ ==============
@@ -1098,4 +1105,18 @@ ACCUMULATION_SIGNAL_SETTINGS = {
     'min_potential_pct': 5.0,            # Минимальный потенциал для сигнала (5%)
     'use_higher_tf_atr': True,           # Использовать ATR старшего ТФ
     'higher_tf': 'hourly',               # ТФ для ATR
+}
+
+# ============== НАСТРОЙКИ ДЕТЕКТОРА ВЫБИВА СТОПОВ ==============
+STOP_HUNT_SETTINGS = {
+    'enabled': True,
+    'min_breakout_pct': 1.0,           # Минимальный пробой в %
+    'max_retrace_time': 180,            # Максимальное время возврата (сек)
+    'retrace_threshold_pct': 70,        # Возврат на 70% от пробоя
+    'min_timeframe': '5m',              # Минимальный ТФ для поиска уровней
+    'max_timeframe': '1h',              # Максимальный ТФ для поиска уровней
+    'lookback_bars': 100,               # Количество свечей для анализа
+    'strength_bonus': 25,               # Бонус к уверенности при выявлении стоп-ханта
+    # Стоп-хaнт (Stop Hunt) — это когда цена пробивает уровень, где обычно ставят стоп-лоссы (локальные максимумы/минимумы), 
+    # а затем быстро возвращается обратно. Это сигнал, что крупные игроки собрали ликвидность и разворачивают цену.
 }
