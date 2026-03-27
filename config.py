@@ -1128,3 +1128,18 @@ POST_STOP_HUNT_SETTINGS = {
     'min_confidence_bonus': 15,             # Бонус к уверенности
     'signal_type': 'stop_hunt_reversal',    # Тип сигнала
 }
+
+# ============== НАСТРОЙКИ ЗОН ЛИКВИДНОСТИ ==============
+LIQUIDITY_ZONES_SETTINGS = {
+    'enabled': True,
+    'timeframes': ['15m', '1h', '4h', '1d'],     # Какие ТФ анализировать
+    'lookback_bars': 100,                         # Глубина поиска
+    'min_touches': 2,                             # Минимум касаний для значимости
+    'zone_width_pct': 0.3,                        # Ширина зоны в %
+    'max_zones': 5,                               # Максимум зон для отображения
+    'strength_weights': {
+        'touches': 15,                            # Вес за каждое касание
+        'volume': 10,                             # Вес за объем
+        'timeframe': 20,                          # Вес за старший ТФ
+    }
+}
