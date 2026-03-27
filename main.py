@@ -84,6 +84,7 @@ from config import (
     ACCUMULATION_SIGNAL_SETTINGS,
     ENTRY_ZONES_SETTINGS,
     SIGNAL_TYPE_SETTINGS,
+    STOP_HUNT_SETTINGS,
 )
 
 # from config import BREAKOUT_CONFIRMATION_SETTINGS
@@ -946,7 +947,7 @@ class StopHuntDetector:
     """
     
     def __init__(self, settings: Dict = None):
-        self.settings = settings or STOP_HUNT_SETTINGS
+        self.settings = settings or STOP_HUNT_SETTINGS  # если STOP_HUNT_SETTINGS уже импортирован
         self.tracked_breakouts = {}  # отслеживаем потенциальные стоп-ханты
         
     def find_liquidity_levels(self, df: pd.DataFrame, lookback: int = 100) -> List[Dict]:
