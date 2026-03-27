@@ -938,6 +938,169 @@ class FakeoutDetector:
         
         return None
 
+# ============== Детектор выбива стопов Стоп-хaнт (Stop Hunt) ==============
+class StopHuntDetector:
+    """
+    Детектор выбива стопов (Stop Hunt)
+    Определяет, когда цена пробила уровень ликвидности и вернулась
+    """
+    
+    def __init__(self, settings: Dict = None):
+        self.settings = settings or STOP_HUNT_SETTINGS
+        self.tracked_breakouts = {}  # отслеживаем потенциальные стоп-ханты
+        
+    def find_liquidity_levels(self, df: pd.DataFrame, lookback: int = 100) -> List[Dict]:
+        """
+        Поиск уровней ликвидности (где толпа держит стопы)
+        - Локальные максимумы (выше которых стопы у шортистов)
+        - Локальные минимумы (ниже которых стопы у лонгистов)
+        """
+        levels = []
+        window = 5
+        
+        # Поиск локальных максимумов (сопротивление)
+        for i in range(window, len(df) - window):
+            if df['high'].iloc[i] == max(df['high'].iloc[i-window:i+window]):
+                levels.append({
+                    'type': 'resistance',
+                    'price': df['high'].iloc[i],
+                    'index': i,
+                    'strength': self._calculate_level_strength(df, i, 'high')
+                })
+        
+        # Поиск локальных минимумов (поддержка)
+        for i in range(window, len(df) - window):
+            if df['low'].iloc[i] == min(df['low'].iloc[i-window:i+window]):
+                levels.append({
+                    'type': 'support',
+                    'price': df['low'].iloc[i],
+                    'index': i,
+                    'strength': self._calculate_level_strength(df, i, 'low')
+                })
+        
+        # Сортируем по силе и берем топ-5
+        levels.sort(key=lambda x: x['strength'], reverse=True)
+        return levels[:5]
+    
+    def _calculate_level_strength(self, df: pd.DataFrame, idx: int, price_type: str) -> int:
+        """Расчет силы уровня (количество касаний + объем)"""
+        price = df[price_type].iloc[idx]
+        touches = 0
+        volume_sum = 0
+        
+        for i in range(max(0, idx - 100), min(len(df), idx + 100)):
+            if i == idx:
+                continue
+            if price_type == 'high':
+                if abs(df['high'].iloc[i] - price) / price < 0.003:
+                    touches += 1
+                    volume_sum += df['volume'].iloc[i]
+            else:
+                if abs(df['low'].iloc[i] - price) / price < 0.003:
+                    touches += 1
+                    volume_sum += df['volume'].iloc[i]
+        
+        # Сила = касания (до 50) + объем (до 50)
+        strength = min(50, touches * 10) + min(50, (volume_sum / df['volume'].mean()) * 10 if df['volume'].mean() > 0 else 0)
+        return min(100, int(strength))
+    
+    def detect_stop_hunt(self, symbol: str, tf: str, df: pd.DataFrame, 
+                         current_price: float) -> Optional[Dict]:
+        """
+        Обнаружение выбива стопов
+        Возвращает информацию о стоп-ханте, если обнаружен
+        """
+        key = f"{symbol}_{tf}"
+        levels = self.find_liquidity_levels(df, self.settings['lookback_bars'])
+        
+        for level in levels:
+            # Проверяем пробой уровня
+            if level['type'] == 'resistance':
+                is_break = current_price > level['price']
+                breakout_direction = 'up'
+            else:
+                is_break = current_price < level['price']
+                breakout_direction = 'down'
+            
+            if not is_break:
+                # Если не пробой — сбрасываем отслеживание
+                if key in self.tracked_breakouts:
+                    del self.tracked_breakouts[key]
+                continue
+            
+            # Есть пробой
+            if key not in self.tracked_breakouts:
+                # Первый раз видим пробой
+                self.tracked_breakouts[key] = {
+                    'level': level,
+                    'break_price': current_price,
+                    'break_time': datetime.now(),
+                    'max_price': current_price,
+                    'min_price': current_price,
+                    'breakout_pct': abs((current_price - level['price']) / level['price'] * 100)
+                }
+                continue
+            
+            # Уже отслеживаем
+            tracker = self.tracked_breakouts[key]
+            
+            # Обновляем экстремумы
+            tracker['max_price'] = max(tracker['max_price'], current_price)
+            tracker['min_price'] = min(tracker['min_price'], current_price)
+            
+            # Проверяем, прошел ли лимит времени
+            time_elapsed = (datetime.now() - tracker['break_time']).total_seconds()
+            if time_elapsed > self.settings['max_retrace_time']:
+                # Слишком долго — не стоп-хант
+                del self.tracked_breakouts[key]
+                continue
+            
+            # Проверяем, достаточно ли большой был пробой
+            if tracker['breakout_pct'] < self.settings['min_breakout_pct']:
+                continue
+            
+            # Проверяем возврат
+            if level['type'] == 'resistance':
+                # Для сопротивления: цена должна вернуться ниже уровня
+                retrace_pct = ((tracker['max_price'] - current_price) / 
+                              (tracker['max_price'] - level['price']) * 100) if tracker['max_price'] > level['price'] else 0
+                
+                if current_price <= level['price'] and retrace_pct >= self.settings['retrace_threshold_pct']:
+                    # Стоп-хант обнаружен!
+                    result = {
+                        'type': 'stop_hunt',
+                        'direction': 'LONG' if level['type'] == 'resistance' else 'SHORT',
+                        'level': level['price'],
+                        'breakout_pct': tracker['breakout_pct'],
+                        'retrace_pct': retrace_pct,
+                        'strength': level['strength'],
+                        'timeframe': tf,
+                        'message': f"🎯 ВЫБИВ СТОПОВ на {tf}: пробой {level['price']:.4f} на {tracker['breakout_pct']:.1f}%, возврат на {retrace_pct:.0f}%"
+                    }
+                    del self.tracked_breakouts[key]
+                    return result
+                    
+            else:  # support
+                # Для поддержки: цена должна вернуться выше уровня
+                retrace_pct = ((current_price - tracker['min_price']) / 
+                              (level['price'] - tracker['min_price']) * 100) if level['price'] > tracker['min_price'] else 0
+                
+                if current_price >= level['price'] and retrace_pct >= self.settings['retrace_threshold_pct']:
+                    result = {
+                        'type': 'stop_hunt',
+                        'direction': 'SHORT' if level['type'] == 'support' else 'LONG',
+                        'level': level['price'],
+                        'breakout_pct': tracker['breakout_pct'],
+                        'retrace_pct': retrace_pct,
+                        'strength': level['strength'],
+                        'timeframe': tf,
+                        'message': f"🎯 ВЫБИВ СТОПОВ на {tf}: пробой {level['price']:.4f} на {tracker['breakout_pct']:.1f}%, возврат на {retrace_pct:.0f}%"
+                    }
+                    del self.tracked_breakouts[key]
+                    return result
+        
+        return None
+
 # ============== ГЕНЕРАТОР ГРАФИКОВ ==============
 
 class ChartGenerator:
@@ -2509,7 +2672,8 @@ class MultiTimeframeAnalyzer:
             'hourly': 'часовой',
             'current': 'текущий'
         }
-    
+        self.stop_hunt_detector = StopHuntDetector()
+
     def set_fibonacci(self, fib_analyzer):
         self.fibonacci = fib_analyzer
     
@@ -2767,6 +2931,9 @@ class MultiTimeframeAnalyzer:
             bearish = trends_list.count('НИСХОДЯЩИЙ')
             alignment['trend_alignment'] = (max(bullish, bearish) / len(trends_list)) * 100
             
+            # Логируем согласованность
+            logger.info(f"  📊 Согласованность трендов: {alignment['trend_alignment']:.1f}% ({len(trends_list)} ТФ)")
+
             if alignment['trend_alignment'] >= 80 and len(trends_list) >= 3:
                 direction = "бычий" if bullish > bearish else "медвежий"
                 alignment['signals'].append(f"Тренды согласованы: {alignment['trend_alignment']:.0f}% ({direction}, {len(trends_list)} ТФ)")
@@ -4055,7 +4222,33 @@ class MultiTimeframeAnalyzer:
                     if direction == 'SHORT':
                         target_str = f"{zone['max']:.6f}" if zone['max'] < 0.001 else f"{zone['max']:.4f}"
                         reasons.append(f"🎯 Цель: FVG {zone['tf_short']} {target_str} (-{zone['distance_pct']:.1f}%)")
-            
+
+            # ===== ДЕТЕКТОР ВЫБИВА СТОПОВ =====
+            stop_hunt = None
+            if FEATURES['advanced']['patterns'] and STOP_HUNT_SETTINGS.get('enabled', True):
+                try:
+                    logger.info(f"  🔍 {symbol} - Анализ выбива стопов")
+                    
+                    # Проверяем на разных ТФ
+                    tf_priority = ['current', '30m', 'hourly', 'four_hourly']
+                    for tf_name in tf_priority:
+                        if tf_name not in dataframes or dataframes[tf_name] is None:
+                            continue
+                        
+                        df_tf = dataframes[tf_name]
+                        stop_hunt = self.stop_hunt_detector.detect_stop_hunt(
+                            symbol, tf_name, df_tf, last['close']
+                        )
+                        
+                        if stop_hunt:
+                            logger.info(f"  ✅ {symbol} - Обнаружен стоп-хант на {tf_name}!")
+                            reasons.append(stop_hunt['message'])
+                            confidence += STOP_HUNT_SETTINGS['strength_bonus']
+                            break
+                            
+                except Exception as e:
+                    logger.error(f"❌ Ошибка в детекторе стоп-хантов для {symbol}: {e}")
+
             # ===== НОВАЯ ЛОГИКА СМЕНЫ НАПРАВЛЕНИЯ =====
     
             # Если мы в LONG, но сверху 3+ зон FVG - сильное сопротивление
