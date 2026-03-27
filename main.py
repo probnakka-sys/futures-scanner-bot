@@ -85,6 +85,7 @@ from config import (
     ENTRY_ZONES_SETTINGS,
     SIGNAL_TYPE_SETTINGS,
     STOP_HUNT_SETTINGS,
+    POST_STOP_HUNT_SETTINGS,
 )
 
 # from config import BREAKOUT_CONFIRMATION_SETTINGS
@@ -4249,6 +4250,41 @@ class MultiTimeframeAnalyzer:
                             
                 except Exception as e:
                     logger.error(f"❌ Ошибка в детекторе стоп-хантов для {symbol}: {e}")
+
+            # ===== ВХОД ПОСЛЕ ВЫБИВА СТОПОВ =====
+            if stop_hunt and POST_STOP_HUNT_SETTINGS.get('enabled', True):
+                # Стоп-хант уже обнаружен, формируем сигнал на разворот
+                logger.info(f"  🎯 {symbol} - Формирую сигнал на вход после стоп-ханта")
+                
+                # Направление разворота уже определено в stop_hunt['direction']
+                direction = stop_hunt['direction']
+                signal_type = POST_STOP_HUNT_SETTINGS.get('signal_type', 'stop_hunt_reversal')
+                
+                # Добавляем специальную причину
+                reasons.append(f"🚀 ВХОД ПОСЛЕ ВЫБИВА СТОПОВ: {stop_hunt['message']}")
+                
+                # Увеличиваем уверенность
+                confidence += POST_STOP_HUNT_SETTINGS.get('min_confidence_bonus', 15)
+                
+                # Проверяем подтверждение от младших ТФ (1м, 3м, 5м)
+                if POST_STOP_HUNT_SETTINGS.get('require_confirmation', True):
+                    minor_confirmation = 0
+                    for tf_name in ['1m', '3m', '5m']:
+                        if tf_name in dataframes and dataframes[tf_name] is not None:
+                            df_minor = dataframes[tf_name]
+                            last_minor = df_minor.iloc[-1]
+                            
+                            if direction == 'LONG' and last_minor['ema_9'] > last_minor['ema_21']:
+                                minor_confirmation += 1
+                            elif direction == 'SHORT' and last_minor['ema_9'] < last_minor['ema_21']:
+                                minor_confirmation += 1
+                    
+                    if minor_confirmation >= 2:
+                        reasons.append(f"✅ Подтверждение от младших ТФ ({minor_confirmation}/3)")
+                        confidence += 10
+                    else:
+                        reasons.append(f"⚠️ Слабое подтверждение от младших ТФ ({minor_confirmation}/3)")
+                        confidence -= 5
 
             # ===== НОВАЯ ЛОГИКА СМЕНЫ НАПРАВЛЕНИЯ =====
     
