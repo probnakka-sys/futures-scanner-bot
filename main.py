@@ -86,6 +86,7 @@ from config import (
     SIGNAL_TYPE_SETTINGS,
     STOP_HUNT_SETTINGS,
     POST_STOP_HUNT_SETTINGS,
+    LIQUIDITY_ZONES_SETTINGS,
 )
 
 # from config import BREAKOUT_CONFIRMATION_SETTINGS
@@ -1101,6 +1102,232 @@ class StopHuntDetector:
                     del self.tracked_breakouts[key]
                     return result
         
+        return None
+
+# ============== Детектор зон ликвидности ==============
+class LiquidityZoneDetector:
+    """
+    Детектор зон ликвидности
+    Находит уровни, где вероятно скопление стоп-лоссов
+    """
+    
+    def __init__(self, settings: Dict = None):
+        from config import LIQUIDITY_ZONES_SETTINGS
+        self.settings = settings or LIQUIDITY_ZONES_SETTINGS
+    
+    def find_liquidity_zones(self, df: pd.DataFrame, tf_name: str) -> List[Dict]:
+        """
+        Поиск зон ликвидности на одном таймфрейме
+        Возвращает список зон с их силой
+        """
+        zones = []
+        lookback = self.settings['lookback_bars']
+        df_work = df.tail(lookback).copy()
+        
+        # Поиск локальных максимумов (зоны сопротивления)
+        resistance_zones = self._find_swing_highs(df_work, tf_name)
+        zones.extend(resistance_zones)
+        
+        # Поиск локальных минимумов (зоны поддержки)
+        support_zones = self._find_swing_lows(df_work, tf_name)
+        zones.extend(support_zones)
+        
+        # Сортируем по силе
+        zones.sort(key=lambda x: x['strength'], reverse=True)
+        
+        return zones[:self.settings['max_zones']]
+    
+    def _find_swing_highs(self, df: pd.DataFrame, tf_name: str) -> List[Dict]:
+        """Поиск локальных максимумов"""
+        zones = []
+        window = 5
+        zone_width_pct = self.settings['zone_width_pct'] / 100
+        
+        for i in range(window, len(df) - window):
+            # Проверяем, является ли свеча локальным максимумом
+            is_swing_high = all(
+                df['high'].iloc[i] > df['high'].iloc[j] 
+                for j in range(i - window, i + window + 1) if j != i
+            )
+            
+            if not is_swing_high:
+                continue
+            
+            price = df['high'].iloc[i]
+            
+            # Считаем касания этого уровня
+            touches = 0
+            volume_sum = 0
+            
+            for k in range(max(0, i - 100), min(len(df), i + 100)):
+                if k == i:
+                    continue
+                if abs(df['high'].iloc[k] - price) / price < zone_width_pct:
+                    touches += 1
+                    volume_sum += df['volume'].iloc[k]
+            
+            if touches < self.settings['min_touches']:
+                continue
+            
+            # Рассчитываем силу зоны
+            strength = self._calculate_zone_strength(touches, volume_sum, df, tf_name)
+            
+            zones.append({
+                'type': 'resistance',
+                'price': price,
+                'price_low': price * (1 - zone_width_pct),
+                'price_high': price * (1 + zone_width_pct),
+                'touches': touches,
+                'strength': strength,
+                'timeframe': tf_name,
+                'volume_sum': volume_sum
+            })
+        
+        return zones
+    
+    def _find_swing_lows(self, df: pd.DataFrame, tf_name: str) -> List[Dict]:
+        """Поиск локальных минимумов"""
+        zones = []
+        window = 5
+        zone_width_pct = self.settings['zone_width_pct'] / 100
+        
+        for i in range(window, len(df) - window):
+            # Проверяем, является ли свеча локальным минимумом
+            is_swing_low = all(
+                df['low'].iloc[i] < df['low'].iloc[j] 
+                for j in range(i - window, i + window + 1) if j != i
+            )
+            
+            if not is_swing_low:
+                continue
+            
+            price = df['low'].iloc[i]
+            
+            # Считаем касания этого уровня
+            touches = 0
+            volume_sum = 0
+            
+            for k in range(max(0, i - 100), min(len(df), i + 100)):
+                if k == i:
+                    continue
+                if abs(df['low'].iloc[k] - price) / price < zone_width_pct:
+                    touches += 1
+                    volume_sum += df['volume'].iloc[k]
+            
+            if touches < self.settings['min_touches']:
+                continue
+            
+            # Рассчитываем силу зоны
+            strength = self._calculate_zone_strength(touches, volume_sum, df, tf_name)
+            
+            zones.append({
+                'type': 'support',
+                'price': price,
+                'price_low': price * (1 - zone_width_pct),
+                'price_high': price * (1 + zone_width_pct),
+                'touches': touches,
+                'strength': strength,
+                'timeframe': tf_name,
+                'volume_sum': volume_sum
+            })
+        
+        return zones
+    
+    def _calculate_zone_strength(self, touches: int, volume_sum: float, 
+                                  df: pd.DataFrame, tf_name: str) -> int:
+        """Расчет силы зоны"""
+        weights = self.settings['strength_weights']
+        
+        # Базовый вес от касаний
+        touch_strength = min(100, touches * weights.get('touches', 15))
+        
+        # Вес от объема
+        avg_volume = df['volume'].mean()
+        volume_ratio = volume_sum / avg_volume if avg_volume > 0 else 1
+        volume_strength = min(100, volume_ratio * weights.get('volume', 10))
+        
+        # Вес от таймфрейма
+        tf_weights = {
+            '1m': 1,
+            '5m': 2,
+            '15m': 3,
+            '30m': 4,
+            '1h': 5,
+            '4h': 7,
+            '1d': 10,
+        }
+        tf_strength = tf_weights.get(tf_name, 3) * weights.get('timeframe', 20) / 10
+        
+        # Итоговая сила
+        strength = (touch_strength + volume_strength + tf_strength) / 3
+        
+        return min(100, int(strength))
+    
+    def analyze_multi_timeframe(self, dataframes: Dict[str, pd.DataFrame]) -> Dict:
+        """
+        Анализ зон ликвидности на всех таймфреймах
+        """
+        result = {
+            'has_zones': False,
+            'zones': [],
+            'signals': [],
+            'strength': 0
+        }
+        
+        tfs = self.settings.get('timeframes', ['15m', '1h', '4h', '1d'])
+        tf_map = {
+            '15m': 'current',
+            '1h': 'hourly',
+            '4h': 'four_hourly',
+            '1d': 'daily'
+        }
+        
+        for tf_display in tfs:
+            tf_key = tf_map.get(tf_display, tf_display)
+            if tf_key not in dataframes or dataframes[tf_key] is None:
+                continue
+            
+            df = dataframes[tf_key]
+            zones = self.find_liquidity_zones(df, tf_display)
+            
+            for zone in zones:
+                result['has_zones'] = True
+                result['zones'].append(zone)
+                result['strength'] += zone['strength'] / len(zones) if zones else 0
+                
+                # Формируем сигнал
+                zone_type = "сопротивление" if zone['type'] == 'resistance' else "поддержка"
+                signal_text = (f"📍 Зона ликвидности ({zone_type}) на {zone['timeframe']}: "
+                             f"{zone['price']:.4f} (сила {zone['strength']}%, {zone['touches']} касаний)")
+                result['signals'].append(signal_text)
+        
+        if result['strength'] > 100:
+            result['strength'] = 100
+        
+        return result
+    
+    def check_price_near_zone(self, current_price: float, zones: List[Dict], 
+                               distance_threshold: float = 0.5) -> Optional[Dict]:
+        """Проверка, находится ли цена рядом с зоной ликвидности"""
+        for zone in zones:
+            if zone['type'] == 'resistance':
+                distance = ((zone['price'] - current_price) / current_price) * 100
+                if 0 < distance <= distance_threshold:
+                    return {
+                        'zone': zone,
+                        'distance': distance,
+                        'type': 'resistance',
+                        'action': 'breakout_or_rejection'
+                    }
+            else:  # support
+                distance = ((current_price - zone['price']) / current_price) * 100
+                if 0 < distance <= distance_threshold:
+                    return {
+                        'zone': zone,
+                        'distance': distance,
+                        'type': 'support',
+                        'action': 'breakdown_or_bounce'
+                    }
         return None
 
 # ============== ГЕНЕРАТОР ГРАФИКОВ ==============
@@ -2675,6 +2902,7 @@ class MultiTimeframeAnalyzer:
             'current': 'текущий'
         }
         self.stop_hunt_detector = StopHuntDetector()
+        self.liquidity_zone_detector = LiquidityZoneDetector()
 
     def set_fibonacci(self, fib_analyzer):
         self.fibonacci = fib_analyzer
@@ -4286,6 +4514,29 @@ class MultiTimeframeAnalyzer:
                     else:
                         reasons.append(f"⚠️ Слабое подтверждение от младших ТФ ({minor_confirmation}/3)")
                         confidence -= 5
+
+            # ===== ЗОНЫ ЛИКВИДНОСТИ =====  ← ✅ ВСТАВИТЬ ЭТОТ БЛОК ЗДЕСЬ
+            liquidity_zones = None
+            if LIQUIDITY_ZONES_SETTINGS.get('enabled', True):
+                try:
+                    logger.info(f"  🔍 {symbol} - Анализ зон ликвидности")
+                    liquidity_zones = self.liquidity_zone_detector.analyze_multi_timeframe(dataframes)
+                    
+                    if liquidity_zones['has_zones']:
+                        for signal in liquidity_zones['signals'][:3]:
+                            reasons.append(signal)
+                        confidence += liquidity_zones['strength'] / 10
+                        logger.info(f"  ✅ {symbol} - Найдено {len(liquidity_zones['zones'])} зон ликвидности")
+                        
+                        # Проверяем, находится ли цена рядом с зоной
+                        near_zone = self.liquidity_zone_detector.check_price_near_zone(
+                            last['close'], liquidity_zones['zones'], distance_threshold=0.5
+                        )
+                        if near_zone:
+                            reasons.append(f"⚠️ Цена в {near_zone['distance']:.1f}% от зоны {near_zone['type']}")
+                            
+                except Exception as e:
+                    logger.error(f"❌ Ошибка в анализе зон ликвидности для {symbol}: {e}")
 
             # ===== НОВАЯ ЛОГИКА СМЕНЫ НАПРАВЛЕНИЯ =====
             # Если уже есть стоп-хант сигнал — не меняем направление
