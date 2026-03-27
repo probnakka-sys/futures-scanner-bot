@@ -5067,6 +5067,41 @@ class FastPumpScanner:
                 signal_text = f"PUMP +{pump_change:.1f}%"
                 signal['direction'] = 'SHORT 📉 (коррекция)'
                 signal['signal_type'] = 'PUMP'
+                
+                # ===== ДОБАВИТЬ ПЕРЕСЧЕТ ЦЕЛЕЙ ДЛЯ SHORT =====
+                current_price = signal['price']
+                atr = signal.get('atr', 0)
+                
+                if atr > 0:
+                    from config import ATR_SETTINGS
+                    signal['target_1'] = current_price - atr * ATR_SETTINGS['short_target_1_mult']
+                    signal['target_2'] = current_price - atr * ATR_SETTINGS['short_target_2_mult']
+                    signal['stop_loss'] = current_price + atr * ATR_SETTINGS['short_stop_loss_mult']
+                    
+                    # Округление
+                    if current_price < 0.0001:
+                        signal['target_1'] = round(signal['target_1'], 8)
+                        signal['target_2'] = round(signal['target_2'], 8)
+                        signal['stop_loss'] = round(signal['stop_loss'], 8)
+                    elif current_price < 0.001:
+                        signal['target_1'] = round(signal['target_1'], 6)
+                        signal['target_2'] = round(signal['target_2'], 6)
+                        signal['stop_loss'] = round(signal['stop_loss'], 6)
+                    elif current_price < 0.01:
+                        signal['target_1'] = round(signal['target_1'], 5)
+                        signal['target_2'] = round(signal['target_2'], 5)
+                        signal['stop_loss'] = round(signal['stop_loss'], 5)
+                    elif current_price < 0.1:
+                        signal['target_1'] = round(signal['target_1'], 4)
+                        signal['target_2'] = round(signal['target_2'], 4)
+                        signal['stop_loss'] = round(signal['stop_loss'], 4)
+                    else:
+                        signal['target_1'] = round(signal['target_1'], 2)
+                        signal['target_2'] = round(signal['target_2'], 2)
+                        signal['stop_loss'] = round(signal['stop_loss'], 2)
+                    
+                    logger.info(f"  📊 Пересчитаны цели для SHORT: t1={signal['target_1']:.6f}, t2={signal['target_2']:.6f}, sl={signal['stop_loss']:.6f}")
+                
                 logger.info(f"  📊 format_pump_message: СМЕНА! {old_dir} → {signal['direction']} (PUMP без пробоя)")
                 if 'reasons' in signal:
                     has_pump_reason = any('Пробой уровня' in r or 'Коррекция' in r for r in signal['reasons'])
@@ -5119,6 +5154,41 @@ class FastPumpScanner:
                     signal_text = f"DUMP {pump_change:.1f}%"
                     signal['direction'] = 'LONG 📈 (отскок)'
                     signal['signal_type'] = 'DUMP'
+                    
+                    # ===== ДОБАВИТЬ ПЕРЕСЧЕТ ЦЕЛЕЙ ДЛЯ LONG =====
+                    current_price = signal['price']
+                    atr = signal.get('atr', 0)
+                    
+                    if atr > 0:
+                        from config import ATR_SETTINGS
+                        signal['target_1'] = current_price + atr * ATR_SETTINGS['long_target_1_mult']
+                        signal['target_2'] = current_price + atr * ATR_SETTINGS['long_target_2_mult']
+                        signal['stop_loss'] = current_price - atr * ATR_SETTINGS['long_stop_loss_mult']
+                        
+                        # Округление (как в generate_signal)
+                        if current_price < 0.0001:
+                            signal['target_1'] = round(signal['target_1'], 8)
+                            signal['target_2'] = round(signal['target_2'], 8)
+                            signal['stop_loss'] = round(signal['stop_loss'], 8)
+                        elif current_price < 0.001:
+                            signal['target_1'] = round(signal['target_1'], 6)
+                            signal['target_2'] = round(signal['target_2'], 6)
+                            signal['stop_loss'] = round(signal['stop_loss'], 6)
+                        elif current_price < 0.01:
+                            signal['target_1'] = round(signal['target_1'], 5)
+                            signal['target_2'] = round(signal['target_2'], 5)
+                            signal['stop_loss'] = round(signal['stop_loss'], 5)
+                        elif current_price < 0.1:
+                            signal['target_1'] = round(signal['target_1'], 4)
+                            signal['target_2'] = round(signal['target_2'], 4)
+                            signal['stop_loss'] = round(signal['stop_loss'], 4)
+                        else:
+                            signal['target_1'] = round(signal['target_1'], 2)
+                            signal['target_2'] = round(signal['target_2'], 2)
+                            signal['stop_loss'] = round(signal['stop_loss'], 2)
+                        
+                        logger.info(f"  📊 Пересчитаны цели для LONG: t1={signal['target_1']:.6f}, t2={signal['target_2']:.6f}, sl={signal['stop_loss']:.6f}")
+                    
                     logger.info(f"  📊 format_pump_message: СМЕНА! {old_dir} → {signal['direction']} (DUMP, bearish_score={bearish_score})")
                     if 'reasons' in signal and not any('Отскок' in r for r in signal['reasons']):
                         signal['reasons'].insert(0, f"Отскок после дампа {pump_change:.1f}%")
