@@ -4653,7 +4653,7 @@ class MultiTimeframeAnalyzer:
             target_1_mult = ACCUMULATION_SIGNAL_SETTINGS['target_1_multiplier']
             target_2_mult = ACCUMULATION_SIGNAL_SETTINGS['target_2_multiplier']
             stop_mult = ACCUMULATION_SIGNAL_SETTINGS['stop_multiplier']
-            reasons.append(f"📦 Накопление: увеличенные цели (x{target_1_mult:.1f}, x{target_2_mult:.1f} ATR)")
+            reasons.append(f"📦 Накопление: увеличенные цели (x{target_1_mult:.1f}, x{target_2_mult:.1f} ATR) и стоп (x{stop_mult:.1f} ATR)")
 
         # Для памп-дамп не используем увеличенные цели
         if signal_type in ['PUMP', 'DUMP', 'pump']:
