@@ -4749,10 +4749,15 @@ class MultiTimeframeAnalyzer:
                     
                     if potential_analysis and potential_analysis.get('has_potential'):
                         logger.info(f"  ✅ {symbol} - ПОТЕНЦИАЛ НАЙДЕН: {potential_analysis}")
+                        logger.info(f"  📝 Причины из потенциала: {potential_analysis['reasons']}")
                         for reason in potential_analysis['reasons']:
+                            logger.info(f"  ➕ Добавляю причину: {reason}")
                             # Добавляем в начало, чтобы было видно первым
                             if reason not in reasons:
                                 reasons.insert(0, reason)
+                                logger.info(f"  ✅ Причина добавлена")
+                            else:
+                                logger.info(f"  ⏭️ Причина уже есть")
                         
                         # ✅ БОНУС ЗА КОНФЛЮЕНЦИЮ (ВЫНЕСЕН ИЗ ELSE)
                         level_count = potential_analysis.get('level_count', 0)
