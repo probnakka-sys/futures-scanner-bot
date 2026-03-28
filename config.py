@@ -1098,11 +1098,13 @@ SIGNAL_TYPE_SETTINGS = {
 
 ACCUMULATION_SIGNAL_SETTINGS = {
     'enabled': True,
-    'leverage': 15,                      # Плечо 15x вместо 50x
-    'stop_multiplier': 3.5,              # Стоп 3.5x ATR (было 1.8)
+    'max_leverage': 15,                  # Сниженное плечо (было 50-100)
+    'min_leverage': 10,                  
     'target_1_multiplier': 5.0,          # Цель 1: 5x ATR
     'target_2_multiplier': 10.0,         # Цель 2: 10x ATR
-    'min_potential_pct': 5.0,            # Минимальный потенциал для сигнала (5%)
+    'stop_multiplier': 3.5,              # Увеличенный стоп (3.5x ATR)
+    'show_leverage_warning': True,       # Показывать предупреждение о плече
+    'min_potential_pct': 5.0,            # Минимальный потенциал для сигнала
     'use_higher_tf_atr': True,           # Использовать ATR старшего ТФ
     'higher_tf': 'hourly',               # ТФ для ATR
 }
