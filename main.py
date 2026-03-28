@@ -408,9 +408,11 @@ class AccumulationAnalyzer:
         
         return {'accumulation': False}
     
-    def calculate_potential(self, df: pd.DataFrame, dataframes: Dict[str, pd.DataFrame]) -> Dict:
+    def calculate_potential(self, df: pd.DataFrame, dataframes: Dict[str, pd.DataFrame], 
+                        fvg_analysis: Dict = None, liquidity_zones: List = None) -> Dict:
         """
         Расчет потенциала роста до ближайшей сильной зоны на старших ТФ
+        С учетом FVG и зон ликвидности
         """
         current_price = df['close'].iloc[-1]
         potential = {
@@ -419,7 +421,9 @@ class AccumulationAnalyzer:
             'target_pct': 0,
             'target_level': '',
             'timeframe': '',
-            'reasons': []
+            'reasons': [],
+            'confluence_strength': 0,
+            'level_count': 0
         }
         
         # Анализируем старшие таймфреймы
@@ -431,81 +435,243 @@ class AccumulationAnalyzer:
             
             tf_df = dataframes[tf_name]
             
-            # Ищем ближайшие сильные уровни
-            levels = self._find_strong_levels(tf_df)
+            # Получаем FVG для этого ТФ из анализа
+            tf_fvg = []
+            if fvg_analysis and fvg_analysis.get('zones'):
+                tf_fvg = [z for z in fvg_analysis['zones'] if z.get('tf') == tf_name]
             
-            for level in levels:
-                level_price = level['price']
-                level_type = level['type']
+            # Получаем зоны ликвидности для этого ТФ
+            tf_liquidity = []
+            if liquidity_zones:
+                tf_liquidity = [z for z in liquidity_zones if z.get('timeframe') == tf_name]
+            
+            # Ищем уровни с учетом FVG и ликвидности
+            levels = self._find_strong_levels(tf_df, tf_fvg, tf_liquidity)
+            
+            # Ищем конфлюенцию
+            confluence_zones = self.find_confluence(levels, current_price, tolerance=0.5)
+            
+            # Проверяем зоны конфлюенции
+            for zone in confluence_zones:
+                zone_price = zone['price']
+                zone_type = zone['zone_type']
                 
-                # Для LONG ищем уровень сопротивления выше цены
-                if level_price > current_price:
-                    distance = ((level_price - current_price) / current_price) * 100
-                    
-                    # Если расстояние разумное (не больше 50%)
-                    if distance < 50:
-                        if not potential['target_price'] or level_price < potential['target_price']:
-                            potential['has_potential'] = True
-                            potential['target_price'] = level_price
-                            potential['target_pct'] = round(distance, 2)
-                            potential['target_level'] = f"{level_type} на {tf_name}"
-                            potential['timeframe'] = tf_name
-                            potential['reasons'].append(
-                                f"🎯 До {level_type} на {tf_name}: +{distance:.2f}%"
-                            )
-                
-                # Для SHORT ищем уровень поддержки ниже цены
-                elif level_price < current_price:
-                    distance = ((current_price - level_price) / current_price) * 100
+                if zone_type == 'resistance' and zone_price > current_price:
+                    distance = ((zone_price - current_price) / current_price) * 100
                     
                     if distance < 50:
-                        if not potential['target_price'] or level_price > potential['target_price']:
+                        if not potential['target_price'] or zone_price < potential['target_price']:
                             potential['has_potential'] = True
-                            potential['target_price'] = level_price
+                            potential['target_price'] = zone_price
                             potential['target_pct'] = round(distance, 2)
-                            potential['target_level'] = f"{level_type} на {tf_name}"
+                            potential['target_level'] = zone['description']
                             potential['timeframe'] = tf_name
+                            potential['confluence_strength'] = zone['strength']
+                            potential['level_count'] = zone['count']
+                            
+                            # Эмодзи в зависимости от силы
+                            if zone['count'] >= 4:
+                                emoji = "🔥🔥🔥"
+                            elif zone['count'] >= 3:
+                                emoji = "🔥🔥"
+                            elif zone['count'] >= 2:
+                                emoji = "🔥"
+                            else:
+                                emoji = "⭐"
+                            
                             potential['reasons'].append(
-                                f"🎯 До {level_type} на {tf_name}: -{distance:.2f}%"
+                                f"{emoji} {zone['description']} на {tf_name}: +{distance:.2f}% "
+                                f"(сила {zone['strength']}%, {zone['count']} уровней)"
                             )
+                            break
+            
+            # Если нет конфлюенции — берем ближайший одиночный уровень
+            if not potential['has_potential']:
+                for level in levels:
+                    level_price = level['price']
+                    level_type = level['type']
+                    
+                    if level_price > current_price:
+                        distance = ((level_price - current_price) / current_price) * 100
+                        
+                        if distance < 50:
+                            if not potential['target_price'] or level_price < potential['target_price']:
+                                potential['has_potential'] = True
+                                potential['target_price'] = level_price
+                                potential['target_pct'] = round(distance, 2)
+                                potential['target_level'] = level_type
+                                potential['timeframe'] = tf_name
+                                potential['confluence_strength'] = level['strength']
+                                potential['level_count'] = 1
+                                potential['reasons'].append(
+                                    f"📊 До {level_type} на {tf_name}: +{distance:.2f}%"
+                                )
+                                break
         
         return potential
     
-    def _find_strong_levels(self, df: pd.DataFrame) -> List[Dict]:
-        """Поиск сильных уровней на таймфрейме"""
+    def _find_strong_levels(self, df: pd.DataFrame, fvg_zones: List = None, liquidity_zones: List = None) -> List[Dict]:
+        """
+        Поиск сильных уровней на таймфрейме
+        Включает: EMA, SMA, VWAP, локальные экстремумы, FVG, зоны ликвидности
+        """
         levels = []
         
-        # EMA уровни
-        if 'ema_50' in df.columns:
+        # 1. EMA (короткие)
+        short_emas = [7, 14, 21, 28, 50]
+        for period in short_emas:
+            col = f'ema_{period}'
+            if col in df.columns and pd.notna(df[col].iloc[-1]):
+                levels.append({
+                    'price': df[col].iloc[-1],
+                    'type': f'EMA {period}',
+                    'strength': 60 + (period // 10),
+                    'category': 'ema_short'
+                })
+        
+        # 2. SMA (длинные)
+        long_smas = [50, 100, 200]
+        for period in long_smas:
+            col = f'sma_{period}'
+            if col in df.columns and pd.notna(df[col].iloc[-1]):
+                strength = 70 if period == 50 else 75 if period == 100 else 85
+                levels.append({
+                    'price': df[col].iloc[-1],
+                    'type': f'SMA {period}',
+                    'strength': strength,
+                    'category': 'sma_long'
+                })
+        
+        # 3. VWAP
+        if 'vwap' in df.columns and pd.notna(df['vwap'].iloc[-1]):
             levels.append({
-                'price': df['ema_50'].iloc[-1],
-                'type': 'EMA 50',
-                'strength': 70
-            })
-        if 'ema_200' in df.columns:
-            levels.append({
-                'price': df['ema_200'].iloc[-1],
-                'type': 'EMA 200',
-                'strength': 90
+                'price': df['vwap'].iloc[-1],
+                'type': 'VWAP',
+                'strength': 80,
+                'category': 'vwap'
             })
         
-        # Локальные экстремумы
+        # 4. Локальные экстремумы
         recent = df.tail(50)
-        swing_high = recent['high'].max()
-        swing_low = recent['low'].min()
-        
         levels.append({
-            'price': swing_high,
+            'price': recent['high'].max(),
             'type': 'Локальный максимум',
-            'strength': 60
+            'strength': 60,
+            'category': 'swing'
         })
         levels.append({
-            'price': swing_low,
+            'price': recent['low'].min(),
             'type': 'Локальный минимум',
-            'strength': 60
+            'strength': 60,
+            'category': 'swing'
         })
+        
+        # 5. FVG зоны (если переданы)
+        if fvg_zones:
+            for fvg in fvg_zones[:3]:  # берем топ-3 ближайшие
+                if fvg['type'] == 'bullish':
+                    level_price = fvg['max']  # верхняя граница
+                    level_type = f"FVG {fvg.get('tf_short', '')}"
+                else:
+                    level_price = fvg['min']  # нижняя граница
+                    level_type = f"FVG {fvg.get('tf_short', '')}"
+                
+                levels.append({
+                    'price': level_price,
+                    'type': level_type,
+                    'strength': fvg.get('strength', 75),
+                    'category': 'fvg'
+                })
+        
+        # 6. Зоны ликвидности (если переданы)
+        if liquidity_zones:
+            for zone in liquidity_zones[:3]:  # берем топ-3
+                levels.append({
+                    'price': zone['price'],
+                    'type': f"Зона ликвидности ({zone['type']})",
+                    'strength': zone.get('strength', 70),
+                    'category': 'liquidity'
+                })
         
         return levels
+
+    def find_confluence(self, levels: List[Dict], current_price: float, tolerance: float = 0.5) -> List[Dict]:
+        """
+        Поиск сходящихся уровней в одной ценовой зоне
+        tolerance: допустимое отклонение в процентах (0.5% = уровни в радиусе 0.5% от цены)
+        
+        Возвращает список зон конфлюенции, отсортированных по силе
+        """
+        if not levels:
+            return []
+        
+        # Группируем уровни по цене (с допуском)
+        zones = []
+        used = set()
+        
+        for i, level1 in enumerate(levels):
+            if i in used:
+                continue
+            
+            # Создаем новую зону
+            zone = {
+                'price': level1['price'],
+                'levels': [level1],
+                'types': [level1['type']],
+                'categories': [level1.get('category', 'unknown')],
+                'strength': level1['strength'],
+                'count': 1
+            }
+            
+            # Ищем уровни, близкие к текущему
+            for j, level2 in enumerate(levels):
+                if j == i or j in used:
+                    continue
+                
+                # Разница в процентах
+                diff = abs(level1['price'] - level2['price']) / level1['price'] * 100
+                
+                if diff <= tolerance:
+                    zone['levels'].append(level2)
+                    zone['types'].append(level2['type'])
+                    zone['categories'].append(level2.get('category', 'unknown'))
+                    zone['strength'] += level2['strength']
+                    zone['count'] += 1
+                    # Усредняем цену зоны
+                    zone['price'] = (zone['price'] + level2['price']) / 2
+                    used.add(j)
+            
+            # Если в зоне больше 1 уровня — это конфлюенция
+            if zone['count'] > 1:
+                # Нормализуем силу (максимум 100)
+                zone['strength'] = min(100, zone['strength'])
+                
+                # Определяем тип зоны (поддержка или сопротивление)
+                if zone['price'] < current_price:
+                    zone['zone_type'] = 'support'
+                    zone['direction'] = 'LONG'
+                else:
+                    zone['zone_type'] = 'resistance'
+                    zone['direction'] = 'SHORT'
+                
+                # Расстояние до зоны
+                zone['distance_pct'] = abs(zone['price'] - current_price) / current_price * 100
+                
+                # Формируем описание
+                unique_types = list(dict.fromkeys(zone['types']))  # убираем дубликаты
+                if len(unique_types) == 2:
+                    zone['description'] = f"КОНФЛЮЕНЦИЯ: {unique_types[0]} + {unique_types[1]}"
+                else:
+                    zone['description'] = f"КОНФЛЮЕНЦИЯ: {', '.join(unique_types[:3])}"
+                    if len(unique_types) > 3:
+                        zone['description'] += f" +{len(unique_types)-3}"
+                
+                zones.append(zone)
+        
+        # Сортируем по силе (чем больше уровней, тем выше приоритет)
+        zones.sort(key=lambda x: (x['count'], x['strength']), reverse=True)
+        
+        return zones    
     
     def analyze(self, df: pd.DataFrame) -> Dict:
         """
