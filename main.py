@@ -4740,19 +4740,22 @@ class MultiTimeframeAnalyzer:
                     # Передаем FVG и зоны ликвидности если они есть
                     fvg_for_potential = fvg_analysis if 'fvg_analysis' in locals() else None
                     liquidity_for_potential = liquidity_zones.get('zones') if 'liquidity_zones' in locals() and liquidity_zones else None
-
+                    
                     # ✅ ДОБАВИТЬ ЛОГИРОВАНИЕ
                     logger.info(f"  🔍 {symbol} - Передаю в calculate_potential: FVG={fvg_for_potential is not None}, Liquidity={liquidity_for_potential is not None}")
-                    
+
                     potential_analysis = self.accumulation.calculate_potential(
                         df, dataframes, fvg_for_potential, liquidity_for_potential
                     )
                     
                     if potential_analysis and potential_analysis.get('has_potential'):
+                        logger.info(f"  ✅ {symbol} - ПОТЕНЦИАЛ НАЙДЕН: {potential_analysis}")
                         for reason in potential_analysis['reasons']:
                             # Добавляем только если такой причины еще нет
                             if reason not in reasons:
                                 reasons.append(reason)
+                    else:
+                        logger.info(f"  ⚠️ {symbol} - ПОТЕНЦИАЛ НЕ НАЙДЕН")
                         
                         # Бонус к уверенности за конфлюенцию
                         level_count = potential_analysis.get('level_count', 0)
