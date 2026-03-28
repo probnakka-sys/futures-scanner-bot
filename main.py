@@ -4495,6 +4495,73 @@ class MultiTimeframeAnalyzer:
                 traceback.print_exc()
                 # Продолжаем выполнение с пустым fvg_analysis
                 fvg_analysis = {'has_fvg': False, 'signals': [], 'zones': []}
+
+        # ===== ЗОНЫ ЛИКВИДНОСТИ =====  ← ✅ ВСТАВИТЬ ЭТОТ БЛОК ЗДЕСЬ            
+        if LIQUIDITY_ZONES_SETTINGS.get('enabled', True):
+            try:
+                logger.info(f"  🔍 {symbol} - Анализ зон ликвидности")
+                liquidity_zones = self.liquidity_zone_detector.analyze_multi_timeframe(dataframes)
+                
+                if liquidity_zones['has_zones']:
+                    for signal in liquidity_zones['signals'][:3]:
+                        reasons.append(signal)
+                    confidence += liquidity_zones['strength'] / 10
+                    logger.info(f"  ✅ {symbol} - Найдено {len(liquidity_zones['zones'])} зон ликвидности")
+                    
+                    # Проверяем, находится ли цена рядом с зоной
+                    near_zone = self.liquidity_zone_detector.check_price_near_zone(
+                        last['close'], liquidity_zones['zones'], distance_threshold=0.5
+                    )
+                    if near_zone:
+                        reasons.append(f"⚠️ Цена в {near_zone['distance']:.1f}% от зоны {near_zone['type']}")
+                        
+            except Exception as e:
+                logger.error(f"❌ Ошибка в анализе зон ликвидности для {symbol}: {e}")
+
+        # ===== РАСЧЕТ ПОТЕНЦИАЛА (ДЛЯ ВСЕХ ТИПОВ СИГНАЛОВ) =====
+        potential_analysis = None
+        if self.accumulation and FEATURES['advanced']['accumulation']:
+            try:
+                # Передаем FVG и зоны ликвидности если они есть
+                fvg_for_potential = fvg_analysis if 'fvg_analysis' in locals() else None
+                liquidity_for_potential = liquidity_zones.get('zones') if 'liquidity_zones' in locals() and liquidity_zones else None
+                
+                logger.info(f"  🔍 {symbol} - Передаю в calculate_potential: FVG={fvg_for_potential is not None}, Liquidity={liquidity_for_potential is not None}")
+
+                potential_analysis = self.accumulation.calculate_potential(
+                    df, dataframes, fvg_for_potential, liquidity_for_potential
+                )
+                
+                if potential_analysis and potential_analysis.get('has_potential'):
+                    logger.info(f"  ✅ {symbol} - ПОТЕНЦИАЛ НАЙДЕН: {potential_analysis}")
+                    logger.info(f"  📝 Причины из потенциала: {potential_analysis['reasons']}")
+                    for reason in potential_analysis['reasons']:
+                        logger.info(f"  ➕ Добавляю причину: {reason}")
+                        # Добавляем в начало, чтобы было видно первым
+                        if reason not in reasons:
+                            reasons.insert(0, reason)
+                            logger.info(f"  ✅ Причина добавлена")
+                        else:
+                            logger.info(f"  ⏭️ Причина уже есть")
+                    
+                    # ✅ БОНУС ЗА КОНФЛЮЕНЦИЮ (ВЫНЕСЕН ИЗ ELSE)
+                    level_count = potential_analysis.get('level_count', 0)
+                    if level_count >= 4:
+                        confidence += 25
+                        reasons.append(f"🔥 СУПЕР-КОНФЛЮЕНЦИЯ: {level_count} уровней в одной зоне")
+                    elif level_count >= 3:
+                        confidence += 20
+                        reasons.append(f"⭐ СИЛЬНАЯ КОНФЛЮЕНЦИЯ: {level_count} уровней в одной зоне")
+                    elif level_count >= 2:
+                        confidence += 10
+                        reasons.append(f"📊 СХОЖДЕНИЕ УРОВНЕЙ: {level_count} уровня в одной зоне")
+                    
+                    logger.info(f"  ✅ {symbol} - Потенциал: {potential_analysis['target_pct']}% до {potential_analysis['target_level']}")
+                else:
+                    logger.info(f"  ⚠️ {symbol} - ПОТЕНЦИАЛ НЕ НАЙДЕН")
+                        
+            except Exception as e:
+                logger.error(f"❌ Ошибка в расчете потенциала для {symbol}: {e}")
         
         # ===== АНАЛИЗ КАСАНИЙ EMA =====
         ema_touch = self.analyze_ema_touch(df, last)
@@ -4709,74 +4776,7 @@ class MultiTimeframeAnalyzer:
                         confidence += 10
                     else:
                         reasons.append(f"⚠️ Слабое подтверждение от младших ТФ ({minor_confirmation}/3)")
-                        confidence -= 5
-
-            # ===== ЗОНЫ ЛИКВИДНОСТИ =====  ← ✅ ВСТАВИТЬ ЭТОТ БЛОК ЗДЕСЬ            
-            if LIQUIDITY_ZONES_SETTINGS.get('enabled', True):
-                try:
-                    logger.info(f"  🔍 {symbol} - Анализ зон ликвидности")
-                    liquidity_zones = self.liquidity_zone_detector.analyze_multi_timeframe(dataframes)
-                    
-                    if liquidity_zones['has_zones']:
-                        for signal in liquidity_zones['signals'][:3]:
-                            reasons.append(signal)
-                        confidence += liquidity_zones['strength'] / 10
-                        logger.info(f"  ✅ {symbol} - Найдено {len(liquidity_zones['zones'])} зон ликвидности")
-                        
-                        # Проверяем, находится ли цена рядом с зоной
-                        near_zone = self.liquidity_zone_detector.check_price_near_zone(
-                            last['close'], liquidity_zones['zones'], distance_threshold=0.5
-                        )
-                        if near_zone:
-                            reasons.append(f"⚠️ Цена в {near_zone['distance']:.1f}% от зоны {near_zone['type']}")
-                            
-                except Exception as e:
-                    logger.error(f"❌ Ошибка в анализе зон ликвидности для {symbol}: {e}")
-
-            # ===== РАСЧЕТ ПОТЕНЦИАЛА (ДЛЯ ВСЕХ ТИПОВ СИГНАЛОВ) =====
-            potential_analysis = None
-            if self.accumulation and FEATURES['advanced']['accumulation']:
-                try:
-                    # Передаем FVG и зоны ликвидности если они есть
-                    fvg_for_potential = fvg_analysis if 'fvg_analysis' in locals() else None
-                    liquidity_for_potential = liquidity_zones.get('zones') if 'liquidity_zones' in locals() and liquidity_zones else None
-                    
-                    logger.info(f"  🔍 {symbol} - Передаю в calculate_potential: FVG={fvg_for_potential is not None}, Liquidity={liquidity_for_potential is not None}")
-
-                    potential_analysis = self.accumulation.calculate_potential(
-                        df, dataframes, fvg_for_potential, liquidity_for_potential
-                    )
-                    
-                    if potential_analysis and potential_analysis.get('has_potential'):
-                        logger.info(f"  ✅ {symbol} - ПОТЕНЦИАЛ НАЙДЕН: {potential_analysis}")
-                        logger.info(f"  📝 Причины из потенциала: {potential_analysis['reasons']}")
-                        for reason in potential_analysis['reasons']:
-                            logger.info(f"  ➕ Добавляю причину: {reason}")
-                            # Добавляем в начало, чтобы было видно первым
-                            if reason not in reasons:
-                                reasons.insert(0, reason)
-                                logger.info(f"  ✅ Причина добавлена")
-                            else:
-                                logger.info(f"  ⏭️ Причина уже есть")
-                        
-                        # ✅ БОНУС ЗА КОНФЛЮЕНЦИЮ (ВЫНЕСЕН ИЗ ELSE)
-                        level_count = potential_analysis.get('level_count', 0)
-                        if level_count >= 4:
-                            confidence += 25
-                            reasons.append(f"🔥 СУПЕР-КОНФЛЮЕНЦИЯ: {level_count} уровней в одной зоне")
-                        elif level_count >= 3:
-                            confidence += 20
-                            reasons.append(f"⭐ СИЛЬНАЯ КОНФЛЮЕНЦИЯ: {level_count} уровней в одной зоне")
-                        elif level_count >= 2:
-                            confidence += 10
-                            reasons.append(f"📊 СХОЖДЕНИЕ УРОВНЕЙ: {level_count} уровня в одной зоне")
-                        
-                        logger.info(f"  ✅ {symbol} - Потенциал: {potential_analysis['target_pct']}% до {potential_analysis['target_level']}")
-                    else:
-                        logger.info(f"  ⚠️ {symbol} - ПОТЕНЦИАЛ НЕ НАЙДЕН")
-                            
-                except Exception as e:
-                    logger.error(f"❌ Ошибка в расчете потенциала для {symbol}: {e}")
+                        confidence -= 5            
             
             # ===== НОВАЯ ЛОГИКА СМЕНЫ НАПРАВЛЕНИЯ =====
             # Если уже есть стоп-хант сигнал — не меняем направление
