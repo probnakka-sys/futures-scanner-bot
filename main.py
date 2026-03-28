@@ -4087,6 +4087,10 @@ class MultiTimeframeAnalyzer:
                         reasons.append(reason)
                     logger.info(f"  📈 {symbol} - Потенциал: {potential['target_pct']}%")
                 
+                # ✅ ДОБАВИТЬ: предупреждение о сниженном плече
+                if ACCUMULATION_SIGNAL_SETTINGS.get('enabled', True):
+                    reasons.append(f"⚠️ СНИЖЕННОЕ ПЛЕЧО: рекомендуется {ACCUMULATION_SIGNAL_SETTINGS['max_leverage']}x (вместо 50-100x)")
+
                 if accumulation_analysis.get('direction'):
                     direction = accumulation_analysis['direction']
                 logger.info(f"  ✅ {symbol} - Накопление: найдено {len(accumulation_analysis['signals'])} сигналов")
@@ -5715,6 +5719,12 @@ class FastPumpScanner:
             if max_lev is None or max_lev > 200:
                 max_lev = 100
             
+            # ✅ ДОБАВИТЬ: для накопления снижаем плечо
+            if signal.get('signal_type') == 'accumulation' and ACCUMULATION_SIGNAL_SETTINGS.get('enabled', True):
+                max_lev = ACCUMULATION_SIGNAL_SETTINGS.get('max_leverage', 20)
+                if ACCUMULATION_SIGNAL_SETTINGS.get('show_leverage_warning', True):
+                    line1 = f"{line1}\n⚠️ *СНИЖЕННОЕ ПЛЕЧО {max_lev}x* (накопление)"
+
             min_amt = contract_info.get('min_amount')
             if min_amt is None or min_amt > 1000:
                 min_amt = 5.0
