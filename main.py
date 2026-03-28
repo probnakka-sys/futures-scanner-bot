@@ -4741,7 +4741,6 @@ class MultiTimeframeAnalyzer:
                     fvg_for_potential = fvg_analysis if 'fvg_analysis' in locals() else None
                     liquidity_for_potential = liquidity_zones.get('zones') if 'liquidity_zones' in locals() and liquidity_zones else None
                     
-                    # ✅ ДОБАВИТЬ ЛОГИРОВАНИЕ
                     logger.info(f"  🔍 {symbol} - Передаю в calculate_potential: FVG={fvg_for_potential is not None}, Liquidity={liquidity_for_potential is not None}")
 
                     potential_analysis = self.accumulation.calculate_potential(
@@ -4751,13 +4750,11 @@ class MultiTimeframeAnalyzer:
                     if potential_analysis and potential_analysis.get('has_potential'):
                         logger.info(f"  ✅ {symbol} - ПОТЕНЦИАЛ НАЙДЕН: {potential_analysis}")
                         for reason in potential_analysis['reasons']:
-                            # Добавляем только если такой причины еще нет
+                            # Добавляем в начало, чтобы было видно первым
                             if reason not in reasons:
-                                reasons.append(reason)
-                    else:
-                        logger.info(f"  ⚠️ {symbol} - ПОТЕНЦИАЛ НЕ НАЙДЕН")
+                                reasons.insert(0, reason)
                         
-                        # Бонус к уверенности за конфлюенцию
+                        # ✅ БОНУС ЗА КОНФЛЮЕНЦИЮ (ВЫНЕСЕН ИЗ ELSE)
                         level_count = potential_analysis.get('level_count', 0)
                         if level_count >= 4:
                             confidence += 25
@@ -4770,7 +4767,9 @@ class MultiTimeframeAnalyzer:
                             reasons.append(f"📊 СХОЖДЕНИЕ УРОВНЕЙ: {level_count} уровня в одной зоне")
                         
                         logger.info(f"  ✅ {symbol} - Потенциал: {potential_analysis['target_pct']}% до {potential_analysis['target_level']}")
-                        
+                    else:
+                        logger.info(f"  ⚠️ {symbol} - ПОТЕНЦИАЛ НЕ НАЙДЕН")
+                            
                 except Exception as e:
                     logger.error(f"❌ Ошибка в расчете потенциала для {symbol}: {e}")
             
