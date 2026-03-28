@@ -100,6 +100,8 @@ from config import VOLUME_ANALYSIS_SETTINGS, DISPERSION_ANALYSIS_SETTINGS
 # Импорт снайперские точки входа
 from config import SNIPER_ENTRY_SETTINGS
 
+from config import ACCUMULATION_SIGNAL_SETTINGS
+
 # Настройка логирования
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -4860,7 +4862,7 @@ class MultiTimeframeAnalyzer:
                     reasons.append(f"📈 Сильный недельный тренд (выше/ниже EMA 200)")
         
         # Выбираем множители
-        from config import ACCUMULATION_SIGNAL_SETTINGS
+        # from config import ACCUMULATION_SIGNAL_SETTINGS
         
         # Для накопления — специальные настройки
         if signal_type == 'accumulation':
