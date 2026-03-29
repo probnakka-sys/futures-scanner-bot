@@ -416,6 +416,16 @@ class AccumulationAnalyzer:
         Расчет потенциала роста до ближайшей сильной зоны на старших ТФ
         С учетом FVG и зон ликвидности
         """
+        # ✅ ДОБАВИТЬ СЛОВАРЬ ПЕРЕВОДА
+        tf_short = {
+            'monthly': '1м',
+            'weekly': '1н',
+            'daily': '1д',
+            'four_hourly': '4ч',
+            'hourly': '1ч',
+            'current': '15м'
+        }
+        
         current_price = df['close'].iloc[-1]
         potential = {
             'has_potential': False,
@@ -482,7 +492,7 @@ class AccumulationAnalyzer:
                                 emoji = "⭐"
                             
                             potential['reasons'].append(
-                                f"{emoji} {zone['description']} на {tf_name}: +{distance:.2f}% "
+                                f"{emoji} {zone['description']} на {tf_short.get(tf_name, tf_name)}: +{distance:.2f}% "
                                 f"(сила {zone['strength']}%, {zone['count']} уровней)"
                             )
                             break
@@ -506,7 +516,7 @@ class AccumulationAnalyzer:
                                 potential['confluence_strength'] = level['strength']
                                 potential['level_count'] = 1
                                 potential['reasons'].append(
-                                    f"📊 До {level_type} на {tf_name}: +{distance:.2f}%"
+                                    f"📊 До {level_type} на {tf_short.get(tf_name, tf_name)}: +{distance:.2f}%"
                                 )
                                 break
         
