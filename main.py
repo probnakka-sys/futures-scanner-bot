@@ -4517,27 +4517,7 @@ class MultiTimeframeAnalyzer:
                 if fvg_analysis['has_fvg']:
                     for signal_text in fvg_analysis['signals']:
                         reasons.append(signal_text)
-                    confidence += fvg_analysis['strength'] / 5
-
-        # FVG по направлению (LONG = FVG снизу, SHORT = FVG сверху)
-        if strategy['fvg'].get('direction_filter', True):
-            if direction == 'LONG':
-                # Ищем FVG ниже цены (поддержка)
-                fvg_below = [z for z in fvg_analysis.get('zones', []) if z['max'] < last['close']]
-                if not fvg_below:
-                    reasons.append("⚠️ Нет FVG поддержки снизу (LONG)")
-                    confidence -= 10
-                else:
-                    logger.info(f"  ✅ Найдено {len(fvg_below)} FVG поддержки снизу")
-            elif direction == 'SHORT':
-                # Ищем FVG выше цены (сопротивление)
-                fvg_above = [z for z in fvg_analysis.get('zones', []) if z['min'] > last['close']]
-                if not fvg_above:
-                    reasons.append("⚠️ Нет FVG сопротивления сверху (SHORT)")
-                    confidence -= 10
-                else:
-                    logger.info(f"  ✅ Найдено {len(fvg_above)} FVG сопротивления сверху")        
-
+                    confidence += fvg_analysis['strength'] / 5      
                     logger.info(f"  ✅ {symbol} - Найдено FVG: {len(fvg_analysis['signals'])} на разных ТФ")
             except Exception as e:
                 logger.error(f"❌ Ошибка в FVG анализе для {symbol}: {e}")
