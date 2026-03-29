@@ -102,6 +102,8 @@ from config import SNIPER_ENTRY_SETTINGS
 
 from config import ACCUMULATION_SIGNAL_SETTINGS
 
+from config import STRATEGY_SETTINGS
+
 # Настройка логирования
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -523,10 +525,6 @@ class AccumulationAnalyzer:
         return potential
     
     def _find_strong_levels(self, df: pd.DataFrame, fvg_zones: List = None, liquidity_zones: List = None) -> List[Dict]:
-        """
-        Поиск сильных уровней на таймфрейме
-        Включает: EMA, SMA, VWAP, локальные экстремумы, FVG, зоны ликвидности
-        """
         levels = []
         
         # 1. EMA (короткие)
@@ -578,14 +576,28 @@ class AccumulationAnalyzer:
             'category': 'swing'
         })
         
-        # 5. FVG зоны (если переданы)
+        # 5. Уровни Фибоначчи (0.236, 0.382, 0.5, 0.618, 0.786)
+        if 'fib_levels' in df.columns:
+            fib_levels = ['0.236', '0.382', '0.5', '0.618', '0.786']
+            for fib in fib_levels:
+                col = f'fib_{fib}'
+                if col in df.columns and pd.notna(df[col].iloc[-1]):
+                    strength = 75 if fib == '0.618' else 65
+                    levels.append({
+                        'price': df[col].iloc[-1],
+                        'type': f'Фибо {fib}',
+                        'strength': strength,
+                        'category': 'fibonacci'
+                    })
+        
+        # 6. FVG зоны
         if fvg_zones:
-            for fvg in fvg_zones[:3]:  # берем топ-3 ближайшие
+            for fvg in fvg_zones[:3]:
                 if fvg['type'] == 'bullish':
-                    level_price = fvg['max']  # верхняя граница
+                    level_price = fvg['max']
                     level_type = f"FVG {fvg.get('tf_short', '')}"
                 else:
-                    level_price = fvg['min']  # нижняя граница
+                    level_price = fvg['min']
                     level_type = f"FVG {fvg.get('tf_short', '')}"
                 
                 levels.append({
@@ -595,9 +607,9 @@ class AccumulationAnalyzer:
                     'category': 'fvg'
                 })
         
-        # 6. Зоны ликвидности (если переданы)
+        # 7. Зоны ликвидности
         if liquidity_zones:
-            for zone in liquidity_zones[:3]:  # берем топ-3
+            for zone in liquidity_zones[:3]:
                 levels.append({
                     'price': zone['price'],
                     'type': f"Зона ликвидности ({zone['type']})",
@@ -4115,6 +4127,12 @@ class MultiTimeframeAnalyzer:
         
         logger.info(f"  📊 {symbol} - Цена: {last['close']}, RSI: {last['rsi'] if pd.notna(last['rsi']) else 'N/A'}")
         
+        # Загружаем стратегию
+        from config import STRATEGY_SETTINGS
+        strategy_name = STRATEGY_SETTINGS['selected']
+        strategy = STRATEGY_SETTINGS[strategy_name]
+        logger.info(f"  📋 Стратегия: {strategy['name']}")
+
         fvg_analysis = None
         liquidity_zones = None
     
@@ -4499,7 +4517,7 @@ class MultiTimeframeAnalyzer:
                 if fvg_analysis['has_fvg']:
                     for signal_text in fvg_analysis['signals']:
                         reasons.append(signal_text)
-                    confidence += fvg_analysis['strength'] / 5
+                    confidence += fvg_analysis['strength'] / 5           
                     logger.info(f"  ✅ {symbol} - Найдено FVG: {len(fvg_analysis['signals'])} на разных ТФ")
             except Exception as e:
                 logger.error(f"❌ Ошибка в FVG анализе для {symbol}: {e}")
@@ -4508,6 +4526,48 @@ class MultiTimeframeAnalyzer:
                 # Продолжаем выполнение с пустым fvg_analysis
                 fvg_analysis = {'has_fvg': False, 'signals': [], 'zones': []}
 
+        # ===== ПРОВЕРКА СТРАТЕГИИ: ТРЕБОВАНИЕ ЗАКРЫТИЯ FVG =====
+        require_close_pct = strategy['fvg'].get('require_close_pct', 0)
+        if require_close_pct > 0 and fvg_analysis.get('has_fvg', False):
+            try:
+                # Проверяем, насколько закрыт ближайший FVG
+                current_price = last['close']
+                closest_fvg = None
+                min_distance = float('inf')
+                
+                for zone in fvg_analysis.get('zones', []):
+                    if zone['min'] > current_price:
+                        distance = zone['min'] - current_price
+                    elif zone['max'] < current_price:
+                        distance = current_price - zone['max']
+                    else:
+                        # Цена внутри FVG
+                        distance = 0
+                        # Считаем процент закрытия
+                        fvg_range = zone['max'] - zone['min']
+                        if fvg_range > 0:
+                            if current_price > zone['max']:
+                                close_pct = 100
+                            elif current_price < zone['min']:
+                                close_pct = 0
+                            else:
+                                close_pct = ((current_price - zone['min']) / fvg_range) * 100
+                            
+                            if close_pct < require_close_pct:
+                                reasons.append(f"⚠️ FVG {zone['tf_short']} закрыт только на {close_pct:.0f}% (требуется {require_close_pct}%)")
+                                confidence -= 15
+                                logger.info(f"  ⚠️ FVG закрыт на {close_pct:.0f}% < {require_close_pct}%")
+                    
+            except Exception as e:
+                logger.error(f"❌ Ошибка в проверке закрытия FVG: {e}")
+
+        ## Проверка стратегии: требовать закрытие FVG на X%               #ЗАГЛУШКА
+        # require_close_pct = strategy['fvg'].get('require_close_pct', 0)
+        # if require_close_pct > 0 and fvg_in_zone > 0:
+            ## Здесь нужно получить процент закрытия FVG
+            ## Для простоты пока пропустим, добавим позже
+            #logger.info(f"  📊 Требуется закрытие FVG на {require_close_pct}%")
+        
         # ===== ЗОНЫ ЛИКВИДНОСТИ =====  ← ✅ ВСТАВИТЬ ЭТОТ БЛОК ЗДЕСЬ            
         if LIQUIDITY_ZONES_SETTINGS.get('enabled', True):
             try:
@@ -4558,6 +4618,13 @@ class MultiTimeframeAnalyzer:
                     
                     # ✅ БОНУС ЗА КОНФЛЮЕНЦИЮ (ВЫНЕСЕН ИЗ ELSE)
                     level_count = potential_analysis.get('level_count', 0)
+
+                    # ✅ Проверка стратегии: минимальное количество уровней
+                    if level_count < strategy['min_confluence_levels']:
+                        reasons.append(f"⚠️ {strategy['name']} стратегия: требуется {strategy['min_confluence_levels']}+ уровней (есть {level_count})")
+                        direction = 'NEUTRAL'
+                        logger.info(f"  ⏳ {symbol} - Сигнал отменен: недостаточно уровней конфлюенции")
+
                     if level_count >= 4:
                         confidence += 25
                         reasons.append(f"🔥 СУПЕР-КОНФЛЮЕНЦИЯ: {level_count} уровней в одной зоне")
