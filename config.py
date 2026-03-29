@@ -1145,3 +1145,80 @@ LIQUIDITY_ZONES_SETTINGS = {
         'timeframe': 20,                          # Вес за старший ТФ
     }
 }
+
+# ============== НАСТРОЙКИ СТРАТЕГИЙ ==============
+STRATEGY_SETTINGS = {
+    # Активная стратегия (по умолчанию)
+    'active': {
+        'enabled': True,
+        'name': 'Активная',
+        
+        # FVG настройки
+        'fvg': {
+            'require_close_pct': 0,           # Не требовать закрытие (0-100) # Меняйте: 0, 30, 50, 70
+            'size_weight': True,               # Учитывать размер FVG # True/False
+            'timeframe_weight': True,          # Учитывать ТФ FVG # True/False
+            'volume_confirmation': False,      # Не требовать объем
+            'liquidity_check': False,          # Не проверять ликвидность
+            'direction_filter': True,          # LONG=FVG снизу, SHORT=FVG сверху
+        },
+        
+        # Вход
+        'require_breakout_confirmation': False,  # Вход на касании
+        'min_confluence_levels': 1,              # Минимум уровней в конфлюенции # Меняйте: 1, 2, 3
+        'risk_level': 'medium',
+    },
+    
+    # Консервативная стратегия
+    'conservative': {
+        'enabled': False,
+        'name': 'Консервативная',
+        
+        'fvg': {
+            'require_close_pct': 70,           # Требовать закрытие на 70%
+            'size_weight': True,               
+            'timeframe_weight': True,          
+            'volume_confirmation': True,       
+            'liquidity_check': True,           
+            'direction_filter': True,
+        },
+        
+        'require_breakout_confirmation': True,   # Только после пробоя
+        'min_confluence_levels': 2,              # Минимум 2 уровня
+        'risk_level': 'low',
+    },
+    
+    # Агрессивная стратегия
+    'aggressive': {
+        'enabled': False,
+        'name': 'Агрессивная',
+        
+        'fvg': {
+            'require_close_pct': 0,         
+            'size_weight': False,             
+            'timeframe_weight': False,        
+            'volume_confirmation': False,     
+            'liquidity_check': False,         
+            'direction_filter': False,        
+        },
+        
+        'require_breakout_confirmation': False,
+        'min_confluence_levels': 0,
+        'risk_level': 'high',
+    },
+    
+    # Выбранная стратегия
+    'selected': 'active',  # active, conservative, aggressive
+}
+
+# Типы стратегий. Как понять, что лучше:
+# Запустите активную — посмотрите на сигналы
+# Увеличьте require_close_pct до 30 — стало меньше сигналов, но точнее?
+# Увеличьте min_confluence_levels до 2 — сигналы только с 2+ уровнями
+# Сравните результаты — какой набор настроек даёт лучшие сигналы?
+# Совет для тестирования:
+# День	 Настройки	                            Цель
+# Пн-Вт	 Активная (по умолчанию)	            База
+# Ср-Чт	 require_close_pct = 30	                Проверить FVG
+# Пт-Сб	 min_confluence_levels = 2	            Проверить конфлюенцию
+# Вс	 require_breakout_confirmation = True   Проверить пробой
