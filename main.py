@@ -102,7 +102,7 @@ from config import SNIPER_ENTRY_SETTINGS
 
 from config import ACCUMULATION_SIGNAL_SETTINGS
 
-from config import STRATEGY_SETTINGS
+# from config import STRATEGY_SETTINGS
 
 # Настройка логирования
 logging.basicConfig(
